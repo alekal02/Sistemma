@@ -1,0 +1,150 @@
+# =============================================
+# docker-compose.yml — Sistemma v2.0
+# =============================================
+# 🚀 Uso em outra máquina (imagens do Nexus):
+#   1. Copie docker-compose.yml + .env.docker
+#   2. Ajuste .env.docker (CORS_ORIGIN, JWT_SECRET, REGISTRY, TAG)
+#   3. Login no registry (se necessário):
+#      docker login nexus.chchat.org
+#   4. Baixe e suba os containers:
+#      docker compose --env-file .env.docker pull
+#      docker compose --env-file .env.docker up -d
+#   5. Acesse: http://localhost:${FRONTEND_PORT:-3300}
+#
+# 📦 Para publicar novas imagens no Nexus (máquina de desenvolvimento):
+#   .\build-and-push.ps1
+#   ou: ./build-and-push.sh
+#
+# 🔑 Credenciais padrão:
+#   PostgreSQL: neurai / neurai@2025 (porta 5433 externa)
+#   MinIO Console: admin / neurai@2025 (porta 9011)
+# =============================================
+
+services:
+  # ==================== BANCO DE DADOS ====================
+  postgres:
+    image: postgres:16-alpine
+    container_name: sistemma-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-abastecimento}
+      POSTGRES_USER: ${DB_USER:-neurai}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-neurai@2025}
+    ports:
+      - "${DB_PORT_EXTERNAL:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-neurai} -d ${DB_NAME:-abastecimento}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - sistemma-net
+
+  # ==================== MINIO (S3-compatible Storage) ====================
+  minio:
+    image: minio/minio:latest
+    container_name: sistemma-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-neurai@2025}
+    ports:
+      - "${MINIO_API_PORT:-9002}:9000"    # API S3
+      - "${MINIO_CONSOLE_PORT:-9011}:9001" # Console Web
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - sistemma-net
+
+  # ==================== BACKEND (Node.js/Express) ====================
+  backend:
+    image: ${REGISTRY:-nexus.chchat.org/docker-registry}/sistemma-backend:${TAG:-latest}
+    pull_policy: always
+    container_name: sistemma-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      # ─── App ───
+      APP_PORT: 3200
+      NODE_ENV: ${NODE_ENV:-production}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_FORMAT: ${LOG_FORMAT:-text}
+
+      # ─── Banco de Dados (PostgreSQL) ───
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: ${DB_USER:-neurai}
+      DATABASE_PASSWORD: ${DB_PASSWORD:-neurai@2025}
+      DATABASE_NAME: ${DB_NAME:-abastecimento}
+
+      # ─── JWT (Autenticação) ───
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-8h}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      JWT_REFRESH_EXPIRY: ${JWT_REFRESH_EXPIRY:-30d}
+
+      # ─── MinIO (File Storage) ───
+      # ⚠️ MINIO_PORT é a porta INTERNA do container (9000), não a porta externa (9002)
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: 9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-admin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-neurai@2025}
+      MINIO_BUCKET: ${MINIO_BUCKET:-abastecimentos}
+      MINIO_USE_SSL: false
+      MINIO_PUBLIC_URL: ${MINIO_PUBLIC_URL:-http://localhost:9002}
+
+      # ─── OCR Python ───
+      PYTHON_OCR_API_URL: ${PYTHON_OCR_API_URL:-http://python-ocr:8000}
+      PYTHON_OCR_TIMEOUT_MS: ${PYTHON_OCR_TIMEOUT_MS:-30000}
+
+      # ─── CORS ───
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3300}
+      CORS_CREDENTIALS: ${CORS_CREDENTIALS:-true}
+
+      # ─── Upload ───
+      MAX_FILE_SIZE: ${MAX_FILE_SIZE:-10485760}
+      ALLOWED_MIME_TYPES: ${ALLOWED_MIME_TYPES:-image/jpeg,image/png,image/webp}
+    ports:
+      - "${BACKEND_PORT:-3200}:3200"
+    volumes:
+      - uploads_data:/app/uploads
+    networks:
+      - sistemma-net
+
+  # ==================== FRONTEND (React + Nginx) ====================
+  frontend:
+    image: ${REGISTRY:-nexus.chchat.org/docker-registry}/sistemma-frontend:${TAG:-latest}
+    pull_policy: always
+    container_name: sistemma-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-3300}:80"
+    networks:
+      - sistemma-net
+
+volumes:
+  postgres_data:
+    driver: local
+  minio_data:
+    driver: local
+  uploads_data:
+    driver: local
+
+networks:
+  sistemma-net:
+    name: sistemma-network
+    driver: bridge

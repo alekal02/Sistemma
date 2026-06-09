@@ -1,0 +1,211 @@
+.logs-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 2rem;
+  background-color: #f9fafb;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.logs-container h2 {
+  color: #1f2937;
+  margin-bottom: 0.5rem;
+  font-size: 1.875rem;
+}
+
+.logs-container .subtitle {
+  color: #6b7280;
+  margin-bottom: 2rem;
+  font-size: 0.95rem;
+}
+
+.tabela-wrapper {
+  background-color: #ffffff;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+  overflow-x: auto;
+}
+
+.tabela-logs {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.tabela-logs thead {
+  background-color: #f3f4f6;
+  border-bottom: 2px solid #e5e7eb;
+}
+
+.tabela-logs th {
+  padding: 0.85rem 1rem;
+  text-align: left;
+  font-weight: 600;
+  color: #374151;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+
+.tabela-logs td {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid #f3f4f6;
+  font-size: 0.88rem;
+  color: #1f2937;
+}
+
+.tabela-logs tbody tr:hover {
+  background-color: #f9fafb;
+}
+
+.td-data {
+  white-space: nowrap;
+  color: #6b7280 !important;
+  font-size: 0.82rem !important;
+}
+
+.td-valor-antigo {
+  color: #991b1b;
+  font-size: 0.85rem;
+}
+
+.td-valor-novo {
+  color: #166534;
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.badge-placa {
+  display: inline-block;
+  background-color: #e0f2fe;
+  color: #0369a1;
+  padding: 0.2rem 0.6rem;
+  border-radius: 4px;
+  font-weight: 700;
+  font-size: 0.82rem;
+  letter-spacing: 0.3px;
+}
+
+.badge-campo {
+  display: inline-block;
+  background-color: #f3f4f6;
+  color: #4b5563;
+  padding: 0.2rem 0.6rem;
+  border-radius: 4px;
+  font-weight: 600;
+  font-size: 0.8rem;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 3rem 1rem;
+  color: #9ca3af;
+  font-size: 1rem;
+  background-color: #ffffff;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+}
+
+/* ── Filtros ── */
+.logs-container .filtros-section {
+  margin-bottom: 1.5rem;
+  background-color: #ffffff;
+  padding: 1.25rem;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+}
+
+.logs-container .filtros-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+  align-items: flex-end;
+}
+
+.logs-container .filtros-form .form-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.logs-container .filtros-form label {
+  margin-bottom: 0.4rem;
+  font-weight: 600;
+  color: #374151;
+  font-size: 0.85rem;
+}
+
+.logs-container .filtros-form input,
+.logs-container .filtros-form select {
+  padding: 0.65rem 0.75rem;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  transition: border-color 0.2s ease;
+  background-color: #ffffff;
+  color: #374151;
+}
+
+.logs-container .filtros-form input:focus,
+.logs-container .filtros-form select:focus {
+  outline: none;
+  border-color: #22c55e;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.logs-container .filtros-form input:disabled,
+.logs-container .filtros-form select:disabled {
+  background-color: #f3f4f6;
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.logs-container .form-actions {
+  display: flex;
+  gap: 0.75rem;
+  align-self: flex-end;
+}
+
+.logs-container .btn-filtrar,
+.logs-container .btn-limpar {
+  padding: 0.65rem 1.2rem;
+  border: none;
+  border-radius: 6px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+  font-size: 0.85rem;
+}
+
+.logs-container .btn-filtrar {
+  background-color: #22c55e;
+  color: #ffffff;
+  flex: 1;
+}
+
+.logs-container .btn-filtrar:hover:not(:disabled) {
+  background-color: #16a34a;
+}
+
+.logs-container .btn-filtrar:disabled {
+  background-color: #9ca3af;
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.logs-container .btn-limpar {
+  background-color: #e5e7eb;
+  color: #374151;
+  flex: 1;
+}
+
+.logs-container .btn-limpar:hover:not(:disabled) {
+  background-color: #d1d5db;
+}
+
+.logs-container .btn-limpar:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+/* Paginação reutiliza os estilos já existentes em Relatorio.css */

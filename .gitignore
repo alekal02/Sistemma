@@ -1,0 +1,43 @@
+# Dependências
+node_modules/
+
+# Build
+dist/
+build/
+frontend/dist/
+backend/dist/
+
+# Artefatos Docker / planilhas de teste
+*.tar
+*.xlsx
+*.xls
+
+# Ambiente e secrets
+.env
+.env.local
+.env.*.local
+backend/.env
+frontend/.env
+.env.docker
+
+# Scripts locais com credenciais (use variaveis de ambiente)
+
+# Logs
+*.log
+out.log
+npm-debug.log*
+
+# Uploads e artefatos locais
+uploads/
+backend/uploads/
+test_upload.xlsx
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Docker volumes locais (se mapeados)
+postgres_data/

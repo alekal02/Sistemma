@@ -1,0 +1,736 @@
+/* ═══════════════════════════════════════════
+   DASHBOARD EXECUTIVO — Estilos
+   ═══════════════════════════════════════════ */
+
+.executivo-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 1.25rem 2rem;
+}
+
+/* ─── Header ─── */
+.exec-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 1.25rem;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.exec-header h1 {
+  margin: 0;
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: #0f172a;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.exec-header h1 svg {
+  color: #22c55e;
+}
+
+.exec-actions {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* ─── Filtros Bar ─── */
+.exec-filtros-bar {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 0.85rem 1rem;
+  margin-bottom: 1.25rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: flex-end;
+}
+
+.exec-filtro-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 140px;
+}
+
+.exec-filtro-group label {
+  font-size: 0.6rem;
+  font-weight: 700;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.exec-filtro-group select,
+.exec-filtro-group input {
+  padding: 0.35rem 0.55rem;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  background: white;
+  color: #1e293b;
+  min-width: 130px;
+}
+
+.exec-filtro-group select:focus,
+.exec-filtro-group input:focus {
+  outline: none;
+  border-color: #22c55e;
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.15);
+}
+
+/* ─── Seção Título ─── */
+.exec-section-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.85rem;
+}
+
+.exec-section-title .bar {
+  width: 4px;
+  height: 20px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.exec-section-title .bar.green {
+  background: linear-gradient(180deg, #22c55e, #4ade80);
+}
+
+.exec-section-title .bar.blue {
+  background: linear-gradient(180deg, #3b82f6, #60a5fa);
+}
+
+.exec-section-title .bar.purple {
+  background: linear-gradient(180deg, #a855f7, #c084fc);
+}
+
+.exec-section-title span {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #334155;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+/* ─── Painel Financeiro ─── */
+.financeiro-grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr 1fr;
+  gap: 0.85rem;
+  margin-bottom: 1.25rem;
+}
+
+.financeiro-card {
+  background: white;
+  border-radius: 12px;
+  padding: 1rem 1.15rem;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  position: relative;
+  overflow: hidden;
+}
+
+.financeiro-card.destaque {
+  border-color: #f59e0b;
+  background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%);
+  box-shadow: 0 2px 8px rgba(245,158,11,0.12);
+}
+
+.financeiro-card .label {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-bottom: 0.25rem;
+}
+
+.financeiro-card .valor {
+  font-size: 1.65rem;
+  font-weight: 800;
+  color: #0f172a;
+  line-height: 1.1;
+  margin-bottom: 0.3rem;
+}
+
+.financeiro-card.destaque .valor {
+  color: #b45309;
+  font-size: 1.85rem;
+}
+
+.financeiro-card .minitendencia {
+  margin-top: 0.25rem;
+  height: 36px;
+}
+
+/* ─── Badge de Origem (Real / Estimado) ─── */
+.origem-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+  font-size: 0.55rem;
+  font-weight: 700;
+  padding: 0.05rem 0.35rem;
+  border-radius: 4px;
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+  margin-left: 0.25rem;
+}
+
+.origem-badge.estimado {
+  background: #fef3c7;
+  color: #b45309;
+  border: 1px solid #fde68a;
+}
+
+.origem-badge.real {
+  background: #ecfdf5;
+  color: #059669;
+  border: 1px solid #bbf7d0;
+}
+
+/* ─── Badge de Variação ─── */
+.variacao-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.15rem 0.45rem;
+  border-radius: 5px;
+  white-space: nowrap;
+}
+
+.variacao-badge.aumento {
+  background: #ecfdf5;
+  color: #059669;
+}
+
+.variacao-badge.reducao {
+  background: #fef2f2;
+  color: #dc2626;
+}
+
+.variacao-badge.estavel {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+/* ─── Painel Operacional ─── */
+.operacional-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 0.7rem;
+  margin-bottom: 1.25rem;
+}
+
+.operacional-card {
+  background: white;
+  border-radius: 10px;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid #e2e8f0;
+  border-top: 3px solid #6366f1;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+}
+
+.operacional-card .label {
+  font-size: 0.62rem;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  margin-bottom: 0.2rem;
+}
+
+.operacional-card .valor {
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: #1e293b;
+  margin-bottom: 0.2rem;
+}
+
+/* ─── Gráficos ─── */
+.graficos-row {
+  display: grid;
+  grid-template-columns: 1fr 2fr;
+  gap: 0.85rem;
+  margin-bottom: 1.25rem;
+}
+
+.graficos-row-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.85rem;
+  margin-bottom: 1.25rem;
+}
+
+.grafico-card {
+  background: white;
+  border-radius: 10px;
+  padding: 1rem;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+}
+
+.grafico-card h3 {
+  margin: 0 0 0.75rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #334155;
+}
+
+.chart-wrapper {
+  position: relative;
+  height: 260px;
+  width: 100%;
+}
+
+/* ─── Seção Expansível ─── */
+.expansivel-section {
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  margin-bottom: 0.85rem;
+  overflow: hidden;
+}
+
+.expansivel-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.7rem 1rem;
+  border: none;
+  background: #f8fafc;
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #334155;
+  transition: background 0.15s;
+}
+
+.expansivel-header:hover {
+  background: #f1f5f9;
+}
+
+.expansivel-header svg {
+  transition: transform 0.2s;
+}
+
+.expansivel-header.expanded svg {
+  transform: rotate(180deg);
+}
+
+.expansivel-body {
+  padding: 0.85rem 1rem 1rem;
+  border-top: 1px solid #e2e8f0;
+}
+
+/* ─── Tabelas na análise ─── */
+.analise-tabela {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+
+.analise-tabela th {
+  background: #1e293b;
+  color: white;
+  padding: 0.5rem 0.7rem;
+  text-align: left;
+  font-weight: 600;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.analise-tabela td {
+  padding: 0.45rem 0.7rem;
+  border-bottom: 1px solid #f1f5f9;
+  color: #334155;
+}
+
+.analise-tabela tr:nth-child(even) {
+  background: #f8fafc;
+}
+
+.analise-tabela tr:hover {
+  background: #f0fdf4;
+}
+
+/* ─── Grid de cards na análise ─── */
+.analise-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 0.75rem;
+}
+
+.analise-card {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 0.75rem 0.9rem;
+}
+
+.analise-card .label {
+  font-size: 0.62rem;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.analise-card .value {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #0f172a;
+  margin-top: 0.15rem;
+}
+
+/* ─── Skeleton Loader ─── */
+@keyframes shimmer {
+  0% { background-position: -200px 0; }
+  100% { background-position: calc(200px + 100%) 0; }
+}
+
+.exec-skeleton {
+  background: linear-gradient(90deg, #f1f5f9 25%, #e2e8f0 50%, #f1f5f9 75%);
+  background-size: 200px 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: 8px;
+}
+
+/* ─── Responsivo ─── */
+@media (max-width: 1024px) {
+  .financeiro-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+  .operacional-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+  .graficos-row {
+    grid-template-columns: 1fr;
+  }
+  .graficos-row-2 {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .financeiro-grid {
+    grid-template-columns: 1fr;
+  }
+  .operacional-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .exec-filtro-group {
+    min-width: 100%;
+  }
+  .exec-container {
+    padding: 1rem;
+  }
+}
+
+/* ─── Tooltip de data ─── */
+.data-geracao {
+  font-size: 0.68rem;
+  color: #94a3b8;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+/* ─── Botão compartilhar ─── */
+.btn-compartilhar {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.35rem 0.65rem;
+  background: #f0fdf4;
+  color: #059669;
+  border: 1px solid #bbf7d0;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-compartilhar:hover {
+  background: #dcfce7;
+}
+
+/* ─── Botão WhatsApp ─── */
+.btn-whatsapp {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.35rem 0.65rem;
+  background: #f0fdf4;
+  color: #25D366;
+  border: 1px solid #bbf7d0;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-whatsapp:hover {
+  background: #dcfce7;
+  border-color: #25D366;
+}
+
+/* ─── Card não disponível ─── */
+.nao-disponivel {
+  color: #94a3b8;
+  font-style: italic;
+  font-size: 0.82rem;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.nao-disponivel a {
+  color: #3b82f6;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* ═══════════════════════════════════════════
+   CORREÇÕES — Estimativa, Custo, Cache, Skeleton
+   ═══════════════════════════════════════════ */
+
+/* ─── Badge de Estimativa (Correção 1) ─── */
+.estimativa-badge {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: #b45309;
+  background: #fef3c7;
+  border: 1px solid #fde68a;
+  border-radius: 6px;
+  padding: 0.35rem 0.65rem;
+  margin-bottom: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.estimativa-link {
+  margin-left: auto;
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: #92400e;
+  background: transparent;
+  border: 1px solid #f59e0b;
+  border-radius: 4px;
+  padding: 0.15rem 0.45rem;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.estimativa-link:hover {
+  background: #f59e0b;
+  color: white;
+}
+
+/* ─── Placeholder de Custo Zerado (Correção 2) ─── */
+.custo-placeholder {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: #64748b;
+  background: #f1f5f9;
+  border: 1px dashed #cbd5e1;
+  border-radius: 6px;
+  padding: 0.35rem 0.65rem;
+  margin-bottom: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.custo-link {
+  margin-left: auto;
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: #3b82f6;
+  background: transparent;
+  border: 1px solid #93c5fd;
+  border-radius: 4px;
+  padding: 0.15rem 0.45rem;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.custo-link:hover {
+  background: #3b82f6;
+  color: white;
+  border-color: #3b82f6;
+}
+
+/* ─── Badge de Cache (Correção 4) ─── */
+.cache-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-size: 0.62rem;
+  font-weight: 700;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  background: #f0fdf4;
+  color: #059669;
+  border: 1px solid #bbf7d0;
+  white-space: nowrap;
+}
+
+.cache-badge.aged {
+  background: #fef2f2;
+  color: #dc2626;
+  border-color: #fecaca;
+}
+
+/* ─── Botão Refresh Pulsante (Correção 4) ─── */
+@keyframes pulse-glow {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.3);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.08);
+  }
+}
+
+.btn-refresh-pulse {
+  animation: pulse-glow 2s ease-in-out infinite;
+  border-color: #22c55e !important;
+  color: #059669 !important;
+  font-weight: 700 !important;
+}
+
+/* ─── Skeleton Animado para Gráficos (Correção 5) ─── */
+.chart-skeleton {
+  height: 260px;
+  width: 100%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 0.5rem 0.75rem;
+  background: #f8fafc;
+  border-radius: 8px;
+  position: relative;
+  overflow: hidden;
+}
+
+.chart-skeleton::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.4) 50%, transparent 100%);
+  animation: skeleton-shimmer 1.8s ease-in-out infinite;
+}
+
+@keyframes skeleton-shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+.chart-skeleton-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  width: 100%;
+  height: 100%;
+  justify-content: space-around;
+  padding-bottom: 20px;
+}
+
+.chart-skeleton-bar {
+  width: 10%;
+  min-width: 14px;
+  max-width: 40px;
+  border-radius: 4px 4px 0 0;
+  background: linear-gradient(180deg, #22c55e 0%, #4ade80 100%);
+  opacity: 0.4;
+  animation: skeleton-bar-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes skeleton-bar-pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 0.6; }
+}
+
+/* ═══════════════════════════════════════════
+   TABELA DE MOTORISTAS
+   ═══════════════════════════════════════════ */
+
+.motoristas-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.motoristas-table th {
+  background: #1e293b;
+  color: white;
+  padding: 0.45rem 0.6rem;
+  text-align: left;
+  font-weight: 600;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.motoristas-table th:hover {
+  background: #334155;
+}
+
+.motoristas-table td {
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid #f1f5f9;
+  color: #334155;
+  font-size: 0.72rem;
+}
+
+.motoristas-table tr:nth-child(even) {
+  background: #f8fafc;
+}
+
+.motoristas-table tr:hover {
+  background: #f0fdf4;
+}
+
+.motoristas-table tr:first-child td {
+  font-weight: 700;
+}
+
+/* ─── Responsivo: Ajustes para novos badges ─── */
+@media (max-width: 640px) {
+  .estimativa-badge,
+  .custo-placeholder {
+    font-size: 0.6rem;
+    padding: 0.25rem 0.45rem;
+  }
+  
+  .estimativa-link,
+  .custo-link {
+    font-size: 0.6rem;
+    margin-left: 0;
+  }
+
+  .chart-skeleton-bar {
+    min-width: 10px;
+  }
+}
