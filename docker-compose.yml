@@ -1,37 +1,45 @@
-# =============================================
-# docker-compose.yml — Sistemma v2.0
-# =============================================
-# 🚀 Uso em outra máquina (imagens do Nexus):
-#   1. Copie docker-compose.yml + .env.docker
-#   2. Ajuste .env.docker (CORS_ORIGIN, JWT_SECRET, REGISTRY, TAG)
-#   3. Login no registry (se necessário):
-#      docker login nexus.chchat.org
-#   4. Baixe e suba os containers:
-#      docker compose --env-file .env.docker pull
-#      docker compose --env-file .env.docker up -d
-#   5. Acesse: http://localhost:${FRONTEND_PORT:-3300}
+# =============================================================================
+# docker-compose.yml — maquina DESTINO (C:\Sistemma) e producao
+# =============================================================================
+# Atualizar versao na destino (somente docker-compose.yml + .env — SEM backend/frontend/):
+#   1. Dev publica:  .\publicar.ps1 -Tag 2.1.0
+#   2. Destino — edite TAG=2.1.0 no .env
+#   3. docker compose pull
+#   4. docker compose up -d
 #
-# 📦 Para publicar novas imagens no Nexus (máquina de desenvolvimento):
-#   .\build-and-push.ps1
-#   ou: ./build-and-push.sh
+# Primeira vez na destino:
+#   Copy-Item env.docker.example .env     (edite senhas e TAG)
+#   docker login nexus.neurai-platform.com -u admin -p "senha"
 #
-# 🔑 Credenciais padrão:
-#   PostgreSQL: neurai / neurai@2025 (porta 5433 externa)
-#   MinIO Console: admin / neurai@2025 (porta 9011)
-# =============================================
+# Erros comuns:
+#   "path backend not found" — remova docker-compose.dev.yml da pasta destino
+#   "no matching manifest linux/amd64" — republique: .\publicar.ps1 -Tag X
+#
+# DEV (build local — requer backend/ e frontend/):
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+#   .\build-and-push.ps1 -BuildOnly -Up
+# =============================================================================
+
+name: sistemma
 
 services:
-  # ==================== BANCO DE DADOS ====================
   postgres:
     image: postgres:16-alpine
     container_name: sistemma-postgres
     restart: unless-stopped
+    command: >
+      postgres
+      -c shared_buffers=128MB
+      -c effective_cache_size=256MB
+      -c work_mem=4MB
+      -c maintenance_work_mem=64MB
+      -c max_connections=50
     environment:
       POSTGRES_DB: ${DB_NAME:-abastecimento}
       POSTGRES_USER: ${DB_USER:-neurai}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-neurai@2025}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Defina DB_PASSWORD no .env}
     ports:
-      - "${DB_PORT_EXTERNAL:-5432}:5432"
+      - "${DB_PORT_EXTERNAL:-5433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -42,7 +50,6 @@ services:
     networks:
       - sistemma-net
 
-  # ==================== MINIO (S3-compatible Storage) ====================
   minio:
     image: minio/minio:latest
     container_name: sistemma-minio
@@ -50,10 +57,10 @@ services:
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-admin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-neurai@2025}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Defina MINIO_ROOT_PASSWORD no .env}
     ports:
-      - "${MINIO_API_PORT:-9002}:9000"    # API S3
-      - "${MINIO_CONSOLE_PORT:-9011}:9001" # Console Web
+      - "${MINIO_API_PORT:-9002}:9000"
+      - "${MINIO_CONSOLE_PORT:-9011}:9001"
     volumes:
       - minio_data:/data
     healthcheck:
@@ -64,9 +71,9 @@ services:
     networks:
       - sistemma-net
 
-  # ==================== BACKEND (Node.js/Express) ====================
   backend:
-    image: ${REGISTRY:-nexus.chchat.org/docker-registry}/sistemma-backend:${TAG:-latest}
+    platform: linux/amd64
+    image: ${REGISTRY:-nexus.neurai-platform.com/docker-registry}/sistemma-backend:${TAG:-latest}
     pull_policy: always
     container_name: sistemma-backend
     restart: unless-stopped
@@ -76,63 +83,80 @@ services:
       minio:
         condition: service_healthy
     environment:
-      # ─── App ───
       APP_PORT: 3200
       NODE_ENV: ${NODE_ENV:-production}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       LOG_FORMAT: ${LOG_FORMAT:-text}
-
-      # ─── Banco de Dados (PostgreSQL) ───
       DATABASE_HOST: postgres
       DATABASE_PORT: 5432
       DATABASE_USER: ${DB_USER:-neurai}
-      DATABASE_PASSWORD: ${DB_PASSWORD:-neurai@2025}
+      DATABASE_PASSWORD: ${DB_PASSWORD}
       DATABASE_NAME: ${DB_NAME:-abastecimento}
-
-      # ─── JWT (Autenticação) ───
-      JWT_SECRET: ${JWT_SECRET}
+      JWT_SECRET: ${JWT_SECRET:?Defina JWT_SECRET no .env}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-8h}
-      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?Defina JWT_REFRESH_SECRET no .env}
       JWT_REFRESH_EXPIRY: ${JWT_REFRESH_EXPIRY:-30d}
-
-      # ─── MinIO (File Storage) ───
-      # ⚠️ MINIO_PORT é a porta INTERNA do container (9000), não a porta externa (9002)
       MINIO_ENDPOINT: minio
       MINIO_PORT: 9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-admin}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-neurai@2025}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
       MINIO_BUCKET: ${MINIO_BUCKET:-abastecimentos}
-      MINIO_USE_SSL: false
+      MINIO_USE_SSL: "false"
       MINIO_PUBLIC_URL: ${MINIO_PUBLIC_URL:-http://localhost:9002}
-
-      # ─── OCR Python ───
-      PYTHON_OCR_API_URL: ${PYTHON_OCR_API_URL:-http://python-ocr:8000}
-      PYTHON_OCR_TIMEOUT_MS: ${PYTHON_OCR_TIMEOUT_MS:-30000}
-
-      # ─── CORS ───
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3300}
       CORS_CREDENTIALS: ${CORS_CREDENTIALS:-true}
-
-      # ─── Upload ───
       MAX_FILE_SIZE: ${MAX_FILE_SIZE:-10485760}
       ALLOWED_MIME_TYPES: ${ALLOWED_MIME_TYPES:-image/jpeg,image/png,image/webp}
+      DADOS_CACHE_TTL_MS: ${DADOS_CACHE_TTL_MS:-120000}
+      DADOS_CACHE_MAX_ENTRADAS: ${DADOS_CACHE_MAX_ENTRADAS:-12}
+      GRAFICOS_DADOS_LIMITE: ${GRAFICOS_DADOS_LIMITE:-20000}
+      KPIS_CONSOLIDADO_CONCURRENCY: ${KPIS_CONSOLIDADO_CONCURRENCY:-1}
+      ENDPOINTS_PESADOS_CONCURRENCY: ${ENDPOINTS_PESADOS_CONCURRENCY:-1}
+      PDF_CACHE_MAX_ENTRADAS: ${PDF_CACHE_MAX_ENTRADAS:-5}
+      DB_POOL_MAX: ${DB_POOL_MAX:-8}
+      DB_POOL_CONNECT_MS: ${DB_POOL_CONNECT_MS:-30000}
+      DB_STATEMENT_TIMEOUT_MS: ${DB_STATEMENT_TIMEOUT_MS:-120000}
+      SKIP_STARTUP_SEED: ${SKIP_STARTUP_SEED:-false}
+      SKIP_STARTUP_MIGRATIONS: ${SKIP_STARTUP_MIGRATIONS:-false}
+      SYNC_KPIS_UNIVERSAIS: ${SYNC_KPIS_UNIVERSAIS:-true}
+      DASHBOARD_EXECUTIVO_CACHE_TTL_MS: ${DASHBOARD_EXECUTIVO_CACHE_TTL_MS:-86400000}
+      DASHBOARD_CACHE_DISCO: ${DASHBOARD_CACHE_DISCO:-true}
+      DASHBOARD_WARMUP_ENABLED: ${DASHBOARD_WARMUP_ENABLED:-true}
+      DASHBOARD_WARMUP_DELAY_MS: ${DASHBOARD_WARMUP_DELAY_MS:-45000}
+      DASHBOARD_WARMUP_INTERVAL_MS: ${DASHBOARD_WARMUP_INTERVAL_MS:-86400000}
+      NODE_OPTIONS: ${NODE_OPTIONS:---max-old-space-size=768}
+      BUILD_SHA: ${BUILD_SHA:-unknown}
+      IMAGE_TAG: ${TAG:-latest}
     ports:
       - "${BACKEND_PORT:-3200}:3200"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3200/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+      retries: 5
     volumes:
       - uploads_data:/app/uploads
     networks:
       - sistemma-net
 
-  # ==================== FRONTEND (React + Nginx) ====================
   frontend:
-    image: ${REGISTRY:-nexus.chchat.org/docker-registry}/sistemma-frontend:${TAG:-latest}
+    platform: linux/amd64
+    image: ${REGISTRY:-nexus.neurai-platform.com/docker-registry}/sistemma-frontend:${TAG:-latest}
     pull_policy: always
     container_name: sistemma-frontend
     restart: unless-stopped
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     ports:
       - "${FRONTEND_PORT:-3300}:80"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
     networks:
       - sistemma-net
 

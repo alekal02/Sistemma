@@ -19,6 +19,7 @@ backend/dist/
 backend/.env
 frontend/.env
 .env.docker
+.env.nexus
 
 # Scripts locais com credenciais (use variaveis de ambiente)
 
