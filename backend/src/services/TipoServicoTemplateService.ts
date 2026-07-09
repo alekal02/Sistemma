@@ -1,3 +1,8 @@
+import {
+  getKpisTemplateColeta,
+  getGraficosTemplateColeta,
+} from '../config/dashboardPadraoColeta';
+
 /* ============================================
    TipoServicoTemplateService — Catálogo Central
    ═══════════════════════════════════════════
@@ -162,9 +167,9 @@ const TEMPLATES: Record<string, TipoServicoTemplate> = {
       {
         nome: 'Viagens',
         label: 'Viagens Realizadas',
-        expressao: 'COUNT(*)',
+        expressao: 'VIAGENS_VALIDADAS()',
         formato: 'numero',
-        descricao: 'Numero total de viagens/registros realizados',
+        descricao: 'Total de viagens validadas no dashboard (linhas com KM, peso e rota completos)',
         unidade: 'viagens',
         cor: '#14b8a6',
         categoria: 'operacional',
@@ -229,13 +234,13 @@ const TEMPLATES: Record<string, TipoServicoTemplate> = {
       {
         nome: 'Total Coletores Equipe',
         label: 'Total Coletores na Equipe',
-        expressao: 'SUM(N║ DE COLETORES)',
+        expressao: 'COLETORES_UNICOS()',
         formato: 'numero',
-        descricao: 'Soma do numero de coletores em todas as viagens',
+        descricao: 'Coletores únicos (COLETOR 01–04): mesma pessoa em várias viagens conta apenas uma vez',
         unidade: 'coletores',
         cor: '#c084fc',
         categoria: 'operacional',
-        colunasUsadas: ['N║ DE COLETORES'],
+        colunasUsadas: ['COLETOR 01', 'COLETOR 02', 'COLETOR 03', 'COLETOR 04', 'Nº DE COLETORES'],
       },
       // ─── COBERTURA ───
       {
@@ -264,7 +269,7 @@ const TEMPLATES: Record<string, TipoServicoTemplate> = {
       {
         nome: 'Media Peso Viagem',
         label: 'Peso Medio por Viagem (kg)',
-        expressao: 'DIVIDE(SUM(PESO TOTAL), COUNT(*))',
+        expressao: 'DIVIDE(SUM(PESO TOTAL), VIAGENS_POR_ROTA())',
         formato: 'numero',
         descricao: 'Peso medio coletado por viagem em kg',
         unidade: 'kg/viagem',
@@ -275,7 +280,7 @@ const TEMPLATES: Record<string, TipoServicoTemplate> = {
       {
         nome: 'Media Ton Viagem',
         label: 'Tonelagem Media por Viagem',
-        expressao: 'DIVIDE(SUM(PESO TOTAL) / 1000, COUNT(*))',
+        expressao: 'DIVIDE(SUM(PESO TOTAL) / 1000, VIAGENS_POR_ROTA())',
         formato: 'numero',
         descricao: 'Media de toneladas transportadas por viagem',
         unidade: 't/viagem',
@@ -286,7 +291,7 @@ const TEMPLATES: Record<string, TipoServicoTemplate> = {
       {
         nome: 'Media Km Viagem',
         label: 'KM Medio por Viagem',
-        expressao: 'DIVIDE(SUM(KM TOTAL), COUNT(*))',
+        expressao: 'DIVIDE(SUM(KM TOTAL), VIAGENS_POR_ROTA())',
         formato: 'numero',
         descricao: 'Quilometragem media rodada por viagem',
         unidade: 'km/viagem',
@@ -306,12 +311,23 @@ const TEMPLATES: Record<string, TipoServicoTemplate> = {
         colunasUsadas: ['PESO TOTAL', 'KM TOTAL'],
       },
       {
-        nome: 'Prod Coletor',
-        label: 'Produtividade por Coletor (t)',
-        expressao: 'DIVIDE(SUM(PESO TOTAL) / 1000, SUM(N║ DE COLETORES))',
+        nome: 'KM/Ton',
+        label: 'KM por Tonelada',
+        expressao: 'DIVIDE(SUM(KM TOTAL), SUM(PESO TOTAL) / 1000)',
         formato: 'numero',
-        descricao: 'Toneladas coletadas por cada coletor da equipe',
-        unidade: 't/coletor',
+        descricao: 'Quilometragem total dividida pela tonelagem total (KM TOTAL ÷ ton)',
+        unidade: 'km/t',
+        cor: '#0ea5e9',
+        categoria: 'operacional',
+        colunasUsadas: ['KM TOTAL', 'PESO TOTAL'],
+      },
+      {
+        nome: 'Prod Coletor',
+        label: 'Média Ton/Coletor por Viagem',
+        expressao: 'MEDIA_TON_POR_COLETOR()',
+        formato: 'numero',
+        descricao: 'Média de toneladas por coletor em cada viagem (PESO TOTAL ÷ Nº DE COLETORES da planilha)',
+        unidade: 't/coletor/viagem',
         cor: '#34d399',
         categoria: 'operacional',
         colunasUsadas: ['PESO TOTAL', 'N║ DE COLETORES'],
@@ -365,7 +381,7 @@ const TEMPLATES: Record<string, TipoServicoTemplate> = {
       {
         nome: 'Media Horas Viagem',
         label: 'Media de Horas por Viagem',
-        expressao: 'DIVIDE(HORAS_PRODUTIVAS(HORA SAIDA BASE, HORA CHEGADA BASE), COUNT(*))',
+        expressao: 'DIVIDE(HORAS_PRODUTIVAS(HORA SAIDA BASE, HORA CHEGADA BASE), VIAGENS_POR_ROTA())',
         formato: 'numero',
         descricao: 'Media de horas em operacao por viagem',
         unidade: 'h/viagem',
@@ -377,9 +393,9 @@ const TEMPLATES: Record<string, TipoServicoTemplate> = {
       {
         nome: 'Total Viagens Contador',
         label: 'Total de Viagens (Contador)',
-        expressao: 'SUM(CONTADOR DE VIAGENS)',
+        expressao: 'VIAGENS_POR_ROTA()',
         formato: 'numero',
-        descricao: 'Soma do contador de viagens (rotas efetuadas)',
+        descricao: 'Total de viagens: soma do CONTADOR DE VIAGENS (rotas feitas)',
         unidade: 'viagens',
         cor: '#2dd4bf',
         categoria: 'operacional',
@@ -527,7 +543,7 @@ const TEMPLATES: Record<string, TipoServicoTemplate> = {
       {
         nome: 'Faturamento',
         label: 'Faturamento Estimado',
-        expressao: 'SUM(Area m²) * VALOR_ROCADA_M2',
+        expressao: 'SUM(Area m²) * VALOR_M2',
         formato: 'moeda',
         descricao: 'Faturamento estimado baseado em m² rocados x valor por m²',
         unidade: 'R$',
@@ -538,7 +554,7 @@ const TEMPLATES: Record<string, TipoServicoTemplate> = {
       {
         nome: 'Receita por Equipe',
         label: 'Receita por Equipe',
-        expressao: 'DIVIDE(SUM(Area m²) * VALOR_ROCADA_M2, COUNT DISTINCT(Equipe))',
+        expressao: 'DIVIDE(SUM(Area m²) * VALOR_M2, COUNT DISTINCT(Equipe))',
         formato: 'moeda',
         descricao: 'Faturamento dividido pelo numero de equipes',
         unidade: 'R$/equipe',
@@ -660,7 +676,7 @@ const TEMPLATES: Record<string, TipoServicoTemplate> = {
       {
         nome: 'Faturamento',
         label: 'Faturamento Estimado',
-        expressao: 'SUM(Quantidade de Arvore) * VALOR_PODA_ARVORE',
+        expressao: 'SUM(Quantidade de Arvore) * VALOR_POR_ARVORE',
         formato: 'moeda',
         descricao: 'Faturamento estimado baseado em arvores atendidas x valor por arvore',
         unidade: 'R$',
@@ -671,7 +687,7 @@ const TEMPLATES: Record<string, TipoServicoTemplate> = {
       {
         nome: 'Receita por Equipe',
         label: 'Receita por Equipe',
-        expressao: 'DIVIDE(SUM(Quantidade de Arvore) * VALOR_PODA_ARVORE, COUNT DISTINCT(Equipe))',
+        expressao: 'DIVIDE(SUM(Quantidade de Arvore) * VALOR_POR_ARVORE, COUNT DISTINCT(Equipe))',
         formato: 'moeda',
         descricao: 'Faturamento dividido pelo numero de equipes',
         unidade: 'R$/equipe',
@@ -792,7 +808,7 @@ const TEMPLATES: Record<string, TipoServicoTemplate> = {
       {
         nome: 'Faturamento',
         label: 'Faturamento Estimado',
-        expressao: 'SUM(Metro Linear) * VALOR_CAPINA_ML',
+        expressao: 'SUM(Metro Linear) * VALOR_KM_LINEAR',
         formato: 'moeda',
         descricao: 'Faturamento estimado baseado em metros lineares capinados x valor por metro',
         unidade: 'R$',
@@ -803,7 +819,7 @@ const TEMPLATES: Record<string, TipoServicoTemplate> = {
       {
         nome: 'Receita por Equipe',
         label: 'Receita por Equipe',
-        expressao: 'DIVIDE(SUM(Metro Linear) * VALOR_CAPINA_ML, COUNT DISTINCT(Equipe))',
+        expressao: 'DIVIDE(SUM(Metro Linear) * VALOR_KM_LINEAR, COUNT DISTINCT(Equipe))',
         formato: 'moeda',
         descricao: 'Faturamento dividido pelo numero de equipes',
         unidade: 'R$/equipe',
@@ -912,7 +928,7 @@ const TEMPLATES: Record<string, TipoServicoTemplate> = {
       {
         nome: 'Faturamento',
         label: 'Faturamento Estimado',
-        expressao: 'SUM(KM Linear) * VALOR_VARRICAO_KM',
+        expressao: 'SUM(KM Linear) * VALOR_KM_LINEAR',
         formato: 'moeda',
         descricao: 'Faturamento estimado baseado em km lineares varridos x valor por km',
         unidade: 'R$',
@@ -923,7 +939,7 @@ const TEMPLATES: Record<string, TipoServicoTemplate> = {
       {
         nome: 'Receita por Equipe',
         label: 'Receita por Equipe',
-        expressao: 'DIVIDE(SUM(KM Linear) * VALOR_VARRICAO_KM, COUNT DISTINCT(Equipe))',
+        expressao: 'DIVIDE(SUM(KM Linear) * VALOR_KM_LINEAR, COUNT DISTINCT(Equipe))',
         formato: 'moeda',
         descricao: 'Faturamento dividido pelo numero de equipes',
         unidade: 'R$/equipe',
@@ -1015,7 +1031,7 @@ const TEMPLATES: Record<string, TipoServicoTemplate> = {
       {
         nome: 'Faturamento',
         label: 'Faturamento Estimado',
-        expressao: 'SUM(COMPRIMENTO) * VALOR_PINTURA_M',
+        expressao: 'SUM(COMPRIMENTO) * VALOR_KM_LINEAR',
         formato: 'moeda',
         descricao: 'Faturamento estimado baseado em metros pintados x valor por metro',
         unidade: 'R$',
@@ -1026,7 +1042,7 @@ const TEMPLATES: Record<string, TipoServicoTemplate> = {
       {
         nome: 'Receita por Funcionario',
         label: 'Receita por Funcionario',
-        expressao: 'DIVIDE(SUM(COMPRIMENTO) * VALOR_PINTURA_M, COUNT DISTINCT(NOME))',
+        expressao: 'DIVIDE(SUM(COMPRIMENTO) * VALOR_KM_LINEAR, COUNT DISTINCT(NOME))',
         formato: 'moeda',
         descricao: 'Faturamento dividido pelo numero de funcionarios',
         unidade: 'R$/func',
@@ -1141,7 +1157,7 @@ const TEMPLATES: Record<string, TipoServicoTemplate> = {
       {
         nome: 'Faturamento',
         label: 'Faturamento Estimado',
-        expressao: 'SUM(Peso) / 1000 * VALOR_REMOCAO_TON',
+        expressao: 'SUM(Peso) / 1000 * VALOR_TONELADA',
         formato: 'moeda',
         descricao: 'Faturamento estimado baseado em toneladas removidas x valor por tonelada',
         unidade: 'R$',
@@ -1152,7 +1168,7 @@ const TEMPLATES: Record<string, TipoServicoTemplate> = {
       {
         nome: 'Receita por Equipamento',
         label: 'Receita por Equipamento',
-        expressao: 'DIVIDE(SUM(Peso) / 1000 * VALOR_REMOCAO_TON, COUNT DISTINCT(Equipamento))',
+        expressao: 'DIVIDE(SUM(Peso) / 1000 * VALOR_TONELADA, COUNT DISTINCT(Equipamento))',
         formato: 'moeda',
         descricao: 'Faturamento dividido pelo numero de equipamentos',
         unidade: 'R$/equip',
@@ -1217,12 +1233,18 @@ export function getTemplate(tipoId: string): TipoServicoTemplate | null {
 
 /** Retorna KPIs padrao de um tipo */
 export function getKpisPadrao(tipoId: string): KpiTemplate[] {
+  if (tipoId === 'coleta_caminhao') {
+    return getKpisTemplateColeta() as KpiTemplate[];
+  }
   const template = TEMPLATES[tipoId];
   return template?.kpis || [];
 }
 
 /** Retorna graficos padrao de um tipo */
 export function getGraficosPadrao(tipoId: string): GraficoTemplate[] {
+  if (tipoId === 'coleta_caminhao') {
+    return getGraficosTemplateColeta() as GraficoTemplate[];
+  }
   const template = TEMPLATES[tipoId];
   return template?.graficos || [];
 }

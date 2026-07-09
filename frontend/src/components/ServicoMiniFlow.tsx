@@ -18,9 +18,16 @@ import { FORMULAS_RESUMO_EXECUTIVO } from '../data/formulasResumoExecutivo';
 import RevisaoIndicadoresAuto from './RevisaoIndicadoresAuto';
 import KpiUniversalActivator from './KpiUniversalActivator';
 import kpiUniversalService from '../services/kpiUniversalService';
+import servicoService from '../services/servicoService';
+import contractService from '../services/contractService';
+import coletaService from '../services/coletaService';
+import qualidadeColetaService from '../services/qualidadeColetaService';
+import pdfService from '../services/pdfService';
+import { isAxiosError } from 'axios';
 import RelatorioQualidade from './RelatorioQualidade';
 import QualidadePlanilhaPreview from './QualidadePlanilhaPreview';
 import { TIPOS_SERVICO_LABELS } from '../types';
+import { gerarNomePdfArquivo, labelTipoServicoArquivo, formatarDataArquivoPdf } from '../utils/gerarNomePdf';
 import {
   buildValoresFixosFromConfigFaturamento,
   sincronizarKpisComFaturamento,
@@ -79,7 +86,30 @@ interface Props {
   contractId: string;
   servicoId: string;
   servicoNome: string;
+  /** Se informado, evita esperar o /padrao para saber o tipo (ex.: roçada) */
+  tipoServico?: string;
   onStatusChange?: (status: EtapasStatus) => void;
+  onPlanilhasChange?: (info: {
+    totalRegistros: number;
+    planilhas: PlanilhaItem[];
+    temUpload: boolean;
+  }) => void;
+}
+
+function normalizarPlanilhasUploads(raw: unknown[] | undefined): PlanilhaItem[] {
+  return (raw || [])
+    .map((item) => {
+      const u = item as Record<string, unknown>;
+      const id = Number(u.id);
+      return {
+        id,
+        nomeArquivo: String(u.nomeArquivo ?? u.nome ?? ''),
+        totalLinhas: Number(u.totalLinhas ?? u.linhas ?? 0),
+        linhasImportadas: Number(u.linhasImportadas ?? u.importados ?? 0),
+        criadoEm: String(u.criadoEm ?? ''),
+      };
+    })
+    .filter(u => Number.isFinite(u.id) && u.id > 0);
 }
 
 function detectarColuna(colunas: ColunaDetectada[], termos: string[]): string {
@@ -93,7 +123,14 @@ function detectarColuna(colunas: ColunaDetectada[], termos: string[]): string {
   return termos[0] || '';
 }
 
-export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, onStatusChange }: Props) {
+export default function ServicoMiniFlow({
+  contractId,
+  servicoId,
+  servicoNome,
+  tipoServico: tipoServicoProp,
+  onStatusChange,
+  onPlanilhasChange,
+}: Props) {
   const { token } = useAuth();
   const { adicionarToast } = useToast();
 
@@ -119,7 +156,13 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
   const [subTab, setSubTab] = useState<'indicadores' | 'metricas' | 'graficos' | 'faturamento'>('indicadores');
   const [autoSave, setAutoSave] = useState<'idle' | 'saving' | 'saved'>('idle');
   const [recargaKey, setRecargaKey] = useState(0);
-  const [tipoServico, setTipoServico] = useState<string>('');
+  const [excluindoPlanilhaId, setExcluindoPlanilhaId] = useState<number | null>(null);
+  const [tipoServico, setTipoServico] = useState<string>(tipoServicoProp || '');
+  const [contratoNome, setContratoNome] = useState('Contrato');
+
+  useEffect(() => {
+    if (tipoServicoProp) setTipoServico(tipoServicoProp);
+  }, [tipoServicoProp]);
 
   // ─── Configuração de Faturamento ───
   const [configFaturamento, setConfigFaturamento] = useState<{
@@ -128,6 +171,7 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
     valorMini: number | null;
     valorTruck: number | null;
     valorToco: number | null;
+    valorBasculante: number | null;
     valorKmLinear: number | null;
     valorM2: number | null;
     valorPorArvore: number | null;
@@ -144,13 +188,8 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch(`/api/contracts/${contractId}/servicos/${servicoId}/config-faturamento`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (res.ok) {
-          const data = await res.json();
-          setConfigFaturamento(data.configFaturamento);
-        }
+        const data = await servicoService.getConfigFaturamento(contractId, servicoId);
+        setConfigFaturamento(data.configFaturamento);
       } catch {}
     })();
   }, [contractId, servicoId, token]);
@@ -184,7 +223,7 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
   const [kpisUniversaisInline, setKpisUniversaisInline] = useState<any[]>([]);
   const [kpisUniversaisInlineIds, setKpisUniversaisInlineIds] = useState<Set<string>>(new Set());
   const [carregandoKpisInline, setCarregandoKpisInline] = useState(false);
-  const kpisInlineCarregadoRef = useRef(false);
+
   const [bibliotecaAberta, setBibliotecaAberta] = useState(false);
   const [qualidadeAberta, setQualidadeAberta] = useState(false);
   const [qualidadeUploadId, setQualidadeUploadId] = useState<number | null>(null);
@@ -200,10 +239,32 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
   const [dadosViagens, setDadosViagens] = useState<any>(null);
   const [gerandoPdfViagens, setGerandoPdfViagens] = useState(false);
   const [importacaoConcluida, setImportacaoConcluida] = useState(false);
+  const [conferindoDiaria, setConferindoDiaria] = useState(false);
+  const [conferenciaDiaria, setConferenciaDiaria] = useState<{
+    diasNovos: number;
+    diasIguais: number;
+    diasDivergentes: number;
+    diasBloqueados: number;
+    diasSomenteSistema: number;
+    temDivergencia: boolean;
+    ultimaDataPlanilha: string | null;
+    ultimaDataSistema: string | null;
+    recomendacao: string;
+    dias: Array<{
+      data: string;
+      dataBr: string;
+      status: 'novo' | 'igual' | 'divergente' | 'bloqueado' | 'somente_sistema';
+      planilha: { rotas: number; viagens: number; pesoKg: number; km: number } | null;
+      sistema: { rotas: number; viagens: number; pesoKg: number; km: number } | null;
+      diferencas: string[];
+    }>;
+  } | null>(null);
   const [resumoImportacao, setResumoImportacao] = useState<{
     importados: number;
     validasDashboard: number;
     inconsistentes: number;
+    uploadsRemovidos?: number;
+    registrosPreservados?: number;
   } | null>(null);
 
   // ── Refs para evitar stale closure nos callbacks de toggle ──
@@ -249,6 +310,69 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
     });
   }, [configFaturamento]);
 
+  const carregarKpisBiblioteca = useCallback(async () => {
+    setCarregandoKpisInline(true);
+    try {
+      const r = await kpiUniversalService.listar(tipoServico || undefined);
+      setKpisUniversaisInline(r.kpis);
+      setKpisUniversaisInlineIds(new Set(
+        kpisRef.current
+          .filter(k => (k as any).origemUniversal)
+          .map(k => (k as any).origemUniversal as string)
+          .filter(Boolean)
+      ));
+    } catch {
+      setKpisUniversaisInline([]);
+    } finally {
+      setCarregandoKpisInline(false);
+    }
+  }, [tipoServico]);
+
+  const handleToggleBiblioteca = useCallback(() => {
+    const abrir = !bibliotecaAberta;
+    setBibliotecaAberta(abrir);
+    if (abrir) carregarKpisBiblioteca();
+  }, [bibliotecaAberta, carregarKpisBiblioteca]);
+
+  const selecionarTodosBiblioteca = useCallback(() => {
+    setKpisUniversaisInlineIds(prev => {
+      const n = new Set(prev);
+      kpisUniversaisInline.forEach(k => n.add(k.id));
+      return n;
+    });
+    setKpis(prev => {
+      const idsExistentes = new Set(
+        prev.filter(k => (k as any).origemUniversal).map(k => (k as any).origemUniversal as string)
+      );
+      const paraAdicionar = kpisUniversaisInline.filter(k => !idsExistentes.has(k.id));
+      if (paraAdicionar.length === 0) return prev;
+      const valoresFat = buildValoresFixosFromConfigFaturamento(
+        configFaturamento?.ativo ? configFaturamento : null
+      );
+      const novos = paraAdicionar.map(kpiU => {
+        const novoKpi: KpiConfig = {
+          nome: kpiU.nome, label: kpiU.label, expressao: kpiU.formula || kpiU.expressao,
+          agregacao: (kpiU.agregacao || 'sum') as KpiConfig['agregacao'],
+          formato: (kpiU.formato || 'numero') as KpiConfig['formato'],
+          unidade: kpiU.unidade, categoria: kpiU.categoria, cor: kpiU.cor,
+          descricao: kpiU.descricao, meta: kpiU.metaSugerida || kpiU.meta,
+          ativo: true, valoresFixos: valoresFat, colunasUsadas: [] as string[],
+          origemUniversal: kpiU.id,
+          placeholdersNaoResolvidos: kpiU.placeholders?.filter((p: any) => !p.resolvido)?.map((p: any) => p.nome),
+        };
+        const [kpiSync] = sincronizarKpisComFaturamento([novoKpi], configFaturamento?.ativo ? configFaturamento : null);
+        return kpiSync;
+      });
+      return [...prev, ...novos];
+    });
+  }, [kpisUniversaisInline, configFaturamento]);
+
+  const limparSelecaoBiblioteca = useCallback(() => {
+    const idsAtivos = new Set(kpisUniversaisInlineIds);
+    setKpisUniversaisInlineIds(new Set());
+    setKpis(prev => prev.filter(k => !idsAtivos.has((k as any).origemUniversal)));
+  }, [kpisUniversaisInlineIds]);
+
   // ── Auto-save com debounce via effect (usa refs para evitar stale) ──
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
@@ -283,26 +407,52 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
 
   const carregadoRef = useRef(false);
 
+  const aplicarDadosPadrao = useCallback((data: Awaited<ReturnType<typeof servicoService.getPadrao>>) => {
+    const cfg = data.servico?.configDashboard;
+    const cols: ColunaDetectada[] = filtrarColunasValidas(
+      data.servico?.padraoPlanilha?.colunas || [],
+    );
+    const ups = normalizarPlanilhasUploads(data.uploads?.ultimos);
+    const registros = data.uploads?.registrosValidos ?? data.uploads?.totalImportados ?? 0;
+
+    setColunas(cols);
+    setPlanilhas(ups);
+    setTotalLinhas(data.uploads?.totalLinhas || 0);
+    setTotalImportados(registros);
+    setTipoServico(data.servico?.tipo || '');
+
+    const temKpisAuto = cfg?.indicadoresAutomaticosConfirmados;
+    const temKpis = (cfg?.kpis?.length || 0) > 0;
+    const temUpload = cols.length > 0 || ups.length > 0;
+    const novoStatus: EtapasStatus = {
+      upload: temUpload ? 'done' : 'pending',
+      indicadoresAuto: temKpisAuto ? 'done' : 'pending',
+      revisao: temUpload ? 'done' : 'pending',
+      config: temKpis ? 'done' : 'pending',
+    };
+    if (temKpisAuto && temUpload) novoStatus.config = 'done';
+    setStatus(novoStatus);
+
+    onPlanilhasChange?.({
+      totalRegistros: registros,
+      planilhas: ups,
+      temUpload,
+    });
+
+    return { cols, ups, registros, temUpload, cfg };
+  }, [onPlanilhasChange]);
+
   useEffect(() => {
     if (carregadoRef.current && recargaKey === 0) return;
     carregadoRef.current = true;
     (async () => {
       try {
-        const res = await fetch(`/api/contracts/${contractId}/servicos/${servicoId}/padrao`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (!res.ok) return;
-        const data = await res.json();
-        const cols: ColunaDetectada[] = filtrarColunasValidas(
-          data.servico?.padraoPlanilha?.colunas || []
-        );
-        const ups: PlanilhaItem[] = data.uploads?.ultimos || [];
-        const cfg = data.servico?.configDashboard;
-        setColunas(cols);
-        setPlanilhas(ups);
-        setTotalLinhas(data.uploads?.totalLinhas || 0);
-        setTotalImportados(data.uploads?.totalImportados || 0);
-        setTipoServico(data.servico?.tipo || '');
+        const [data, contrato] = await Promise.all([
+          servicoService.getPadrao(contractId, servicoId),
+          contractService.buscar(contractId),
+        ]);
+        setContratoNome(contrato.numeroContrato || 'Contrato');
+        const { cfg, temUpload } = aplicarDadosPadrao(data);
         if (cfg?.kpis?.length) setKpis(JSON.parse(JSON.stringify(cfg.kpis)));
         if (cfg?.graficos?.length) setGraficos(JSON.parse(JSON.stringify(cfg.graficos)));
         if (data.valoresCaminhao) {
@@ -312,20 +462,10 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
           }
           setConstantes(g);
         }
-        const temKpisAuto = cfg?.indicadoresAutomaticosConfirmados;
-        const temKpis = (cfg?.kpis?.length || 0) > 0;
-        const novoStatus: EtapasStatus = {
-          upload: cols.length > 0 ? 'done' : 'pending',
-          indicadoresAuto: temKpisAuto ? 'done' : 'pending',
-          revisao: cols.length > 0 ? 'done' : 'pending',
-          config: temKpis ? 'done' : 'pending',
-        };
-        if (temKpisAuto && temKpis) novoStatus.config = 'done';
-        setStatus(novoStatus);
-        if (temKpisAuto && cols.length > 0) setEtapa('revisao');
+        if (cfg?.indicadoresAutomaticosConfirmados && temUpload) setEtapa('revisao');
       } catch { /* silent */ }
     })();
-  }, [contractId, servicoId, token, recargaKey]);
+  }, [contractId, servicoId, token, recargaKey, aplicarDadosPadrao]);
 
   useEffect(() => {
     if (!temPlanilha) return;
@@ -333,42 +473,28 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
     setLoadingDados(true);
     setLoadingExec(true);
     Promise.all([
-      fetch(`/api/contracts/${contractId}/servicos/${servicoId}/dados-brutos?limite=100`, { headers: { Authorization: `Bearer ${token}` } }),
-      fetch(`/api/contracts/${contractId}/servicos/${servicoId}/kpi-exec-metrics`, { headers: { Authorization: `Bearer ${token}` } }),
-    ]).then(async ([r1, r2]) => {
+      servicoService.getDadosBrutos(contractId, servicoId, 100),
+      servicoService.getKpiExecMetrics(contractId, servicoId),
+    ]).then(async ([brutos, metrics]) => {
       if (!ativo) return;
-      if (r1.ok) setDados((await r1.json()).dados || []);
-      if (r2.ok) setExecMetrics(await r2.json());
+      setDados(brutos.dados || []);
+      setExecMetrics(metrics);
     }).catch(() => {}).finally(() => {
       if (ativo) { setLoadingDados(false); setLoadingExec(false); }
     });
     return () => { ativo = false; };
   }, [contractId, servicoId, token, temPlanilha]);
 
-  useEffect(() => {
-    if (kpisInlineCarregadoRef.current) return;
-    kpisInlineCarregadoRef.current = true;
-    setCarregandoKpisInline(true);
-    kpiUniversalService.listar()
-      .then(r => {
-        setKpisUniversaisInline(r.kpis);
-        setKpisUniversaisInlineIds(new Set(kpis.filter(k => (k as any).origemUniversal).map(k => (k as any).origemUniversal as string).filter(Boolean)));
-      })
-      .catch(() => setKpisUniversaisInline([]))
-      .finally(() => setCarregandoKpisInline(false));
-  }, [kpis]);
-
   const salvarConfig = useCallback(async (novosKpis: KpiConfig[], novosGraficos: GraficoConfig[]) => {
     setAutoSave('saving');
     try {
-      await fetch(`/api/contracts/${contractId}/servicos/${servicoId}/config-dashboard`, {
-        method: 'PUT',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ configDashboard: { kpis: novosKpis.filter(k => k.ativo), graficos: novosGraficos.filter(g => g.ativo) } }),
+      await servicoService.saveConfigDashboard(contractId, servicoId, {
+        kpis: novosKpis.filter(k => k.ativo !== false),
+        graficos: novosGraficos.filter(g => g.ativo),
       });
       setAutoSave('saved');
       setTimeout(() => setAutoSave('idle'), 2000);
-      if (novosKpis.filter(k => k.ativo).length > 0) setStatus(prev => ({ ...prev, config: 'done' }));
+      if (novosKpis.filter(k => k.ativo !== false).length > 0) setStatus(prev => ({ ...prev, config: 'done' }));
     } catch { setAutoSave('idle'); }
   }, [contractId, servicoId, token]);
 
@@ -376,7 +502,12 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
     if (!configFaturamento) return;
 
     if (configFaturamento.tipoCobranca === 'tonelada_tipo_caminhao') {
-      const temValorTipo = [configFaturamento.valorMini, configFaturamento.valorTruck, configFaturamento.valorToco]
+      const temValorTipo = [
+        configFaturamento.valorMini,
+        configFaturamento.valorTruck,
+        configFaturamento.valorToco,
+        configFaturamento.valorBasculante,
+      ]
         .some(v => v != null && v > 0);
       if (!temValorTipo) {
         adicionarToast('Informe pelo menos um valor para Mini, Truck ou Toco', 'warning');
@@ -392,11 +523,7 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
 
     setFaturamentoSaving(true);
     try {
-      await fetch(`/api/contracts/${contractId}/servicos/${servicoId}/config-faturamento`, {
-        method: 'PUT',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ configFaturamento: cfgParaSalvar }),
-      });
+      await servicoService.saveConfigFaturamento(contractId, servicoId, cfgParaSalvar);
       setConfigFaturamento(cfgParaSalvar);
 
       const kpisSincronizados = sincronizarKpisComFaturamento(kpis, cfgParaSalvar);
@@ -416,27 +543,25 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
     }
   }, [contractId, servicoId, configFaturamento, colunas.length, token, adicionarToast, kpis, graficos, salvarConfig]);
 
-  const importarPlanilhaValidada = async (file: File, relatorio?: any) => {
+  const ehRocada = tipoServico === 'rocadeira';
+
+  const importarPlanilhaValidada = async (file: File, relatorio?: any): Promise<boolean> => {
     setUploading(true);
     setUploadPct(0);
     const iv = setInterval(() => setUploadPct(p => Math.min(p + 15, 85)), 200);
     try {
-      const fd = new FormData();
-      fd.append('planilha', file);
-      fd.append('servico_id', servicoId);
-      const res = await fetch('/api/coleta/upload', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-        body: fd,
-      });
+      const estrategia = temPlanilha ? 'atualizar_data' as const : undefined;
+      const data = await coletaService.uploadPlanilha(file, servicoId, estrategia);
       clearInterval(iv);
       setUploadPct(100);
-      if (res.ok) {
-        const data = await res.json();
+      {
         const inconsistentes = data.viagensInconsistentes
           ?? data.resumo?.viagensInconsistentes
           ?? relatorio?.viagensInconsistentesTotal
           ?? relatorio?.viagensIncompletas
+          ?? 0;
+        const corrigidas = data.viagensCorrigidas
+          ?? data.resumo?.viagensCorrigidas
           ?? 0;
         const validasDashboard = data.viagensValidasDashboard
           ?? data.resumo?.viagensValidasDashboard
@@ -444,8 +569,16 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
           ?? relatorio?.viagensCompletas
           ?? (data.importados - inconsistentes);
         const importados = data.importados ?? data.importadas ?? 0;
+        const uploadsRemovidos = data.consolidacao?.uploadsRemovidos ?? 0;
+        const registrosPreservados = data.consolidacao?.registrosPreservados ?? 0;
 
-        setResumoImportacao({ importados, validasDashboard, inconsistentes });
+        setResumoImportacao({
+          importados,
+          validasDashboard,
+          inconsistentes,
+          uploadsRemovidos,
+          registrosPreservados,
+        });
         setImportacaoConcluida(true);
         setStatus(prev => ({ ...prev, upload: 'done', revisao: 'done' }));
         setEtapa('revisao');
@@ -453,20 +586,35 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
         carregadoRef.current = false;
         setRecargaKey(k => k + 1);
 
+        const extras: string[] = [];
+        if (uploadsRemovidos > 0) extras.push(`${uploadsRemovidos} planilha(s) antiga(s) removida(s)`);
+        if (registrosPreservados > 0) extras.push(`${registrosPreservados} registro(s) de dias só no sistema preservados`);
+        const sufixo = extras.length ? ` ${extras.join('; ')}.` : '';
+
         if (inconsistentes > 0) {
           adicionarToast(
-            `PDF baixado. ${validasDashboard} viagem(ns) no dashboard. ${inconsistentes} inconsistente(s) fora dos cálculos.`,
+            `${validasDashboard} viagem(ns) na planilha ativa. ${inconsistentes} linha(s) rejeitada(s).${sufixo}`,
             'warning'
           );
+        } else if (corrigidas > 0) {
+          adicionarToast(
+            `${validasDashboard} viagem(ns) importada(s). ${corrigidas} linha(s) corrigida(s) automaticamente.${sufixo}`,
+            'success'
+          );
         } else {
-          adicionarToast(`${validasDashboard} viagem(ns) importada(s) para o dashboard.`, 'success');
+          adicionarToast(
+            data.mensagem || `${validasDashboard} viagem(ns) importada(s) com sucesso.${sufixo}`,
+            'success'
+          );
         }
-      } else {
-        const errData = await res.json();
-        adicionarToast(errData.error || 'Erro no upload', 'error');
       }
-    } catch {
-      adicionarToast('Erro no upload', 'error');
+      return true;
+    } catch (err) {
+      const data = isAxiosError(err) ? (err.response?.data as { error?: string; detalhe?: string }) : null;
+      const msg = data?.error || (isAxiosError(err) ? 'Erro no upload' : 'Erro no upload');
+      const detalhe = data?.detalhe && data.detalhe !== msg ? ` (${data.detalhe})` : '';
+      adicionarToast(`${msg}${detalhe}`, 'error');
+      return false;
     } finally {
       clearInterval(iv);
       setUploading(false);
@@ -479,70 +627,165 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
     setAnalisandoViagens(true);
     setDadosViagens(null);
     try {
-      const fd = new FormData();
-      fd.append('planilha', file);
-      const res = await fetch('/api/qualidade-coleta/analisar-viagens', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-        body: fd,
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setDadosViagens(data);
-        return data;
-      }
-      const errData = await res.json().catch(() => ({ error: 'Erro ao analisar viagens' }));
-      adicionarToast(errData.error || 'Erro ao analisar viagens', 'error');
-      return null;
-    } catch {
-      adicionarToast('Erro ao conectar com o servidor', 'error');
+      const data = await qualidadeColetaService.analisarViagens(file, contractId);
+      setDadosViagens(data);
+      return data;
+    } catch (err) {
+      const msg = isAxiosError(err)
+        ? (err.response?.data as { error?: string })?.error || 'Erro ao analisar viagens'
+        : 'Erro ao analisar viagens';
+      adicionarToast(msg, 'error');
       return null;
     } finally {
       setAnalisandoViagens(false);
     }
   };
 
-  // ─── Validação + relatório + importação das viagens válidas ───
-  const handleValidarDados = async (file: File) => {
+  // ─── Roçada: preview multi-modelo → importação (sem validação de viagem) ───
+  const handleValidarRocada = async (file: File) => {
     setArquivoValidacao(file);
     setValidando(true);
     setValidacaoData(null);
     setDadosViagens(null);
+    setConferenciaDiaria(null);
     setImportacaoConcluida(false);
     setResumoImportacao(null);
     setModoValidacao(true);
     try {
-      const fd = new FormData();
-      fd.append('planilha', file);
-      fd.append('servico_id', servicoId);
-      const res = await fetch('/api/qualidade-coleta/preview', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-        body: fd,
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setValidacaoData(data);
-        if (data.sucesso) {
-          const relatorio = await analisarViagensArquivo(file);
-          if (relatorio) {
-            const inconsistentes = (relatorio.viagensInconsistentesTotal ?? relatorio.viagensIncompletas) || 0;
-            if (inconsistentes > 0) {
-              const pdfOk = await gerarPdfViagensDeRelatorio(relatorio);
-              if (!pdfOk) {
-                adicionarToast('Não foi possível gerar o PDF — importação das viagens válidas continuará.', 'warning');
-              }
-            }
-            await importarPlanilhaValidada(file, relatorio);
-          }
-        }
-      } else {
-        const errData = await res.json().catch(() => ({ error: 'Erro ao validar planilha' }));
-        adicionarToast(errData.error || 'Erro ao validar planilha', 'error');
-        setModoValidacao(false);
+      const preview = await coletaService.previewRocada(file);
+      const podeImportar = preview.podeImportar !== false
+        && preview.sucesso
+        && (preview.resumo?.registros ?? 0) > 0
+        && (preview.resumo?.areaTotalM2 ?? 0) > 0;
+
+      setValidacaoData({
+        sucesso: podeImportar,
+        mensagem: preview.mensagem,
+        arquivo: preview.arquivo,
+        resumoRocada: preview.resumo,
+        avisos: preview.avisos,
+        abasUsadas: preview.abasUsadas,
+        modelo: preview.modelo,
+        linhasSemArea: preview.linhasSemArea ?? preview.resumo?.linhasSemArea ?? 0,
+        semColunaArea: preview.semColunaArea ?? preview.resumo?.semColunaArea ?? false,
+        amostraSemArea: preview.amostraSemArea || [],
+        podeImportar,
+      } as any);
+
+      if (!podeImportar) {
+        const msg = preview.semColunaArea || preview.resumo?.semColunaArea
+          ? 'Planilha sem coluna de metragem (m²/área). Inclua a coluna e envie novamente.'
+          : preview.mensagem || 'Nenhuma linha com m²/área válida nesta planilha.';
+        adicionarToast(msg, 'error');
+        return;
       }
-    } catch {
-      adicionarToast('Erro ao conectar com o servidor para validação', 'error');
+
+      const semArea = preview.linhasSemArea ?? preview.resumo?.linhasSemArea ?? 0;
+      adicionarToast(
+        `Modelo ${preview.resumo.modelo}: ${preview.resumo.registros} registro(s), `
+        + `${preview.resumo.areaTotalM2.toLocaleString('pt-BR')} m², ${preview.resumo.dias} dia(s).`
+        + (semArea > 0 ? ` ${semArea} linha(s) sem m² ignorada(s).` : ''),
+        semArea > 0 ? 'warning' : 'success',
+      );
+
+      const importou = await importarPlanilhaValidada(file, {
+        viagensValidasDashboard: preview.resumo.registros,
+        viagensCompletas: preview.resumo.registros,
+      });
+      if (importou) {
+        adicionarToast('Planilha de roçada importada. Dashboard atualizado com área (m²) por dia/bairro.', 'info');
+      }
+    } catch (err) {
+      const msg = isAxiosError(err)
+        ? (err.response?.data as { error?: string })?.error || 'Erro ao validar planilha de roçada'
+        : 'Erro ao conectar com o servidor';
+      adicionarToast(msg, 'error');
+      setModoValidacao(false);
+    } finally {
+      setValidando(false);
+    }
+  };
+
+  // ─── Validação → PDF de saúde → importação automática ───
+  const handleValidarDados = async (file: File) => {
+    if (ehRocada) {
+      await handleValidarRocada(file);
+      return;
+    }
+
+    setArquivoValidacao(file);
+    setValidando(true);
+    setValidacaoData(null);
+    setDadosViagens(null);
+    setConferenciaDiaria(null);
+    setImportacaoConcluida(false);
+    setResumoImportacao(null);
+    setModoValidacao(true);
+    try {
+      const data = await qualidadeColetaService.preview(file, { servico_id: servicoId });
+      setValidacaoData(data);
+      if (!data.sucesso) {
+        adicionarToast(data.mensagem || data.erro || 'Planilha com problemas de estrutura. Corrija e tente novamente.', 'error');
+        setModoValidacao(false);
+        return;
+      }
+
+      const relatorio = await analisarViagensArquivo(file);
+      if (!relatorio) {
+        adicionarToast('Análise de viagens indisponível.', 'warning');
+        return;
+      }
+
+      const pdfOk = await gerarPdfViagensDeRelatorio(relatorio, { silencioso: true });
+      if (!pdfOk) {
+        adicionarToast('Não foi possível gerar o PDF de saúde dos dados.', 'warning');
+      }
+
+      let conf: typeof conferenciaDiaria = null;
+      if (temPlanilha) {
+        setConferindoDiaria(true);
+        try {
+          conf = await coletaService.conferenciaDiaria(file, servicoId);
+          setConferenciaDiaria(conf);
+          if (conf.diasDivergentes > 0) {
+            adicionarToast(
+              `${conf.diasDivergentes} dia(s) diferem do sistema — a importação atualizará conforme a planilha.`,
+              'warning',
+            );
+          } else if (conf.diasNovos > 0) {
+            adicionarToast(`${conf.diasNovos} dia(s) novo(s) serão importados.`, 'info');
+          }
+        } catch (err) {
+          const msg = isAxiosError(err)
+            ? (err.response?.data as { error?: string })?.error || 'Erro na conferência diária'
+            : 'Erro na conferência diária';
+          adicionarToast(msg, 'warning');
+        } finally {
+          setConferindoDiaria(false);
+        }
+      }
+
+      if ((conf?.diasBloqueados ?? 0) > 0) {
+        adicionarToast('Importação bloqueada: há dias em ciclo fechado. Revise o relatório.', 'error');
+        if (pdfOk) adicionarToast('PDF de saúde dos dados baixado — corrija os bloqueios e envie novamente.', 'info');
+        return;
+      }
+
+      const validas = relatorio.viagensValidasDashboard ?? relatorio.viagensCompletas ?? 0;
+      if (validas <= 0) {
+        adicionarToast('Nenhuma viagem válida para importar. Veja o PDF de saúde baixado.', 'warning');
+        return;
+      }
+
+      const importou = await importarPlanilhaValidada(file, relatorio);
+      if (importou && pdfOk) {
+        adicionarToast('PDF de saúde dos dados baixado automaticamente.', 'info');
+      }
+    } catch (err) {
+      const msg = isAxiosError(err)
+        ? (err.response?.data as { error?: string })?.error || 'Erro ao validar planilha'
+        : 'Erro ao conectar com o servidor para validação';
+      adicionarToast(msg, 'error');
       setModoValidacao(false);
     } finally {
       setValidando(false);
@@ -550,8 +793,8 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
   };
 
   const handleSelecionarPlanilha = (file: File) => {
-    if (!file.name.match(/\.(xlsx|xls)$/i)) {
-      adicionarToast('Selecione um arquivo .xlsx ou .xls', 'error');
+    if (!file.name.match(/\.(xlsx|xls|xlsm)$/i)) {
+      adicionarToast('Selecione um arquivo .xlsx, .xls ou .xlsm', 'error');
       return;
     }
     handleValidarDados(file);
@@ -566,17 +809,35 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
     setModoValidacao(false);
     setValidacaoData(null);
     setDadosViagens(null);
+    setConferenciaDiaria(null);
     setArquivoValidacao(null);
     setImportacaoConcluida(false);
     setResumoImportacao(null);
   };
 
+  const obterNomePdfSaudeDados = () => gerarNomePdfArquivo({
+    contratoNome,
+    tipoServico: labelTipoServicoArquivo(tipoServico, TIPOS_SERVICO_LABELS as Record<string, string>),
+    sufixo: 'Saude_Dados',
+  });
+
   const montarHtmlPdfViagens = (relatorio: any) => {
     const viagens = relatorio.viagens || [];
     const inconsistentes = (relatorio.viagensInconsistentesTotal ?? relatorio.viagensIncompletas) || 0;
     const validas = relatorio.viagensValidasDashboard ?? relatorio.viagensCompletas ?? 0;
+    const descartadas = relatorio.linhasDescartadasSemDados ?? 0;
+    const dataRelatorio = formatarDataArquivoPdf();
+    const tipoLabel = labelTipoServicoArquivo(tipoServico, TIPOS_SERVICO_LABELS as Record<string, string>);
 
-    const linhasTabela = viagens.map((v: any) => `
+    const filtrarProblemasDashboard = (problemas: string[] | undefined) =>
+      (problemas || []).filter((p) => {
+        const pl = p.toLowerCase();
+        return !pl.includes('placa será unificada') && !pl.startsWith('corrigido automaticamente');
+      });
+
+    const linhasTabela = viagens.map((v: any) => {
+      const probs = filtrarProblemasDashboard(v.problemas);
+      return `
       <tr>
         <td>${v.linha}</td>
         <td>${v.data || '—'}</td>
@@ -585,11 +846,19 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
         <td>${v.rota || '—'}</td>
         <td>${v.kmTotal != null ? v.kmTotal.toLocaleString('pt-BR', { maximumFractionDigits: 1 }) : (v.kmTotalCalculado != null ? v.kmTotalCalculado.toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + '*' : '—')}</td>
         <td>${v.pesoTotal != null ? Number(v.pesoTotal).toLocaleString('pt-BR', { maximumFractionDigits: 1 }) : '—'}</td>
-        <td style="color:#b45309; font-size:9px">${(v.problemas || []).join('; ') || '—'}</td>
+        <td style="color:#b45309; font-size:9px">${probs.join('; ') || '—'}</td>
       </tr>
-    `).join('');
+    `;
+    }).join('');
 
-    const problemasHtml = (relatorio.problemasAgrupados || []).map((p: any) => `
+    const ap = relatorio.resumoPlacas;
+    const resumoPlacasHtml = ap?.alerta ? `
+  <div class="aviso" style="background:#fef2f2;border-color:#fecaca;color:#991b1b">
+    <strong>Placas:</strong> ${ap.alerta}
+  </div>` : '';
+
+    const problemasLista = relatorio.problemasDashboard || relatorio.problemasAgrupados || [];
+    const problemasHtml = problemasLista.map((p: any) => `
       <div style="display:flex; justify-content:space-between; padding:6px 10px; background:#fef2f2; border-radius:6px; margin-bottom:4px; font-size:13px;">
         <span>${p.tipo}</span>
         <span style="font-weight:700; color:#dc2626">${p.quantidade} viagem(ns)</span>
@@ -627,28 +896,43 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
 </head>
 <body>
   <div class="header">
-    <h1>Relatório de Dados Inconsistentes</h1>
-    <p>Arquivo: ${relatorio.nomeArquivo || '—'} • Aba: ${relatorio.aba || '—'}</p>
+    <h1>Relatório de Saúde dos Dados</h1>
+    <p style="font-size:13px; font-weight:600; color:#334155; margin:6px 0 2px">
+      Contrato: ${contratoNome} • Tipo: ${tipoLabel} • Data: ${dataRelatorio}
+    </p>
+    <p>Serviço: ${servicoNome} • Arquivo: ${relatorio.nomeArquivo || '—'} • Aba: ${relatorio.aba || '—'}</p>
   </div>
 
   <div class="summary">
     <div class="card"><div class="num">${relatorio.totalViagens || 0}</div><div class="label">Total de Viagens</div></div>
     <div class="card completas"><div class="num">${validas}</div><div class="label">Válidas (dashboard)</div></div>
     <div class="card incompletas"><div class="num">${inconsistentes}</div><div class="label">Inconsistentes</div></div>
+    ${descartadas > 0 ? `<div class="card"><div class="num">${descartadas}</div><div class="label">Ignoradas (sem dados)</div></div>` : ''}
     <div class="card"><div class="num">${relatorio.percentualCompleto || 0}%</div><div class="label">% Válidas</div></div>
   </div>
 
   <div class="aviso">
-    As ${validas} viagem(ns) válidas serão importadas para o dashboard. As ${inconsistentes} inconsistente(s) abaixo ficam fora dos cálculos.
+    As ${validas} viagem(ns) válidas entram no dashboard. As ${inconsistentes} inconsistente(s) ficam fora dos KPIs.
+    ${descartadas > 0 ? `${descartadas} linha(s) sem placa, KM Total e Peso Total foram ignoradas e não entram no sistema. ` : ''}
+    Regras: KM máx. 300, peso &gt; 0, sem negativos, horas com ":" (não ";").
   </div>
 
-  <div class="section-title">Problemas Encontrados</div>
+  ${(relatorio.regrasSaude || []).length > 0 ? `
+  <div class="section-title">O que precisa para entrar no dashboard</div>
+  <ul style="font-size:11px; color:#475569; margin:0 0 12px 18px; padding:0;">
+    ${(relatorio.regrasSaude || []).map((r: string) => `<li>${r}</li>`).join('')}
+  </ul>
+  ` : ''}
+
+  <div class="section-title">Problemas que excluem viagens do dashboard</div>
   <div class="problemas-box">
-    ${problemasHtml || '<p style="color:#16a34a; font-weight:600">Nenhum problema encontrado.</p>'}
+    ${problemasHtml || '<p style="color:#16a34a; font-weight:600">Nenhum bloqueio — todas as viagens identificadas entram no dashboard.</p>'}
   </div>
+
+  ${resumoPlacasHtml}
 
   ${viagens.length > 0 ? `
-  <div class="section-title">Detalhamento — Viagens Inconsistentes (${viagens.length} registro(s))</div>
+  <div class="section-title">Amostra — viagens fora do dashboard (${viagens.length}${viagens.length >= 500 ? '+' : ''})</div>
   <table>
     <thead>
       <tr>
@@ -674,36 +958,18 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
     setGerandoPdfViagens(true);
     try {
       const html = montarHtmlPdfViagens(relatorio);
-      const res = await fetch('/api/generate-pdf', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ html, filename: 'relatorio_dados_inconsistentes' }),
-      });
-
-      if (res.ok) {
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'relatorio_dados_inconsistentes.pdf';
-        a.click();
-        URL.revokeObjectURL(url);
-        if (!opts?.silencioso) {
-          adicionarToast('PDF com dados inconsistentes gerado!', 'success');
-        }
-        return true;
-      }
-      const err = await res.json().catch(() => ({ error: 'Erro ao gerar PDF' }));
+      const filename = obterNomePdfSaudeDados();
+      await pdfService.gerarEBaixar(html, filename, 'default');
       if (!opts?.silencioso) {
-        adicionarToast(err.error || 'Erro ao gerar PDF', 'error');
+        adicionarToast('PDF com dados inconsistentes gerado!', 'success');
       }
-      return false;
-    } catch {
+      return true;
+    } catch (err) {
       if (!opts?.silencioso) {
-        adicionarToast('Erro ao gerar PDF', 'error');
+        const msg = isAxiosError(err)
+          ? (err.response?.data as { error?: string })?.error || 'Erro ao gerar PDF'
+          : 'Erro ao gerar PDF';
+        adicionarToast(msg, 'error');
       }
       return false;
     } finally {
@@ -719,7 +985,8 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
   const mensagemProcessamentoUpload = () => {
     if (validando) return 'Validando estrutura da planilha...';
     if (analisandoViagens) return 'Analisando viagens (KM, peso, rota)...';
-    if (gerandoPdfViagens) return 'Gerando PDF com dados inconsistentes...';
+    if (conferindoDiaria) return 'Conferindo planilha vs sistema (dia a dia)...';
+    if (gerandoPdfViagens) return 'Gerando PDF de saúde dos dados...';
     if (uploading) return 'Importando viagens válidas para o dashboard...';
     return '';
   };
@@ -727,7 +994,7 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
   const handleAutoConfirm = useCallback((indicadores: KpiConfig[], graficosCfg: GraficoConfig[]) => {
     const novosKpis = [...kpis, ...indicadores]; const novosGraficos = [...graficos, ...graficosCfg];
     setKpis(novosKpis); setGraficos(novosGraficos);
-    setStatus(prev => ({ ...prev, indicadoresAuto: 'done', config: novosKpis.filter(k => k.ativo).length > 0 ? 'done' : 'pending' }));
+    setStatus(prev => ({ ...prev, indicadoresAuto: 'done', config: novosKpis.filter(k => k.ativo !== false).length > 0 ? 'done' : 'pending' }));
     setEtapa('revisao'); salvarConfig(novosKpis, novosGraficos);
     adicionarToast(`\u2705 ${indicadores.length} indicador(es) autom\u00e1tico(s) criados!`, 'success');
   }, [kpis, graficos, salvarConfig, adicionarToast]);
@@ -737,24 +1004,49 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
     setEtapa('revisao'); adicionarToast('\u23ed Indicadores autom\u00e1ticos pulados. Configure manualmente depois.', 'info');
   }, [adicionarToast]);
 
-  const excluirPlanilha = async (id: number) => {
+  const excluirPlanilha = async (uploadId: number) => {
+    const id = Number(uploadId);
+    if (!Number.isFinite(id) || id <= 0) return;
+    if (excluindoPlanilhaId === id) return;
+
+    setExcluindoPlanilhaId(id);
     try {
-      const res = await fetch(`/api/coleta/uploads/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
-      if (res.ok) {
-        adicionarToast('Planilha exclu\u00edda!', 'success');
-        setPlanilhas(p => p.filter(x => x.id !== id));
-        if (planilhas.length <= 1) { setColunas([]); setDados([]); setKpis([]); setGraficos([]);
-          setStatus({ upload: 'pending', indicadoresAuto: 'pending', revisao: 'pending', config: 'pending' }); }
-      } else adicionarToast('Erro ao excluir', 'error');
-    } catch { adicionarToast('Erro ao excluir', 'error'); }
+      await coletaService.excluirUpload(id);
+      const data = await servicoService.getPadrao(contractId, servicoId);
+      const { ups, temUpload } = aplicarDadosPadrao(data);
+
+      if (!temUpload) {
+        setDados([]);
+        setExecMetrics(null);
+        setEtapa('upload');
+      } else {
+        const [brutos, metrics] = await Promise.all([
+          servicoService.getDadosBrutos(contractId, servicoId, 100),
+          servicoService.getKpiExecMetrics(contractId, servicoId),
+        ]);
+        setDados(brutos.dados || []);
+        setExecMetrics(metrics);
+      }
+
+      if (qualidadeUploadId === id) {
+        setQualidadeAberta(false);
+        setQualidadeUploadId(null);
+      }
+
+      adicionarToast('Planilha excluída!', 'success');
+    } catch (err) {
+      const msg = isAxiosError(err)
+        ? (err.response?.data as { error?: string })?.error || 'Erro ao excluir planilha'
+        : 'Erro ao excluir planilha';
+      adicionarToast(msg, 'error');
+    } finally {
+      setExcluindoPlanilhaId(null);
+    }
   };
 
   const alterarTipo = async (nome: string, tipo: string) => {
     try {
-      await fetch(`/api/contracts/${contractId}/servicos/${servicoId}/colunas/tipo`, {
-        method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ nome, tipo }),
-      });
+      await servicoService.updateColunasTipo(contractId, servicoId, { nome, tipo });
       adicionarToast(`Coluna "${nome}" \u2192 ${tipo}`, 'success');
       carregadoRef.current = false; setRecargaKey(k => k + 1);
     } catch { adicionarToast('Erro ao alterar tipo', 'error'); }
@@ -818,7 +1110,7 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
                 {arquivoValidacao ? (arquivoValidacao.size / 1024).toFixed(1) + ' KB' : ''}
               </div>
             </div>
-            {(validando || analisandoViagens || gerandoPdfViagens || uploading) && (
+            {(validando || analisandoViagens || conferindoDiaria || gerandoPdfViagens || uploading) && (
               <div style={{
                 width: '18px', height: '18px',
                 border: '2px solid #e2e8f0', borderTopColor: '#6366f1',
@@ -827,22 +1119,78 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
             )}
           </div>
 
-          {(validando || analisandoViagens || gerandoPdfViagens || uploading) && mensagemProcessamentoUpload() && (
+          {(validando || analisandoViagens || conferindoDiaria || gerandoPdfViagens || uploading) && mensagemProcessamentoUpload() && (
             <p style={{ fontSize: '0.72rem', color: '#64748b', margin: '0 0 0.5rem' }}>
               {mensagemProcessamentoUpload()}
             </p>
           )}
 
-          {/* Preview de qualidade */}
-          <QualidadePlanilhaPreview
-            dados={validacaoData}
-            carregando={validando || analisandoViagens || gerandoPdfViagens || uploading}
-          />
+          {/* Preview de qualidade (coleta) ou resumo multi-modelo (roçada) */}
+          {ehRocada && (validacaoData?.resumoRocada || validacaoData?.semColunaArea || (validacaoData?.linhasSemArea ?? 0) > 0) ? (
+            <div style={{
+              background: validacaoData?.podeImportar === false || validacaoData?.sucesso === false ? '#fff7ed' : '#f0fdf4',
+              border: `1px solid ${validacaoData?.podeImportar === false || validacaoData?.sucesso === false ? '#fdba74' : '#86efac'}`,
+              borderRadius: '10px',
+              padding: '0.75rem 1rem', marginBottom: '0.5rem', fontSize: '0.78rem',
+              color: validacaoData?.podeImportar === false || validacaoData?.sucesso === false ? '#9a3412' : '#166534',
+            }}>
+              <strong>
+                {validacaoData?.podeImportar === false || validacaoData?.sucesso === false
+                  ? 'Roçada — metragem obrigatória'
+                  : `Modelo ${validacaoData.modelo || validacaoData.resumoRocada?.modelo}`}
+              </strong>
+              {validacaoData?.resumoRocada && (
+                <div style={{ marginTop: '0.35rem', color: validacaoData?.sucesso === false ? '#c2410c' : '#15803d' }}>
+                  {validacaoData.resumoRocada.registros} registro(s) com m² ·{' '}
+                  {Number(validacaoData.resumoRocada.areaTotalM2 || 0).toLocaleString('pt-BR')} m² ·{' '}
+                  {validacaoData.resumoRocada.dias} dia(s)
+                  {Array.isArray(validacaoData.abasUsadas) && validacaoData.abasUsadas.length > 0 && (
+                    <> · abas: {validacaoData.abasUsadas.join(', ')}</>
+                  )}
+                </div>
+              )}
+              {(validacaoData?.semColunaArea || (validacaoData?.linhasSemArea ?? 0) > 0) && (
+                <div style={{
+                  marginTop: '0.45rem', padding: '0.45rem 0.55rem', borderRadius: '8px',
+                  background: '#fffbeb', border: '1px solid #fcd34d', color: '#92400e', fontSize: '0.72rem',
+                }}>
+                  {validacaoData.semColunaArea
+                    ? 'Não foi encontrada coluna de metragem/área (m²). Inclua METRAGEM, TOTAL (M²), Área ou EXECUTADO.'
+                    : `${validacaoData.linhasSemArea} linha(s) sem m²/área — essas linhas não entram no dashboard.`}
+                </div>
+              )}
+              {Array.isArray(validacaoData?.amostraSemArea) && validacaoData.amostraSemArea.length > 0 && (
+                <ul style={{ margin: '0.4rem 0 0', paddingLeft: '1.1rem', color: '#b45309', fontSize: '0.7rem' }}>
+                  {validacaoData.amostraSemArea.slice(0, 5).map((a: any, i: number) => (
+                    <li key={i}>
+                      Aba {a.aba}, linha {a.linha}
+                      {a.bairro ? ` (${a.bairro})` : ''}
+                      {a.data ? ` · ${a.data}` : ''}: {a.motivo}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {Array.isArray(validacaoData.avisos) && validacaoData.avisos.length > 0 && (
+                <ul style={{ margin: '0.4rem 0 0', paddingLeft: '1.1rem', color: '#b45309', fontSize: '0.72rem' }}>
+                  {validacaoData.avisos.slice(0, 4).map((a: string, i: number) => (
+                    <li key={i}>{a}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          ) : (
+            <QualidadePlanilhaPreview
+              dados={validacaoData}
+              carregando={validando || analisandoViagens || conferindoDiaria || gerandoPdfViagens || uploading}
+            />
+          )}
 
           {uploading && (
             <div className="upload-progress" style={{ marginTop: '0.5rem' }}>
               <div className="upload-bar"><div className="upload-fill" style={{ width: `${uploadPct}%` }} /></div>
-              <div className="upload-pct">Importando viagens válidas... {uploadPct}%</div>
+              <div className="upload-pct">
+                {ehRocada ? `Importando registros de roçada... ${uploadPct}%` : `Importando viagens válidas... ${uploadPct}%`}
+              </div>
             </div>
           )}
 
@@ -857,7 +1205,12 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
               </span>
               {resumoImportacao.inconsistentes > 0 && (
                 <span style={{ color: '#b45309', display: 'block', marginTop: '0.2rem' }}>
-                  {resumoImportacao.inconsistentes} viagem(ns) inconsistente(s) ficaram fora dos cálculos. O PDF foi baixado automaticamente.
+                  {resumoImportacao.inconsistentes} viagem(ns) inconsistente(s) ficaram fora dos cálculos. O PDF de saúde foi baixado automaticamente.
+                </span>
+              )}
+              {resumoImportacao.inconsistentes === 0 && (
+                <span style={{ color: '#15803d', display: 'block', marginTop: '0.2rem' }}>
+                  PDF de saúde baixado automaticamente.
                 </span>
               )}
             </div>
@@ -899,7 +1252,7 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
 
               {analisandoViagens && !dadosViagens && (
                 <p style={{ fontSize: '0.72rem', color: '#64748b', margin: '0.25rem 0 0.5rem' }}>
-                  Verificando cada linha: KM, peso, rota e valores negativos...
+                  Verificando cada linha: KM (máx. 300), peso, horas, rota, placas e negativos...
                 </p>
               )}
 
@@ -917,44 +1270,130 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
                   background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: '8px',
                   padding: '0.5rem 0.65rem', marginBottom: '0.5rem', fontSize: '0.72rem', color: '#1e40af',
                 }}>
-                  Apenas viagens <strong>completas e sem valores negativos</strong> entram no dashboard.
-                  As demais ficam registradas na planilha importada para consulta.
+                  Regras do dashboard: <strong>KM ≤ 300</strong>, <strong>peso &gt; 0</strong>,{' '}
+                  <strong>sem valores negativos</strong>, horas com <strong>:</strong> (não <strong>;</strong>).
+                  Linhas fora dessas regras ficam importadas só para consulta, não nos KPIs.
                 </div>
               )}
 
               {/* Resultados da análise */}
               {dadosViagens && (
                 <div>
-                  {/* Cards resumo */}
+                  {/* Cards resumo — linhas vs soma contador vs viagens KPI */}
                   <div style={{
-                    display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.35rem',
+                    display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))', gap: '0.35rem',
                     marginBottom: '0.5rem',
                   }}>
                     <div style={{ background: '#f8fafc', borderRadius: '6px', padding: '0.4rem 0.5rem', textAlign: 'center' }}>
                       <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#1e293b' }}>{dadosViagens.totalViagens || 0}</div>
-                      <div style={{ fontSize: '0.58rem', color: '#64748b' }}>Total</div>
+                      <div style={{ fontSize: '0.58rem', color: '#64748b' }}>Linhas (rotas)</div>
+                    </div>
+                    <div style={{ background: '#eff6ff', borderRadius: '6px', padding: '0.4rem 0.5rem', textAlign: 'center' }}>
+                      <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#2563eb' }}>{dadosViagens.somaContadorViagens ?? '—'}</div>
+                      <div style={{ fontSize: '0.58rem', color: '#1e40af' }}>Soma contador</div>
                     </div>
                     <div style={{ background: '#f0fdf4', borderRadius: '6px', padding: '0.4rem 0.5rem', textAlign: 'center' }}>
-                      <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#16a34a' }}>{dadosViagens.viagensCompletas || 0}</div>
-                      <div style={{ fontSize: '0.58rem', color: '#166534' }}>No dashboard</div>
+                      <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#16a34a' }}>{dadosViagens.viagensCalculadasDashboard ?? dadosViagens.viagensCompletas ?? 0}</div>
+                      <div style={{ fontSize: '0.58rem', color: '#166534' }}>Viagens KPI</div>
                     </div>
                     <div style={{ background: '#fef2f2', borderRadius: '6px', padding: '0.4rem 0.5rem', textAlign: 'center' }}>
                       <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#dc2626' }}>{(dadosViagens.viagensInconsistentesTotal ?? dadosViagens.viagensIncompletas) || 0}</div>
                       <div style={{ fontSize: '0.58rem', color: '#991b1b' }}>Fora do dashboard</div>
                     </div>
+                    {(dadosViagens.linhasSemContador ?? 0) > 0 && (
+                      <div style={{ background: '#fffbeb', borderRadius: '6px', padding: '0.4rem 0.5rem', textAlign: 'center' }}>
+                        <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#d97706' }}>{dadosViagens.linhasSemContador}</div>
+                        <div style={{ fontSize: '0.58rem', color: '#92400e' }}>Sem contador</div>
+                      </div>
+                    )}
                     <div style={{ background: '#f0f9ff', borderRadius: '6px', padding: '0.4rem 0.5rem', textAlign: 'center' }}>
                       <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#2563eb' }}>{dadosViagens.percentualCompleto || 0}%</div>
                       <div style={{ fontSize: '0.58rem', color: '#1e40af' }}>% Válidas</div>
                     </div>
                   </div>
 
-                  {/* Problemas agrupados */}
-                  {(dadosViagens.problemasAgrupados || []).length > 0 && (
+                  {dadosViagens.somaContadorViagens != null
+                    && dadosViagens.viagensCalculadasDashboard != null
+                    && dadosViagens.somaContadorViagens !== dadosViagens.viagensCalculadasDashboard && (
+                    <div style={{
+                      background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '6px',
+                      padding: '0.45rem 0.65rem', marginBottom: '0.5rem', fontSize: '0.68rem', color: '#92400e',
+                    }}>
+                      Soma do CONTADOR DE VIAGENS ({dadosViagens.somaContadorViagens}) ≠ viagens calculadas ({dadosViagens.viagensCalculadasDashboard}) — linhas sem contador usam PESO 1–4 ou 1 viagem operacional.
+                    </div>
+                  )}
+
+                  {(dadosViagens.linhasDescartadasSemDados ?? 0) > 0 && (
+                    <div style={{
+                      background: '#f1f5f9', border: '1px solid #cbd5e1', borderRadius: '6px',
+                      padding: '0.45rem 0.65rem', marginBottom: '0.5rem', fontSize: '0.68rem', color: '#475569',
+                    }}>
+                      <strong>{dadosViagens.linhasDescartadasSemDados}</strong> linha(s) ignorada(s) — sem placa, KM Total e Peso Total (não entram no sistema).
+                    </div>
+                  )}
+
+                  {(dadosViagens.resumoPlacas?.alerta) && (
+                    <div style={{
+                      background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '6px',
+                      padding: '0.45rem 0.65rem', marginBottom: '0.5rem', fontSize: '0.68rem', color: '#991b1b',
+                    }}>
+                      <strong>Placas:</strong> {dadosViagens.resumoPlacas.alerta}
+                    </div>
+                  )}
+
+                  {dadosViagens.conferenciaCadastro?.ativa && (
+                    <div style={{
+                      background: dadosViagens.conferenciaCadastro.temDivergencia ? '#fffbeb' : '#f0fdf4',
+                      border: `1px solid ${dadosViagens.conferenciaCadastro.temDivergencia ? '#fde68a' : '#bbf7d0'}`,
+                      borderRadius: '6px', padding: '0.45rem 0.65rem', marginBottom: '0.5rem',
+                      fontSize: '0.68rem',
+                      color: dadosViagens.conferenciaCadastro.temDivergencia ? '#92400e' : '#166534',
+                    }}>
+                      <strong>Cadastro × planilha:</strong> {dadosViagens.conferenciaCadastro.resumo}
+                      {(['placas', 'motoristas', 'coletores'] as const).map((tipo) => {
+                        const ent = dadosViagens.conferenciaCadastro[tipo];
+                        if (!ent || ent.cadastroVazio) return null;
+                        const label = tipo === 'placas' ? 'Placas' : tipo === 'motoristas' ? 'Motoristas' : 'Coletores';
+                        const extras: string[] = [];
+                        if (ent.soPlanilha.length) extras.push(`fora do cadastro: ${ent.soPlanilha.slice(0, 8).join(', ')}${ent.soPlanilha.length > 8 ? '…' : ''}`);
+                        if (ent.soCadastro.length) extras.push(`cadastrado(s) ausente(s): ${ent.soCadastro.slice(0, 8).join(', ')}${ent.soCadastro.length > 8 ? '…' : ''}`);
+                        if (!extras.length) return null;
+                        return (
+                          <div key={tipo} style={{ marginTop: '0.25rem' }}>
+                            <strong>{label}:</strong> {extras.join(' · ')}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {dadosViagens && !dadosViagens.conferenciaCadastro?.ativa && (
+                    <div style={{
+                      background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '6px',
+                      padding: '0.4rem 0.6rem', marginBottom: '0.5rem', fontSize: '0.65rem', color: '#64748b',
+                    }}>
+                      Cadastre placas, motoristas e coletores no contrato para conferir automaticamente com a planilha.
+                    </div>
+                  )}
+
+                  {(dadosViagens.regrasSaude || []).length > 0 && (
+                    <div style={{
+                      background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '6px',
+                      padding: '0.45rem 0.6rem', marginBottom: '0.5rem', fontSize: '0.62rem', color: '#475569',
+                    }}>
+                      <strong>Requisitos do dashboard:</strong>
+                      <span style={{ marginLeft: '0.35rem' }}>
+                        {(dadosViagens.regrasSaude as string[]).join(' · ')}
+                      </span>
+                    </div>
+                  )}
+
+                  {((dadosViagens.problemasDashboard || dadosViagens.problemasAgrupados || []).length > 0) && (
                     <div style={{ marginBottom: '0.5rem' }}>
                       <div style={{ fontSize: '0.68rem', fontWeight: 600, color: '#dc2626', marginBottom: '0.2rem' }}>
-                        Problemas encontrados:
+                        Fora do dashboard:
                       </div>
-                      {dadosViagens.problemasAgrupados.map((p: any, i: number) => (
+                      {(dadosViagens.problemasDashboard || dadosViagens.problemasAgrupados).map((p: any, i: number) => (
                         <div key={i} style={{
                           display: 'flex', justifyContent: 'space-between',
                           padding: '0.25rem 0.5rem', background: '#fef2f2',
@@ -993,7 +1432,7 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
                   {dadosViagens.viagens && dadosViagens.viagens.length > 0 && (
                     <div style={{ marginTop: '0.5rem' }}>
                       <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#475569', marginBottom: '0.25rem' }}>
-                        Primeiras {Math.min(dadosViagens.viagens.length, 10)} viagens incompletas:
+                        Amostra — viagens fora do dashboard (até 10):
                       </div>
                       <div style={{ maxHeight: '180px', overflowY: 'auto', fontSize: '0.6rem' }}>
                         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -1009,7 +1448,7 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
                             </tr>
                           </thead>
                           <tbody>
-                            {dadosViagens.viagens.slice(0, 10).map((v: any, i: number) => (
+                            {(dadosViagens.viagens || []).filter((v: any) => !v.completa).slice(0, 10).map((v: any, i: number) => (
                               <tr key={i} style={{ borderBottom: '1px solid #e2e8f0', background: v.temValorNegativo ? '#fef2f2' : undefined }}>
                                 <td style={{ padding: '3px 5px' }}>{v.linha}</td>
                                 <td style={{ padding: '3px 5px' }}>{v.data || '—'}</td>
@@ -1022,7 +1461,9 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
                                   {v.pesoTotal != null ? Number(v.pesoTotal).toFixed(1) : '—'}
                                 </td>
                                 <td style={{ padding: '3px 5px', color: '#b45309', fontSize: '0.55rem' }}>
-                                  {(v.problemas || []).join('; ') || '—'}
+                                  {(v.problemas || [])
+                                    .filter((p: string) => !p.toLowerCase().includes('placa será unificada') && !p.toLowerCase().startsWith('corrigido automaticamente'))
+                                    .join('; ') || '—'}
                                 </td>
                               </tr>
                             ))}
@@ -1041,8 +1482,114 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
             </div>
           )}
 
+          {/* ─── Conferência diária: planilha vs sistema ─── */}
+          {!validando && !conferindoDiaria && conferenciaDiaria && (
+            <div style={{
+              marginTop: '0.75rem',
+              background: conferenciaDiaria.temDivergencia ? '#fffbeb' : '#f0fdf4',
+              borderRadius: '10px',
+              border: `1px solid ${conferenciaDiaria.temDivergencia ? '#fde68a' : '#bbf7d0'}`,
+              padding: '0.75rem',
+            }}>
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: '0.35rem',
+                fontSize: '0.78rem', fontWeight: 700,
+                color: conferenciaDiaria.temDivergencia ? '#92400e' : '#166534',
+                marginBottom: '0.45rem',
+              }}>
+                <FiCheckCircle size={14} />
+                Conferência diária — planilha vs sistema
+              </div>
+              <p style={{ fontSize: '0.68rem', color: '#475569', margin: '0 0 0.5rem' }}>
+                {conferenciaDiaria.recomendacao}
+                {conferenciaDiaria.ultimaDataSistema && (
+                  <span style={{ display: 'block', marginTop: '0.2rem', color: '#64748b' }}>
+                    Último dia no sistema: {conferenciaDiaria.ultimaDataSistema.split('-').reverse().join('/')}
+                    {conferenciaDiaria.ultimaDataPlanilha && (
+                      <> · Planilha até: {conferenciaDiaria.ultimaDataPlanilha.split('-').reverse().join('/')}</>
+                    )}
+                  </span>
+                )}
+              </p>
+              <div style={{
+                display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(88px, 1fr))',
+                gap: '0.35rem', marginBottom: '0.55rem',
+              }}>
+                <div style={{ background: '#fff', borderRadius: '6px', padding: '0.35rem', textAlign: 'center', border: '1px solid #e2e8f0' }}>
+                  <div style={{ fontSize: '1rem', fontWeight: 800, color: '#16a34a' }}>{conferenciaDiaria.diasNovos}</div>
+                  <div style={{ fontSize: '0.58rem', color: '#64748b' }}>Novos</div>
+                </div>
+                <div style={{ background: '#fff', borderRadius: '6px', padding: '0.35rem', textAlign: 'center', border: '1px solid #e2e8f0' }}>
+                  <div style={{ fontSize: '1rem', fontWeight: 800, color: '#2563eb' }}>{conferenciaDiaria.diasIguais}</div>
+                  <div style={{ fontSize: '0.58rem', color: '#64748b' }}>Conferem</div>
+                </div>
+                <div style={{ background: '#fff', borderRadius: '6px', padding: '0.35rem', textAlign: 'center', border: '1px solid #e2e8f0' }}>
+                  <div style={{ fontSize: '1rem', fontWeight: 800, color: '#d97706' }}>{conferenciaDiaria.diasDivergentes}</div>
+                  <div style={{ fontSize: '0.58rem', color: '#64748b' }}>Diferem</div>
+                </div>
+                {(conferenciaDiaria.diasSomenteSistema ?? 0) > 0 && (
+                  <div style={{ background: '#fff', borderRadius: '6px', padding: '0.35rem', textAlign: 'center', border: '1px solid #c7d2fe' }}>
+                    <div style={{ fontSize: '1rem', fontWeight: 800, color: '#4f46e5' }}>{conferenciaDiaria.diasSomenteSistema}</div>
+                    <div style={{ fontSize: '0.58rem', color: '#64748b' }}>Só no sistema</div>
+                  </div>
+                )}
+                {conferenciaDiaria.diasBloqueados > 0 && (
+                  <div style={{ background: '#fff', borderRadius: '6px', padding: '0.35rem', textAlign: 'center', border: '1px solid #fecaca' }}>
+                    <div style={{ fontSize: '1rem', fontWeight: 800, color: '#dc2626' }}>{conferenciaDiaria.diasBloqueados}</div>
+                    <div style={{ fontSize: '0.58rem', color: '#64748b' }}>Bloqueados</div>
+                  </div>
+                )}
+              </div>
+              {(conferenciaDiaria.diasDivergentes > 0 || conferenciaDiaria.diasNovos > 0 || (conferenciaDiaria.diasSomenteSistema ?? 0) > 0) && (
+                <div style={{ maxHeight: '180px', overflowY: 'auto', border: '1px solid #e2e8f0', borderRadius: '6px' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.62rem' }}>
+                    <thead>
+                      <tr style={{ background: '#f1f5f9', position: 'sticky', top: 0 }}>
+                        <th style={{ padding: '4px 6px', textAlign: 'left' }}>Data</th>
+                        <th style={{ padding: '4px 6px', textAlign: 'center' }}>Status</th>
+                        <th style={{ padding: '4px 6px', textAlign: 'left' }}>Planilha / Sistema</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {conferenciaDiaria.dias
+                        .filter(d => d.status !== 'igual')
+                        .slice(0, 25)
+                        .map((d) => {
+                          const cor = d.status === 'novo' ? '#16a34a'
+                            : d.status === 'divergente' ? '#d97706'
+                            : d.status === 'somente_sistema' ? '#4f46e5'
+                            : '#dc2626';
+                          const lbl = d.status === 'novo' ? 'Novo'
+                            : d.status === 'divergente' ? 'Diverge'
+                            : d.status === 'somente_sistema' ? 'Preservar'
+                            : 'Bloqueado';
+                          return (
+                            <tr key={d.data} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                              <td style={{ padding: '3px 6px', fontWeight: 600 }}>{d.dataBr}</td>
+                              <td style={{ padding: '3px 6px', textAlign: 'center', color: cor, fontWeight: 700 }}>{lbl}</td>
+                              <td style={{ padding: '3px 6px', color: '#475569' }}>
+                                {d.status === 'novo' && d.planilha ? (
+                                  `${d.planilha.rotas} rotas · ${d.planilha.viagens} viagens`
+                                ) : d.status === 'somente_sistema' && d.sistema ? (
+                                  `${d.sistema.rotas} rotas · ${d.sistema.viagens} viagens (mantidos)`
+                                ) : d.sistema && d.planilha ? (
+                                  <>
+                                    {d.diferencas.join(' · ') || `${d.planilha.viagens} vs ${d.sistema.viagens} viagens`}
+                                  </>
+                                ) : '—'}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Ações após validação + importação */}
-          {!validando && !analisandoViagens && !uploading && validacaoData && validacaoData.sucesso && dadosViagens && (
+          {!validando && !analisandoViagens && !conferindoDiaria && !uploading && validacaoData && validacaoData.sucesso && dadosViagens && (
             <div style={{
               display: 'flex', gap: '0.5rem', marginTop: '0.5rem',
               justifyContent: 'flex-end', flexWrap: 'wrap',
@@ -1051,14 +1598,25 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
                 <button
                   className="btn btn-primary btn-sm"
                   onClick={() => importarPlanilhaValidada(arquivoValidacao, dadosViagens)}
+                  disabled={(conferenciaDiaria?.diasBloqueados ?? 0) > 0}
+                  title={
+                    (conferenciaDiaria?.diasBloqueados ?? 0) > 0
+                      ? 'Há dias em ciclo fechado — não é possível importar'
+                      : temPlanilha
+                        ? 'Atualiza os dias da planilha, preserva dias só no sistema e remove a planilha antiga'
+                        : 'Importar viagens válidas'
+                  }
                   style={{
                     display: 'flex', alignItems: 'center', gap: '0.3rem',
-                    background: '#16a34a', border: 'none', color: '#fff',
+                    background: (conferenciaDiaria?.diasBloqueados ?? 0) > 0 ? '#94a3b8' : '#16a34a',
+                    border: 'none', color: '#fff',
                     padding: '0.4rem 0.85rem', borderRadius: '6px',
-                    fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer',
+                    fontSize: '0.75rem', fontWeight: 600,
+                    cursor: (conferenciaDiaria?.diasBloqueados ?? 0) > 0 ? 'not-allowed' : 'pointer',
                   }}
                 >
-                  <FiUpload size={12} /> Importar viagens válidas
+                  <FiUpload size={12} />
+                  Tentar importar novamente
                 </button>
               )}
               <button
@@ -1089,7 +1647,7 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
 
           {/* Input oculto para re-selecionar (caso queira trocar) */}
           <input
-            type="file" accept=".xlsx,.xls"
+            type="file" accept=".xlsx,.xls,.xlsm"
             ref={validacaoInputRef}
             onChange={e => {
               const f = e.target.files?.[0];
@@ -1109,17 +1667,23 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
           onDragOver={e => { e.preventDefault(); setDragOver(true); }}
           onDragLeave={() => setDragOver(false)}
           onDrop={e => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer.files[0]; if (f) handleSelecionarPlanilha(f); }}
-          onClick={() => { const el = document.createElement('input'); el.type = 'file'; el.accept = '.xlsx,.xls'; el.onchange = (ev: any) => { const f = ev?.target?.files?.[0]; if (f) handleSelecionarPlanilha(f); }; el.click(); }}
+          onClick={() => { const el = document.createElement('input'); el.type = 'file'; el.accept = '.xlsx,.xls,.xlsm'; el.onchange = (ev: any) => { const f = ev?.target?.files?.[0]; if (f) handleSelecionarPlanilha(f); }; el.click(); }}
         >
           <div className="upload-zone-icon">{(validando || analisandoViagens || gerandoPdfViagens || uploading) ? <FiRefreshCw className="spin" /> : <FiShield />}</div>
           <p>{mensagemProcessamentoUpload() || 'Arraste ou clique para enviar a planilha'}</p>
-          <small>.xlsx, .xls — PDF das inconsistências, depois viagens válidas no dashboard</small>
+          <small>
+            {ehRocada
+              ? '.xlsx, .xls, .xlsm — modelos Londrina, Pinda, QGIS, Betim e padrão (área m²)'
+              : '.xlsx, .xls, .xlsm — valida, baixa PDF de saúde e importa viagens válidas'}
+          </small>
         </div>
         <p style={{
           fontSize: '0.62rem', color: '#94a3b8', margin: '0.35rem 0 0',
           textAlign: 'center',
         }}>
-          Fluxo: validação → PDF com erros (download automático) → importação das viagens corretas.
+          {ehRocada
+            ? 'Roçada: detecta o modelo automaticamente, importa área (m²) por dia/bairro e atualiza o dashboard.'
+            : 'Fluxo automático: validação → PDF de saúde → importação (KM≤300, peso > 0; só viagens válidas entram no dashboard).'}
         </p>
         {uploading && (
           <div className="upload-progress">
@@ -1151,7 +1715,15 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
                   >
                     <FiSearch size={9} /> Qualidade
                   </button>
-                  <button className="planilha-excluir" onClick={() => excluirPlanilha(p.id)} title="Excluir"><FiTrash2 size={12} /></button>
+                  <button
+                    type="button"
+                    className="planilha-excluir"
+                    onClick={() => excluirPlanilha(p.id)}
+                    disabled={excluindoPlanilhaId === p.id}
+                    title="Excluir planilha e registros importados"
+                  >
+                    {excluindoPlanilhaId === p.id ? <FiRefreshCw size={12} className="spin" /> : <FiTrash2 size={12} />}
+                  </button>
                 </div>
               </div>
             ))}
@@ -1204,7 +1776,7 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
                 origemUniversal: k.origemUniversal, placeholdersNaoResolvidos: k.placeholdersNaoResolvidos,
               }));
               const novosKpis = [...kpis, ...novosKpisUniversal]; setKpis(novosKpis);
-              setStatus(prev => ({ ...prev, indicadoresAuto: 'done', config: novosKpis.filter(k => k.ativo).length > 0 ? 'done' : 'pending' }));
+              setStatus(prev => ({ ...prev, indicadoresAuto: 'done', config: novosKpis.filter(k => k.ativo !== false).length > 0 ? 'done' : 'pending' }));
               setEtapa('revisao'); salvarConfig(novosKpis, graficos);
               adicionarToast(`${kpisAtivados.length} KPI(s) da biblioteca ativado(s)!`, 'success');
             } else handleAutoSkip();
@@ -1281,7 +1853,7 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
     const kpisUniversais = kpis.filter(k => (k as any).origemUniversal);
     const kpisAutomaticos = kpis.filter(k => (k as any).automatico && !(k as any).origemUniversal);
     const kpisManuais = kpis.filter(k => !(k as any).automatico && !(k as any).origemUniversal);
-    const kpisAtivos = kpis.filter(k => k.ativo);
+    const kpisAtivos = kpis.filter(k => k.ativo !== false);
 
     // ─── Render Faturamento ───
     const renderFaturamento = () => {
@@ -1291,6 +1863,7 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
         valorMini: null,
         valorTruck: null,
         valorToco: null,
+        valorBasculante: null,
         valorKmLinear: null,
         valorM2: null,
         valorPorArvore: null,
@@ -1305,7 +1878,7 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
       };
 
       const TIPOS_COBRANCA = [
-        { value: 'tonelada_tipo_caminhao', label: 'Por Tonelada + Tipo de Caminhão', desc: 'Calcula receita com base no peso e tipo de caminhão (Mini, Truck, Toco)' },
+        { value: 'tonelada_tipo_caminhao', label: 'Por Tonelada + Tipo de Caminhão', desc: 'Calcula receita com base no peso e tipo de caminhão (Mini, Truck, Toco, Basculante)' },
         { value: 'km_linear', label: 'KM Linear', desc: 'Calcula receita com base na quilometragem rodada' },
         { value: 'm2', label: 'Metro Quadrado (m²)', desc: 'Calcula receita com base na área em m²' },
         { value: 'por_arvore', label: 'Por Árvore', desc: 'Calcula receita por quantidade de árvores podadas' },
@@ -1412,6 +1985,13 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
                       onChange={e => setCfg({ valorToco: e.target.value ? Number(e.target.value) : null })}
                     />
                   </div>
+                  <div className="valor-input-group">
+                    <label>Basculante</label>
+                    <input type="number" step="0.01" min="0" placeholder="0,00"
+                      value={cfg.valorBasculante ?? ''}
+                      onChange={e => setCfg({ valorBasculante: e.target.value ? Number(e.target.value) : null })}
+                    />
+                  </div>
                 </div>
                 <div style={{
                   marginTop: '0.55rem', padding: '0.5rem 0.65rem',
@@ -1419,7 +1999,7 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
                   fontSize: '0.72rem', color: '#166534', lineHeight: 1.45,
                 }}>
                   <FiInfo size={12} style={{ marginRight: '0.25rem', verticalAlign: '-2px' }} />
-                  Cada viagem usa o valor de <strong>Mini</strong>, <strong>Truck</strong> ou <strong>Toco</strong>
+                  Cada viagem usa o valor de <strong>Mini</strong>, <strong>Truck</strong>, <strong>Toco</strong> ou <strong>Basculante</strong>
                   conforme o tipo de caminhão na planilha
                   {cfg.colunaTipoCaminhao ? (
                     <> (coluna: <strong>{cfg.colunaTipoCaminhao}</strong>)</>
@@ -1430,7 +2010,7 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
                 <details style={{ marginTop: '0.45rem', fontSize: '0.72rem', color: '#64748b' }}>
                   <summary style={{ cursor: 'pointer', fontWeight: 600 }}>Valor padrão (opcional)</summary>
                   <p style={{ margin: '0.35rem 0 0.3rem', lineHeight: 1.4 }}>
-                    Só é usado quando o tipo da viagem não for identificado como Mini, Truck ou Toco.
+                    Só é usado quando o tipo da viagem não for identificado como Mini, Truck, Toco ou Basculante.
                   </p>
                   <div className="valor-input-group" style={{ maxWidth: 220 }}>
                     <label>Fallback R$/tonelada</label>
@@ -1623,14 +2203,11 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
                     const valoresFixos = buildValoresFixosFromConfigFaturamento(
                       configFaturamento?.ativo ? configFaturamento : null
                     );
-                    const res = await fetch(`/api/contracts/${contractId}/servicos/${servicoId}/kpi-preview`, {
-                      method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-                      body: JSON.stringify({
-                        expressao: kpi.expressao,
-                        valoresFixos: { ...valoresFixos, ...(kpi.valoresFixos || {}) },
-                      }),
+                    const d = await servicoService.getKpiPreview(contractId, servicoId, {
+                      expressao: kpi.expressao,
+                      valoresFixos: { ...valoresFixos, ...(kpi.valoresFixos || {}) },
                     });
-                    if (res.ok) { const d = await res.json(); adicionarToast(d.valor != null ? `Preview: ${d.valor}` : 'Sem dados', d.valor != null ? 'success' : 'warning'); }
+                    adicionarToast(d.valor != null ? `Preview: ${d.valor}` : 'Sem dados', d.valor != null ? 'success' : 'warning');
                   } catch {}
                 }} title="Testar expressao"><FiRefreshCw size={10} /> Testar</button>
               )}
@@ -1682,10 +2259,10 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
               }}>
                 <FiBarChart2 size={13} /> Novo KPI Manual
               </button>
-              <button className="btn-biblioteca-toggle" onClick={() => setBibliotecaAberta(!bibliotecaAberta)}>
+              <button className="btn-biblioteca-toggle" onClick={handleToggleBiblioteca}>
                 <FiBook size={12} />
                 <span>{bibliotecaAberta ? 'Fechar Biblioteca' : 'Biblioteca Universal'}</span>
-                <span className="bib-toggle-count">{kpisUniversaisInline.length}</span>
+                <span className="bib-toggle-count">{kpisUniversalIds.length}</span>
               </button>
               {kpisAtivos.length > 0 && <span className="kpi-total-badge">{kpisAtivos.length} ativo(s)</span>}
             </div>
@@ -1696,8 +2273,24 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
                 <div className="bib-header">
                   <FiBook size={13} />
                   <span>Biblioteca Universal de KPIs</span>
-                  <span className="bib-count">{kpisUniversaisInline.length} disponiveis</span>
-                  <span className="bib-ativos">{kpisUniversaisInlineIds.size} ativos</span>
+                  {tipoServico && (
+                    <span className="bib-tipo">
+                      {(TIPOS_SERVICO_LABELS as any)[tipoServico] || tipoServico.replace(/_/g, ' ')}
+                    </span>
+                  )}
+                  <span className="bib-count">{kpisUniversaisInline.length} disponíveis</span>
+                  <span className="bib-ativos">{kpisUniversaisInlineIds.size} selecionados</span>
+                </div>
+                <div className="bib-toolbar">
+                  <button type="button" className="bib-toolbar-btn" onClick={selecionarTodosBiblioteca}>
+                    Selecionar todos
+                  </button>
+                  <button type="button" className="bib-toolbar-btn bib-toolbar-btn-muted" onClick={limparSelecaoBiblioteca}>
+                    Limpar
+                  </button>
+                  <span className="bib-toolbar-info">
+                    {kpisUniversaisInlineIds.size} de {kpisUniversaisInline.length} marcados
+                  </span>
                 </div>
                 {carregandoKpisInline ? (
                   <div style={{ padding: '0.75rem' }}>
@@ -1706,46 +2299,43 @@ export default function ServicoMiniFlow({ contractId, servicoId, servicoNome, on
                     <div className="skeleton" style={{ height: 36 }} />
                   </div>
                 ) : kpisUniversaisInline.length === 0 ? (
-                  <div className="bib-empty">Nenhum KPI universal cadastrado.</div>
+                  <div className="bib-empty">
+                    {tipoServico
+                      ? 'Nenhum KPI universal para este tipo de serviço.'
+                      : 'Nenhum KPI universal cadastrado. Defina o tipo do serviço para filtrar.'}
+                  </div>
                 ) : (
-                  <div className="bib-lista">
-                    {(() => {
-                      const grupos = new Map<string, any[]>();
-                      for (const k of kpisUniversaisInline) {
-                        const tipo = k.tipoServico || 'geral';
-                        if (!grupos.has(tipo)) grupos.set(tipo, []);
-                        grupos.get(tipo)!.push(k);
-                      }
-                      return Array.from(grupos.entries()).map(([tipo, lista]) => (
-                        <div key={tipo} className="bib-grupo">
-                          <div className="bib-grupo-titulo">
-                            <span>{(TIPOS_SERVICO_LABELS as any)[tipo] || tipo.replace(/_/g, ' ')}</span>
-                            <span className="bib-grupo-count">{lista.length}</span>
+                  <div className="bib-lista bib-lista-checkboxes">
+                    {kpisUniversaisInline.map(kpiU => {
+                      const selecionado = kpisUniversaisInlineIds.has(kpiU.id);
+                      return (
+                        <label
+                          key={kpiU.id}
+                          className={`bib-checkbox-item ${selecionado ? 'selecionado' : ''}`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selecionado}
+                            onChange={() => toggleKpiUniversal(kpiU, selecionado)}
+                            style={{ marginTop: '0.15rem', accentColor: kpiU.cor || '#6366f1', flexShrink: 0 }}
+                          />
+                          <div className="bib-checkbox-body">
+                            <div className="bib-item-nome">
+                              <span className="bib-item-cor" style={{ background: kpiU.cor || '#6366f1' }} />
+                              <strong>{kpiU.label}</strong>
+                              {kpiU.unidade && (
+                                <span className="bib-item-unidade">{kpiU.unidade}</span>
+                              )}
+                              <span className="bib-item-categoria">{kpiU.categoria}</span>
+                            </div>
+                            <code className="bib-item-formula">{kpiU.formula || kpiU.expressao}</code>
+                            {kpiU.descricao && (
+                              <div className="bib-item-desc">{kpiU.descricao}</div>
+                            )}
                           </div>
-                          {lista.map(kpiU => {
-                            const ativo = kpisUniversaisInlineIds.has(kpiU.id);
-                            return (
-                              <div key={kpiU.id} className={`bib-item ${ativo ? 'ativo' : ''}`}
-                                onClick={() => toggleKpiUniversal(kpiU, ativo)}
-                              >
-                                <div className="bib-item-indicador" style={{ background: ativo ? '#6366f1' : '#cbd5e1' }}>
-                                  {ativo && <FiCheck size={9} color="#fff" />}
-                                </div>
-                                <div className="bib-item-info">
-                                  <div className="bib-item-nome">
-                                    <span className="bib-item-cor" style={{ background: kpiU.cor || '#6366f1' }} />
-                                    <strong>{kpiU.label}</strong>
-                                    <span className="bib-item-categoria">{kpiU.categoria}</span>
-                                  </div>
-                                  <code className="bib-item-formula">{kpiU.formula || kpiU.expressao}</code>
-                                </div>
-                                <div className={`bib-item-status ${ativo ? 'ativo' : ''}`}>{ativo ? 'Ativo' : 'Inativo'}</div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      ));
-                    })()}
+                        </label>
+                      );
+                    })}
                   </div>
                 )}
               </div>

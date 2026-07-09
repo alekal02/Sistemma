@@ -59,6 +59,7 @@ export type TipoServico =
   | 'varricao'
   | 'pintura_meio_fio'
   | 'remocao'
+  | 'capina'
   | 'geral';
 
 export const TIPOS_SERVICO = {
@@ -68,6 +69,7 @@ export const TIPOS_SERVICO = {
   VARRICAO: 'varricao',
   PINTURA_MEIO_FIO: 'pintura_meio_fio',
   REMOCAO: 'remocao',
+  CAPINA: 'capina',
   GERAL: 'geral',
 } as const;
 
@@ -78,6 +80,7 @@ export const TIPOS_SERVICO_LABELS: Record<TipoServico, string> = {
   varricao: '🧹 Varrição',
   pintura_meio_fio: '🎨 Pintura Meio-Fio',
   remocao: '🚛 Remoção',
+  capina: '🌱 Capina',
   geral: '📋 Geral',
 };
 
@@ -106,6 +109,10 @@ export const TIPOS_SERVICO_META: Record<TipoServico, { descricao: string; coluna
   remocao: {
     descricao: 'Remoção de entulho, materiais e resíduos diversos',
     colunas: ['Dia', 'Setor', 'Avenida / Rua', 'Complemento', 'Descrição do serviço'],
+  },
+  capina: {
+    descricao: 'Capina manual ou mecanizada de terrenos, vias e logradouros públicos',
+    colunas: ['DATA', 'BAIRRO', 'Equipe', 'Funcionario', 'Metro Linear'],
   },
   geral: {
     descricao: 'Tipo genérico — usar quando nenhum tipo específico se aplicar',

@@ -3,6 +3,7 @@ import {
   ManyToOne, JoinColumn, Index
 } from 'typeorm';
 import { PlanilhaUpload } from './PlanilhaUpload';
+import { dateUtcColumnTransformer } from '../utils/dateColumnTransformer';
 
 @Entity('coleta_dados')
 @Index(['dataSaida'])
@@ -10,11 +11,13 @@ import { PlanilhaUpload } from './PlanilhaUpload';
 @Index(['regional'])
 @Index(['distrito'])
 @Index(['turno'])
+@Index(['motorista'])
+@Index(['tipoCaminhao'])
 @Index(['planilhaUploadId'])
 @Index(['planilhaUploadId', 'dataSaida'])
 @Index(['regional', 'dataSaida'])
 @Index(['placa', 'dataSaida'])
-@Index(['tipoCaminhao'])
+@Index(['planilhaUploadId', 'validoDashboard', 'dataSaida'])
 export class ColetaData {
   @PrimaryGeneratedColumn()
   id!: number;
@@ -28,7 +31,7 @@ export class ColetaData {
   planilhaUpload!: PlanilhaUpload | null;
 
   // ── Dados da planilha ──
-  @Column('date', { nullable: true })
+  @Column('date', { nullable: true, transformer: dateUtcColumnTransformer })
   dataSaida!: Date | null;
 
   @Column('varchar', { length: 20, nullable: true })
@@ -97,7 +100,11 @@ export class ColetaData {
   @Column('int', { nullable: true })
   numeroViagens!: number | null;
 
-  // ── Dados individuais de cada viagem/rota (até 4) ──
+  /** Viagens efetivas na rota (linha): CONTADOR DE VIAGENS ou PESO 1–4 preenchidos (máx. 4) */
+  @Column('int', { nullable: true, default: 0 })
+  viagensPorRota!: number | null;
+
+  // ── Hodômetro/hora legado por slot ROTA 01–04 (KPIs de tempo/KM) ──
   @Column('float', { nullable: true })
   kmRota1!: number | null;
 
@@ -130,7 +137,7 @@ export class ColetaData {
   dados!: Record<string, any> | null;
 
   /** false = viagem excluída dos cálculos do dashboard (KM/peso/rota incompletos) */
-  @Column('boolean', { default: true })
+  @Column('boolean', { default: false })
   validoDashboard!: boolean;
 
   /** Motivos pelos quais a viagem não entra no dashboard */

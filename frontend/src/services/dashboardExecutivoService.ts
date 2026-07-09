@@ -2,11 +2,11 @@
    DASHBOARD EXECUTIVO SERVICE
    Consome /api/dashboard/executivo
    ============================================ */
-import api from './api'
+import api, { TIMEOUT_ENDPOINTS_PESADOS_MS } from './api'
 
 export interface Variacao {
   valor: number
-  tipo: 'aumento' | 'reducao' | 'estavel'
+  tipo: 'aumento' | 'reducao' | 'estavel' | 'sem_base'
 }
 
 export interface IndicadorCard {
@@ -102,18 +102,29 @@ export interface UtilizacaoFrota {
   percentual: number
 }
 
+export interface ComparacaoAnteriorInfo {
+  label: string
+  registrosPlanilha: number
+  abastecimentos: number
+  temBasePlanilha: boolean
+  temBaseAbastecimento: boolean
+}
+
 export interface PeriodoInfo {
   label: string
   inicio: string
   fim: string
   inicioAnterior: string
   fimAnterior: string
+  comparacaoAnterior?: ComparacaoAnteriorInfo
 }
 
 export interface FiltrosInfo {
   periodo: string
   contractId: string | null
   servicoId: string | null
+  mesReferencia?: number | null
+  anoReferencia?: number | null
   contratosDisponiveis: { id: string; nome: string }[]
   servicosDisponiveis: { id: string; nome: string; contractId: string }[]
 }
@@ -151,7 +162,7 @@ export interface GraficosPainel {
   receitaKmMedio: number
   receitaHoraMedia: number
   // 🆕 Novos gráficos de receita
-  receitaDiaria?: { label: string; valor: number }[]
+  receitaDiaria?: { label: string; valor: number; data?: string; km?: number; horas?: number }[]
   rankingMotoristas?: { motorista: string; placa: string; faturamento: number; viagens: number }[]
   receitaPorRegional?: { regional: string; faturamento: number; viagens: number }[]
   receitaPorDiaSemana?: { diaSemana: number; diaNome: string; faturamento: number; viagens: number }[]
@@ -229,12 +240,48 @@ export interface AnaliseOperacional {
   totalMotoristas: number
 }
 
+export interface KpiCalculadoExecutivo {
+  id: string
+  nome: string
+  valor: number | null
+  formatado: string
+  formato: string
+  origem?: string
+  erro?: string
+  detalhe?: string
+  faturamentoRealizado?: number
+  faturamentoProjetado?: number
+  ehProjecaoCiclo?: boolean
+}
+
 export interface Metadados {
   totalRegistrosAtual: number
   totalRegistrosAnterior: number
+  totalRotasAtual?: number
+  totalRotasAnterior?: number
+  totalViagensAtual?: number
+  totalViagensAnterior?: number
   totalAbastecimentosAtual: number
   totalAbastecimentosAnterior: number
   dataGeracao: string
+  fonteDados?: string
+  cacheHit?: boolean
+  cacheIdadeSegundos?: number
+  cacheValidoAte?: string
+}
+
+export interface ResumoCicloExecutivo {
+  rotas: number
+  viagens: number
+  toneladas: number
+  km: number
+  horasProdutivas: number
+  coletoresAtivos: number
+  faturamento: number
+  receitaTon: number
+  receitaKm: number
+  ticketMedio: number
+  tonPorViagem: number
 }
 
 export interface DashboardExecutivoResponse {
@@ -245,6 +292,8 @@ export interface DashboardExecutivoResponse {
   graficos: GraficosPainel
   analiseFinanceira: AnaliseFinanceira
   analiseOperacional: AnaliseOperacional
+  kpisCalculados?: KpiCalculadoExecutivo[]
+  resumoCiclo?: ResumoCicloExecutivo
   metadados: Metadados
 }
 
@@ -252,6 +301,8 @@ export interface FiltrosExecutivo {
   periodo?: string
   dataInicio?: string
   dataFim?: string
+  mesReferencia?: number
+  anoReferencia?: number
   contractId?: string
   servicoId?: string
 }
@@ -286,15 +337,37 @@ export interface RotaKpi {
   tonPorViagem: number;
 }
 
+export interface ColetorKpi {
+  coletor: string;
+  viagens: number;
+  tonelagem: number;
+  kmTotal: number;
+  tonPorViagem: number;
+}
+
+export interface RankingPar<T> {
+  melhores: T[];
+  piores: T[];
+}
+
 export interface KpiOperacionalMotoristasResponse {
   motoristas: MotoristaKpi[];
+  coletores: ColetorKpi[];
   rotas: RotaKpi[];
+  rankings?: {
+    motoristas: RankingPar<MotoristaKpi>;
+    coletores: RankingPar<ColetorKpi>;
+    rotas: RankingPar<RotaKpi>;
+  };
   metadados: {
     totalViagens: number;
     totalTonelagem: number;
     totalKm: number;
     temMotorista: boolean;
     temRota: boolean;
+    temColetores?: boolean;
+    colunaRota?: string | null;
+    colunaRotaLabel?: string | null;
   };
 }
 
@@ -305,30 +378,43 @@ const dashboardExecutivoService = {
   async carregarKpiMotoristas(
     contractId: string,
     servicoId: string,
-    filtros?: { dataInicio?: string; dataFim?: string; placa?: string; tipoCaminhao?: string }
+    filtros?: {
+      dataInicio?: string;
+      dataFim?: string;
+      placa?: string;
+      tipoCaminhao?: string;
+      filtrosDinamicos?: Record<string, string>;
+    }
   ): Promise<KpiOperacionalMotoristasResponse> {
     const params = new URLSearchParams();
     if (filtros?.dataInicio) params.append('dataInicio', filtros.dataInicio);
     if (filtros?.dataFim) params.append('dataFim', filtros.dataFim);
     if (filtros?.placa) params.append('placa', filtros.placa);
     if (filtros?.tipoCaminhao) params.append('tipoCaminhao', filtros.tipoCaminhao);
+    if (filtros?.filtrosDinamicos && Object.keys(filtros.filtrosDinamicos).length > 0) {
+      params.append('filtrosDinamicos', JSON.stringify(filtros.filtrosDinamicos));
+    }
 
     const query = params.toString();
-    const url = `/api/contracts/${contractId}/servicos/${servicoId}/kpi-operacional-motoristas${query ? `?${query}` : ''}`;
+    const url = `/contracts/${contractId}/servicos/${servicoId}/kpi-operacional-motoristas${query ? `?${query}` : ''}`;
     const { data } = await api.get<KpiOperacionalMotoristasResponse>(url);
     return data;
   },
-  async carregar(filtros?: FiltrosExecutivo): Promise<DashboardExecutivoResponse> {
+  async carregar(filtros?: FiltrosExecutivo & { refresh?: boolean }): Promise<DashboardExecutivoResponse> {
     const params = new URLSearchParams()
     if (filtros?.periodo) params.append('periodo', filtros.periodo)
     if (filtros?.dataInicio) params.append('dataInicio', filtros.dataInicio)
     if (filtros?.dataFim) params.append('dataFim', filtros.dataFim)
+    if (filtros?.mesReferencia) params.append('mesReferencia', String(filtros.mesReferencia))
+    if (filtros?.anoReferencia) params.append('anoReferencia', String(filtros.anoReferencia))
     if (filtros?.contractId) params.append('contractId', filtros.contractId)
     if (filtros?.servicoId) params.append('servicoId', filtros.servicoId)
+    if (filtros?.refresh) params.append('refresh', '1')
 
     const query = params.toString()
     const { data } = await api.get<DashboardExecutivoResponse>(
-      `/dashboard/executivo${query ? `?${query}` : ''}`
+      `/dashboard/executivo${query ? `?${query}` : ''}`,
+      { timeout: TIMEOUT_ENDPOINTS_PESADOS_MS },
     )
     return data
   },
@@ -348,6 +434,7 @@ const dashboardExecutivoService = {
   }): Promise<{ blob: Blob; filename: string }> {
     const response = await api.post('/dashboard/executivo/pdf', params, {
       responseType: 'blob',
+      timeout: TIMEOUT_ENDPOINTS_PESADOS_MS,
     })
 
     // Extrair nome do arquivo do header Content-Disposition

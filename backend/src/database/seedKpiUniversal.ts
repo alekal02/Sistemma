@@ -1,22 +1,14 @@
 import AppDataSource from './data-source';
 import { KpiUniversal, PlaceholderKpi } from '../entities/KpiUniversal';
 import { TipoServico } from '../enums/TipoServico';
+import { upsertKpiSistema } from './kpiUniversalSeedUtils';
 
 /**
  * Seed da biblioteca de KPIs Universais.
  * Popula o banco com 15+ KPIs distribuídos em 3+ tipos de serviço.
  */
-export async function seedKpisUniversais(): Promise<void> {
-  const repo = AppDataSource.getRepository(KpiUniversal);
-
-  const existentes = await repo.count();
-  if (existentes > 0) {
-    console.log(`[seedKpisUniversais] ${existentes} KPIs universais já existentes. Pulando seed.`);
-    return;
-  }
-
-  console.log('[seedKpisUniversais] Populando biblioteca de KPIs universais...');
-
+/** Catálogo canônico do seed principal (sem gravar no banco). */
+export function buildKpisUniversaisPrincipais(): Partial<KpiUniversal>[] {
   // ─── Placeholders reutilizáveis ───
 
   const PH_PESO: PlaceholderKpi = {
@@ -40,7 +32,7 @@ export async function seedKpisUniversais(): Promise<void> {
   const PH_TIPO: PlaceholderKpi = {
     nome: 'TIPO_PLACEHOLDER',
     label: 'Coluna de Tipo de Caminhão',
-    colunasCandidatas: ['TIPO CAMINHAO', 'TIPO_CAMINHAO', 'CAMINHAO', 'TIPO DE CAMINHAO', 'TIPODECAMINHAO'],
+    colunasCandidatas: ['TIPO DE CAMINHÃO', 'TIPO CAMINHAO', 'TIPO_CAMINHAO', 'CAMINHAO', 'TIPO DE CAMINHAO', 'TIPODECAMINHAO'],
   };
 
   const PH_HORA: PlaceholderKpi = {
@@ -59,6 +51,12 @@ export async function seedKpisUniversais(): Promise<void> {
     nome: 'VOLUME_PLACEHOLDER',
     label: 'Coluna de Volume',
     colunasCandidatas: ['VOLUME', 'VOLUME M3', 'VOLUME_M3', 'M3', 'METRO CUBICO'],
+  };
+
+  const PH_COLETOR_NUM: PlaceholderKpi = {
+    nome: 'COLETOR_NUM_PLACEHOLDER',
+    label: 'Nº de Coletores',
+    colunasCandidatas: ['Nº DE COLETORES', 'NUMERO DE COLETORES', 'NÚMERO DE COLETORES', 'QTDE COLETORES', 'NRO COLETORES', 'QTD COLETORES'],
   };
 
   const PH_FUNCIONARIO: PlaceholderKpi = {
@@ -94,7 +92,13 @@ export async function seedKpisUniversais(): Promise<void> {
   const PH_KM_VARRIDOS: PlaceholderKpi = {
     nome: 'KM_VARRIDOS_PLACEHOLDER',
     label: 'Coluna de KM Varridos',
-    colunasCandidatas: ['QUILOMETROS_VARRIDOS', 'KM VARRIDOS', 'KM VARRIÇÃO', 'KM VARRICAO'],
+    colunasCandidatas: ['QUILOMETROS_VARRIDOS', 'KM VARRIDOS', 'KM VARRIÇÃO', 'KM VARRICAO', 'KM Linear', 'KM LINEAR'],
+  };
+
+  const PH_METRO_LINEAR: PlaceholderKpi = {
+    nome: 'METRO_LINEAR_PLACEHOLDER',
+    label: 'Coluna de Metro Linear',
+    colunasCandidatas: ['Metro Linear', 'METRO LINEAR', 'COMPRIMENTO', 'METRAGEM', 'KM Linear'],
   };
 
   // ════════════════ TIPO: COLETA_CAMINHAO ════════════════
@@ -136,7 +140,7 @@ export async function seedKpisUniversais(): Promise<void> {
       unidade: 'm³',
       categoria: 'Peso e Volume',
       cor: '#a78bfa',
-      descricao: 'Soma do volume estimado quando houver coluna de volume disponível',
+      descricao: 'Opcional — planilha padrão não tem volume; calcula só se existir coluna VOLUME/M³',
       metaSugerida: null,
       tipoServico: TipoServico.COLETA_CAMINHAO,
       placeholders: [PH_VOLUME],
@@ -144,13 +148,13 @@ export async function seedKpisUniversais(): Promise<void> {
     {
       nome: 'Viagens Totais',
       label: 'Viagens Totais',
-      formula: 'COUNT(*)',
+      formula: 'VIAGENS_POR_ROTA()',
       agregacao: 'count',
       formato: 'numero',
       unidade: 'viagens',
       categoria: 'Produtividade',
       cor: '#f59e0b',
-      descricao: 'Número total de registros/viagens realizadas',
+      descricao: 'Quantidade de viagens: CONTADOR DE VIAGENS da planilha (rotas feitas); se vazio, conta rotas 01–04',
       metaSugerida: null,
       tipoServico: TipoServico.COLETA_CAMINHAO,
       placeholders: [],
@@ -172,7 +176,7 @@ export async function seedKpisUniversais(): Promise<void> {
     {
       nome: 'KM Médio por Viagem',
       label: 'KM Médio por Viagem',
-      formula: 'DIVIDE(SUM(KM_PLACEHOLDER), COUNT(*))',
+      formula: 'DIVIDE(SUM(KM_PLACEHOLDER), VIAGENS_POR_ROTA())',
       agregacao: 'sum',
       formato: 'numero',
       unidade: 'km',
@@ -185,28 +189,28 @@ export async function seedKpisUniversais(): Promise<void> {
     },
     {
       nome: 'Coletores Ativos',
-      label: 'Coletores Ativos',
+      label: 'Coletores Ativos (Placas)',
       formula: 'COUNT(DISTINCT PLACA_PLACEHOLDER)',
       agregacao: 'count',
       formato: 'numero',
-      unidade: 'coletores',
+      unidade: 'veículos',
       categoria: 'Frota',
       cor: '#06b6d4',
-      descricao: 'Quantidade de placas/coletores únicos nos dados',
+      descricao: 'Quantidade de placas/veículos únicos (coluna PLACA)',
       metaSugerida: null,
       tipoServico: TipoServico.COLETA_CAMINHAO,
       placeholders: [PH_PLACA],
     },
     {
       nome: 'Coletas por Coletor',
-      label: 'Coletas por Coletor',
-      formula: 'DIVIDE(COUNT(*), COUNT(DISTINCT PLACA_PLACEHOLDER))',
+      label: 'Viagens por Veículo',
+      formula: 'DIVIDE(VIAGENS_POR_ROTA(), COUNT(DISTINCT PLACA_PLACEHOLDER))',
       agregacao: 'sum',
       formato: 'numero',
-      unidade: 'coletas/coletor',
+      unidade: 'viagens/veículo',
       categoria: 'Frota',
       cor: '#0891b2',
-      descricao: 'Média de coletas realizadas por cada coletor/veículo',
+      descricao: 'Viagens (CONTADOR DE VIAGENS ou rotas 01–04) dividido pelo número de placas únicas',
       metaSugerida: null,
       tipoServico: TipoServico.COLETA_CAMINHAO,
       placeholders: [PH_PLACA],
@@ -228,7 +232,7 @@ export async function seedKpisUniversais(): Promise<void> {
     {
       nome: 'Ticket Médio',
       label: 'Ticket Médio',
-      formula: 'DIVIDE(FATURAMENTO_EST(PESO_PLACEHOLDER, TIPO_PLACEHOLDER), COUNT(*))',
+      formula: 'DIVIDE(FATURAMENTO_EST(PESO_PLACEHOLDER, TIPO_PLACEHOLDER), VIAGENS_POR_ROTA())',
       agregacao: 'sum',
       formato: 'moeda',
       unidade: 'R$',
@@ -269,17 +273,17 @@ export async function seedKpisUniversais(): Promise<void> {
     },
     {
       nome: 'Produtividade por Coletor',
-      label: 'Prod. por Coletor (ton)',
-      formula: 'DIVIDE(SUM(PESO_PLACEHOLDER) / 1000, COUNT(DISTINCT PLACA_PLACEHOLDER))',
+      label: 'Média Ton/Coletor por Viagem',
+      formula: 'MEDIA_TON_POR_COLETOR()',
       agregacao: 'sum',
       formato: 'numero',
-      unidade: 'ton/coletor',
+      unidade: 't/coletor/viagem',
       categoria: 'Frota',
       cor: '#0ea5e9',
-      descricao: 'Tonelagem total dividida pelo número de coletores únicos',
+      descricao: 'Média de toneladas por coletor em cada viagem (PESO TOTAL ÷ Nº DE COLETORES)',
       metaSugerida: null,
       tipoServico: TipoServico.COLETA_CAMINHAO,
-      placeholders: [PH_PESO, PH_PLACA],
+      placeholders: [PH_PESO],
     },
   ];
 
@@ -540,18 +544,18 @@ export async function seedKpisUniversais(): Promise<void> {
   // ════════════════ TIPO: CAPINA ════════════════
   const capinaKpis: Partial<KpiUniversal>[] = [
     {
-      nome: 'Área Capinada Total',
-      label: 'Área Capinada',
-      formula: 'SUM(AREA_PLACEHOLDER)',
+      nome: 'Metro Linear Capinado',
+      label: 'Metro Linear Capinado',
+      formula: 'SUM(METRO_LINEAR_PLACEHOLDER)',
       agregacao: 'sum',
       formato: 'numero',
-      unidade: 'm²',
+      unidade: 'm',
       categoria: 'Produtividade',
       cor: '#a3e635',
-      descricao: 'Total de área capinada em metros quadrados',
+      descricao: 'Total de metro linear capinado conforme coluna da planilha padrão',
       metaSugerida: null,
       tipoServico: TipoServico.CAPINA,
-      placeholders: [PH_AREA],
+      placeholders: [PH_METRO_LINEAR],
     },
   ];
 
@@ -591,8 +595,7 @@ export async function seedKpisUniversais(): Promise<void> {
     },
   ];
 
-  // Juntar todos e salvar
-  const todosKpis: Partial<KpiUniversal>[] = [
+  return [
     ...coletaKpis,
     ...varricaoKpis,
     ...podaKpis,
@@ -602,13 +605,28 @@ export async function seedKpisUniversais(): Promise<void> {
     ...remocaoKpis,
     ...geralKpis,
   ];
+}
 
-  for (const kpiData of todosKpis) {
-    const kpi = new KpiUniversal();
-    Object.assign(kpi, kpiData);
-    kpi.isPersonalizado = false;
-    await repo.save(kpi);
+export async function seedKpisUniversais(): Promise<void> {
+  const repo = AppDataSource.getRepository(KpiUniversal);
+  const todosKpis = buildKpisUniversaisPrincipais();
+  let criados = 0;
+  let atualizados = 0;
+
+  // Migração: capina passou de área (m²) para metro linear
+  const capinaAreaLegado = await repo.findOne({
+    where: { nome: 'Área Capinada Total', tipoServico: TipoServico.CAPINA },
+  });
+  if (capinaAreaLegado && !capinaAreaLegado.isPersonalizado) {
+    await repo.remove(capinaAreaLegado);
   }
 
-  console.log(`[seedKpisUniversais] ✅ ${todosKpis.length} KPIs universais criados com sucesso!`);
+  for (const kpiData of todosKpis) {
+    const resultado = await upsertKpiSistema(repo, kpiData);
+    if (resultado === 'created') criados++;
+    if (resultado === 'updated') atualizados++;
+  }
+
+  const total = await repo.count();
+  console.log(`[seedKpisUniversais] ✅ ${criados} novos, ${atualizados} atualizados (${total} na biblioteca).`);
 }

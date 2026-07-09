@@ -11,6 +11,7 @@ import {
 } from 'react-icons/fi';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
+import servicoService from '../services/servicoService';
 import type {
   KpiConfig, GraficoConfig, ColunaDetectada, PreviewState,
 } from './KpiEditor/KpiEditorTypes';
@@ -135,18 +136,7 @@ export default function RevisaoIndicadoresAuto({ contractId, servicoId, servicoN
     setLoading(true);
     setErro(null);
     try {
-      const res = await fetch('/api/contracts/' + contractId + '/servicos/' + servicoId + '/analisar-indicadores-automaticos', {
-        method: 'POST',
-        headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      });
-
-      if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.error || 'Erro ao analisar');
-      }
-
-      const data: AnaliseResponse = await res.json();
+      const data: AnaliseResponse = await servicoService.analisarIndicadoresAuto(contractId, servicoId);
       setAnalise(data);
 
       const aceitosIniciais: Record<string, boolean> = {};
@@ -238,18 +228,10 @@ export default function RevisaoIndicadoresAuto({ contractId, servicoId, servicoN
         return;
       }
 
-      const res = await fetch('/api/contracts/' + contractId + '/servicos/' + servicoId + '/confirmar-indicadores-automaticos', {
-        method: 'POST',
-        headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          indicadores: indicadoresAceitos,
-          graficos: graficosAceitos,
-        }),
+      const result = await servicoService.confirmarIndicadoresAuto(contractId, servicoId, {
+        indicadores: indicadoresAceitos,
+        graficos: graficosAceitos,
       });
-
-      if (!res.ok) throw new Error('Erro ao confirmar');
-
-      const result = await res.json();
       adicionarToast(result.message || 'Indicadores confirmados!', 'success');
       onConfirm(indicadoresAceitos, graficosAceitos);
     } catch (err: any) {

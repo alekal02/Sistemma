@@ -12,6 +12,9 @@ export class Contract {
   @Column('varchar', { length: 20, default: 'ativo' })
   status!: 'ativo' | 'encerrado';
 
+  @Column('int', { default: 1 })
+  diaInicioCiclo!: number;
+
   @Column('decimal', { precision: 10, scale: 2, nullable: true })
   valorTonelada!: number | null;
 
@@ -24,11 +27,27 @@ export class Contract {
   @Column('decimal', { precision: 10, scale: 2, nullable: true })
   valorToco!: number | null;
 
+  @Column('decimal', { precision: 10, scale: 2, nullable: true })
+  valorBasculante!: number | null;
+
   @Column('jsonb', { nullable: true })
   kpisConfig!: any[] | null;
 
   @Column('jsonb', { nullable: true })
   configResumo!: any | null;
+
+  /** Placas reserva, frota, motoristas, coletores e limites de peso/volume por tipo. */
+  @Column('jsonb', { nullable: true })
+  configOperacional!: {
+    placasReserva?: string[];
+    placasAtivas?: string[];
+    motoristas?: string[];
+    coletores?: string[];
+    /** Peso máximo (kg) por tipo — override do padrão (Basculante default 14000). */
+    pesoMaximoKg?: { MINI?: number; TOCO?: number; BASCULANTE?: number; TRUCK?: number };
+    /** Volume útil da caixa (L) por tipo — usado na caixa média da frota. */
+    volumeL?: { MINI?: number; TOCO?: number; BASCULANTE?: number; TRUCK?: number };
+  } | null;
 
   @OneToMany(() => Servico, (servico) => servico.contract)
   servicos!: Servico[];

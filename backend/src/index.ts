@@ -7,31 +7,43 @@ dotenv.config();
 import express, { Express, Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import AppDataSource from './database/data-source';
+import { MAX_BODY_BYTES } from './config/limitesRecursos';
 
 const app: Express = express();
 const PORT = process.env.APP_PORT || 3200;
 
 // Middlewares globais
-const corsOrigins = (process.env.CORS_ORIGIN || 'http://localhost:5175,http://localhost:3300')
+const corsOrigins = (
+  process.env.CORS_ORIGIN ||
+  'http://localhost:5175,http://127.0.0.1:5175,http://localhost:3300,http://127.0.0.1:3300'
+)
   .split(',')
   .map((o) => o.trim())
   .filter(Boolean);
+const isProd = process.env.NODE_ENV === 'production';
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin || corsOrigins.includes(origin) || process.env.NODE_ENV !== 'production') {
+    // Nunca lançar Error aqui: o Express transforma em HTTP 500 e mascara o problema real.
+    if (!origin || !isProd || corsOrigins.includes(origin)) {
       callback(null, true);
       return;
     }
-    callback(new Error('Origem não permitida pelo CORS'));
+    callback(null, false);
   },
   credentials: process.env.CORS_CREDENTIALS !== 'false',
 }));
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+app.use(express.json({ limit: MAX_BODY_BYTES }));
+app.use(express.urlencoded({ limit: MAX_BODY_BYTES, extended: true }));
 
 // Health check
 app.get('/health', (req: Request, res: Response) => {
-  res.json({ status: 'OK', timestamp: new Date().toISOString(), version: '2.0-minio' });
+  res.json({
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    version: '2.0-minio',
+    buildSha: process.env.BUILD_SHA || 'unknown',
+    tag: process.env.IMAGE_TAG || process.env.TAG || 'unknown',
+  });
 });
 
 import authRoutes from './routes/auth';
@@ -47,17 +59,27 @@ import kpiUniversalRoutes from './routes/kpiUniversal';
 import graficosPadraoRoutes from './routes/graficosPadrao';
 import tipoServicoRoutes from './routes/tipoServico';
 import whatsappRoutes from './routes/whatsapp';
+import pdfRoutes from './routes/pdf';
+import { pdfController } from './controllers/PdfController';
 import { seedKpisUniversais } from './database/seedKpiUniversal';
 import { seedKpisUniversaisExtra } from './database/seedKpiUniversalExtra';
 import { seedKpisUniversaisReceita } from './database/seedKpiUniversalReceita';
 import { seedGraficosPadrao } from './database/seedGraficosPadrao';
 import { migrateHorasProdutivas } from './database/migrate_horas_produtivas';
+import { migrateColetoresEquipeKpi } from './database/migrate_coletores_equipe_kpi';
+import { migrateMediaHorasViagemKpi } from './database/migrate_media_horas_viagem_kpi';
+import { sincronizarKpisUniversaisBiblioteca } from './database/sincronizarKpisUniversaisBiblioteca';
 import { DashboardExecutivoController } from './controllers/DashboardExecutivoController';
 import { ModeloExecutivoController } from './controllers/ModeloExecutivoController';
+import {
+  registrarControllerExecutivo,
+  iniciarAgendamentoWarmupExecutivo,
+} from './services/executivoCacheWarmupService';
 
 const servicoCtrl = new ServicoController();
 const dashboardExecutivoCtrl = new DashboardExecutivoController();
 const modeloExecutivoCtrl = new ModeloExecutivoController();
+registrarControllerExecutivo(dashboardExecutivoCtrl);
 
 // Rotas públicas
 app.use('/api/auth', authRoutes);
@@ -70,6 +92,7 @@ app.get('/api/modelo-executivo/formulas', authenticate, (req, res) => modeloExec
 
 // ⚠️ Rotas do Dashboard Executivo ANTES do router de dashboard (para evitar 404)
 app.get('/api/dashboard/executivo', authenticate, (req, res) => dashboardExecutivoCtrl.executivo(req, res));
+app.get('/api/dashboard/diagnostico', authenticate, (req, res) => dashboardExecutivoCtrl.diagnostico(req, res));
 app.post('/api/dashboard/executivo/pdf', authenticate, (req, res) => dashboardExecutivoCtrl.gerarPdf(req, res));
 
 app.use('/api/dashboard', authenticate, dashboardRoutes);
@@ -116,200 +139,16 @@ app.post('/api/qualidade-coleta/preview', authenticate, qMulter.single('planilha
 app.post('/api/qualidade-coleta/analisar-viagens', authenticate, qMulter.single('planilha'), async (req: any, res: any) => {
   if (!req.file) { res.status(400).json({ error: 'Nenhum arquivo' }); return; }
   try {
-    const workbook = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: false });
-    const nomeAba = workbook.SheetNames[0];
-    const sheet = workbook.Sheets[nomeAba];
-    const dadosBrutos: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, blankrows: true, raw: true });
-
-    if (dadosBrutos.length < 2) {
-      res.json({ sucesso: true, viagens: [], viagensCompletas: 0, viagensIncompletas: 0, totalViagens: 0, mensagem: 'Planilha sem dados de viagens.' });
-      return;
+    const { analisarViagensPlanilha } = await import('./services/analisarViagensPlanilhaService');
+    const { Contract } = await import('./entities/Contract');
+    const contractId = typeof req.body?.contractId === 'string' ? req.body.contractId.trim() : '';
+    let cadastroOperacional = null;
+    if (contractId) {
+      const contract = await AppDataSource.getRepository(Contract).findOne({ where: { id: contractId } });
+      cadastroOperacional = contract?.configOperacional ?? null;
     }
-
-    const cabecalho = (dadosBrutos[0] || []).map((v: any) => v !== null && v !== undefined ? String(v).trim() : '');
-    const linhas = dadosBrutos.slice(1);
-
-    // Função para normalizar e encontrar coluna
-    const normalizar = (s: string) => s.toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Z0-9\s]/g, '').replace(/\s+/g, '').trim();
-    const encontrar = (termos: string[]): number => {
-      for (const t of termos) {
-        const tn = normalizar(t);
-        for (let i = 0; i < cabecalho.length; i++) {
-          if (normalizar(cabecalho[i]) === tn) return i;
-        }
-      }
-      return -1;
-    };
-
-    // Mapear colunas essenciais
-    const idxData = encontrar(['DATA SAIDA', 'DATA SAÍDA', 'DATA', 'DIA']);
-    const idxPlaca = encontrar(['PLACA', 'VEICULO', 'VEÍCULO', 'CAMINHAO', 'CAMINHÃO']);
-    const idxMotorista = encontrar(['MOTORISTA', 'OPERADOR', 'NOME MOTORISTA']);
-    const idxRota = encontrar(['ROTA', 'SETOR', 'BAIRRO', 'REGIAO', 'REGIÃO', 'DESTINO']);
-    const idxKmTotal = encontrar(['KM TOTAL', 'KM PERCORRIDO', 'DISTANCIA', 'DISTÂNCIA']);
-    const idxPesoTotal = encontrar(['PESO TOTAL', 'PESO', 'PESO BRUTO']);
-    const idxKmSaida = encontrar(['KM SAIDA', 'KM SAÍDA', 'KM SAIDA BASE']);
-    const idxKmChegada = encontrar(['KM CHEGADA', 'KM DE CHEGADA', 'KM CHEGADA BASE']);
-    const idxRegional = encontrar(['REGIONAL', 'REGIAO', 'REGIÃO']);
-    const idxDistrito = encontrar(['DISTRITO', 'BAIRRO']);
-
-    // Colunas numéricas de KM/Peso/Rotas para detectar valores negativos
-    const colunasNumericasMonitoradas: { idx: number; nome: string }[] = [];
-    cabecalho.forEach((h, i) => {
-      const n = normalizar(h);
-      if (!n || n.includes('EMPTY')) return;
-      if (n.includes('KM') || n.includes('PESO') || (n.includes('ROTA') && n.includes('KM'))) {
-        colunasNumericasMonitoradas.push({ idx: i, nome: cabecalho[i] || `Coluna ${i + 1}` });
-      }
-    });
-
-    const viagens: any[] = [];
-    let viagensCompletas = 0;
-    let viagensIncompletas = 0;
-    let viagensComValorNegativo = 0;
-
-    for (let i = 0; i < linhas.length; i++) {
-      const linha = linhas[i];
-      const temAlgumValor = (linha || []).some((v: any) => v !== null && v !== '' && v !== undefined);
-      if (!temAlgumValor) continue;
-
-      const data = idxData >= 0 ? linha[idxData] : null;
-      const placa = idxPlaca >= 0 ? linha[idxPlaca] : null;
-      const motorista = idxMotorista >= 0 ? linha[idxMotorista] : null;
-      const rota = idxRota >= 0 ? linha[idxRota] : null;
-      const kmTotal = idxKmTotal >= 0 ? linha[idxKmTotal] : null;
-      const pesoTotal = idxPesoTotal >= 0 ? linha[idxPesoTotal] : null;
-      const kmSaida = idxKmSaida >= 0 ? linha[idxKmSaida] : null;
-      const kmChegada = idxKmChegada >= 0 ? linha[idxKmChegada] : null;
-
-      // Calcular KM Total se não existir mas tiver KM Saida e KM Chegada
-      let kmTotalCalculado = null;
-      if (kmTotal === null || kmTotal === '' || kmTotal === undefined) {
-        if (kmSaida !== null && kmChegada !== null && kmSaida !== '' && kmChegada !== '') {
-          const kmS = Number(kmSaida);
-          const kmC = Number(kmChegada);
-          if (!isNaN(kmS) && !isNaN(kmC) && kmC >= kmS) {
-            kmTotalCalculado = kmC - kmS;
-          }
-        }
-      } else {
-        kmTotalCalculado = Number(kmTotal);
-      }
-
-      const temIdentificacao = (data !== null && data !== '' && data !== undefined) ||
-                               (placa !== null && placa !== '' && placa !== undefined) ||
-                               (motorista !== null && motorista !== '' && motorista !== undefined);
-
-      const temKm = kmTotalCalculado !== null && !isNaN(kmTotalCalculado) && kmTotalCalculado > 0;
-      const temPeso = pesoTotal !== null && pesoTotal !== '' && pesoTotal !== undefined && Number(pesoTotal) > 0;
-      const regional = idxRegional >= 0 ? linha[idxRegional] : null;
-      const distrito = idxDistrito >= 0 ? linha[idxDistrito] : null;
-      const temRota = (rota !== null && rota !== '' && rota !== undefined)
-        || (regional !== null && regional !== '' && regional !== undefined)
-        || (distrito !== null && distrito !== '' && distrito !== undefined);
-
-      const problemas: string[] = [];
-      let temValorNegativo = false;
-
-      for (const col of colunasNumericasMonitoradas) {
-        const raw = linha[col.idx];
-        if (raw === null || raw === '' || raw === undefined) continue;
-        const num = Number(raw);
-        if (!isNaN(num) && num < 0) {
-          temValorNegativo = true;
-          problemas.push(`${col.nome}: valor negativo (${num}) — corrija na planilha`);
-        }
-      }
-
-      if (!temKm) {
-        if (kmTotal === null || kmTotal === '' || kmTotal === undefined) {
-          if (kmSaida !== null && kmChegada !== null && kmSaida !== '' && kmChegada !== '') {
-            problemas.push('KM Total não informado (calculável via KM Saída + KM Chegada)');
-          } else {
-            problemas.push('KM Total ausente');
-            if ((kmSaida === null || kmSaida === '' || kmSaida === undefined) && (kmChegada === null || kmChegada === '' || kmChegada === undefined)) {
-              problemas.push('KM Saída e KM Chegada também ausentes');
-            }
-          }
-        } else if (Number(kmTotal) <= 0) {
-          problemas.push('KM Total igual a zero ou negativo');
-        }
-      }
-      if (!temPeso) {
-        if (pesoTotal === null || pesoTotal === '' || pesoTotal === undefined) {
-          problemas.push('Peso Total ausente');
-        } else if (Number(pesoTotal) <= 0) {
-          problemas.push('Peso Total igual a zero ou negativo');
-        }
-      }
-
-      if (!temRota && temIdentificacao) {
-        problemas.push('Dados da rota ausentes (regional, distrito ou rota)');
-      }
-
-      const completa = temKm && temPeso && temRota && !temValorNegativo;
-
-      if (completa) viagensCompletas++;
-      else if (temIdentificacao) viagensIncompletas++;
-      if (temValorNegativo && temIdentificacao) viagensComValorNegativo++;
-
-      viagens.push({
-        linha: i + 2, // +2 porque linha 0 é cabeçalho e arrays começam em 0
-        data: data != null ? String(data) : null,
-        placa: placa != null ? String(placa) : null,
-        motorista: motorista != null ? String(motorista) : null,
-        rota: rota != null ? String(rota) : (regional != null ? String(regional) : (distrito != null ? String(distrito) : null)),
-        kmTotal: kmTotal != null ? Number(kmTotal) : null,
-        pesoTotal: pesoTotal != null ? Number(pesoTotal) : null,
-        kmSaida: kmSaida != null ? Number(kmSaida) : null,
-        kmChegada: kmChegada != null ? Number(kmChegada) : null,
-        kmTotalCalculado: kmTotalCalculado != null ? Number(kmTotalCalculado.toFixed(1)) : null,
-        completa,
-        temIdentificacao,
-        temValorNegativo,
-        problemas,
-      });
-    }
-
-    const totalViagens = viagens.length;
-
-    // Estatísticas por tipo de problema
-    const problemasAgrupados: Record<string, number> = {};
-    for (const v of viagens) {
-      if (v.completa) continue;
-      for (const p of v.problemas) {
-        const chave = p.includes('negativo') ? 'Valor negativo (fora do dashboard)' :
-                      p.includes('KM') ? 'Falta KM Total' :
-                      p.includes('Peso') ? 'Falta Peso Total' :
-                      p.includes('rota') ? 'Falta dados da rota' :
-                      p.includes('zero') ? 'Valor inválido (zero)' :
-                      'Outros';
-        problemasAgrupados[chave] = (problemasAgrupados[chave] || 0) + 1;
-      }
-    }
-
-    const viagensInconsistentesTotal = viagens.filter(
-      v => v.temIdentificacao && !v.completa
-    ).length;
-
-    res.json({
-      sucesso: true,
-      nomeArquivo: req.file.originalname,
-      aba: nomeAba,
-      totalViagens,
-      viagensCompletas,
-      viagensIncompletas,
-      viagensComValorNegativo,
-      viagensValidasDashboard: viagensCompletas,
-      viagensInconsistentesTotal,
-      podeImportar: true,
-      avisoDashboard: viagensInconsistentesTotal > 0
-        ? `${viagensInconsistentesTotal} viagem(ns) inconsistente(s) serão importadas mas não entrarão no dashboard.`
-        : null,
-      percentualCompleto: totalViagens > 0 ? Math.round((viagensCompletas / totalViagens) * 100) : 0,
-      problemasAgrupados: Object.entries(problemasAgrupados).map(([tipo, qtd]) => ({ tipo, quantidade: qtd })),
-      viagens: viagens.filter(v => !v.completa && v.temIdentificacao).slice(0, 500),
-    });
+    const resultado = analisarViagensPlanilha(req.file.buffer, req.file.originalname, cadastroOperacional);
+    res.json(resultado);
   } catch (error: any) {
     console.error('[AnalisarViagens] Erro:', error?.message || error);
     res.status(500).json({ error: 'Erro ao analisar viagens: ' + (error?.message || '') });
@@ -320,6 +159,7 @@ app.post('/api/qualidade-coleta/analisar-viagens', authenticate, qMulter.single(
 // POST /api/qualidade-coleta/corrigir
 // Recebe a planilha, aplica correções automáticas e retorna planilha corrigida + relatório
 import * as XLSX from 'xlsx';
+import { normalizarPlaca } from './utils/normalizarPlaca';
 app.post('/api/qualidade-coleta/corrigir', authenticate, qMulter.single('planilha'), async (req: any, res: any) => {
   if (!req.file) { res.status(400).json({ error: 'Nenhum arquivo' }); return; }
   
@@ -368,9 +208,19 @@ app.post('/api/qualidade-coleta/corrigir', authenticate, qMulter.single('planilh
       return nova;
     });
 
-    // 4. Remover duplicatas (mesma placa + data)
     const cabecalhoUpper = cabecalho.map((h: string) => (h || '').toUpperCase());
-    const idxPlaca = cabecalhoUpper.findIndex((h: string) => h.includes('PLACA'));
+    const idxPlaca = cabecalhoUpper.findIndex((h: string) => h.includes('PLACA') && !h.includes('BASE'));
+    if (idxPlaca >= 0) {
+      for (const linha of linhasCorrigidas) {
+        const bruta = linha[idxPlaca];
+        if (bruta !== null && bruta !== undefined && bruta !== '') {
+          const norm = normalizarPlaca(String(bruta));
+          if (norm) linha[idxPlaca] = norm;
+        }
+      }
+    }
+
+    // 4. Remover duplicatas (mesma placa + data)
     const idxData = cabecalhoUpper.findIndex((h: string) => h.includes('DATA'));
     
     let linhasFinais: any[][] = linhasCorrigidas;
@@ -381,7 +231,8 @@ app.post('/api/qualidade-coleta/corrigir', authenticate, qMulter.single('planilh
         const placa = linha[idxPlaca];
         const data = linha[idxData];
         if (placa && data) {
-          const chave = `${placa}|${data}`;
+          const placaNorm = normalizarPlaca(String(placa)) || String(placa).trim().toUpperCase();
+          const chave = `${placaNorm}|${data}`;
           if (visto.has(chave)) {
             alteracoes.duplicatasRemovidas++;
             return false;
@@ -432,44 +283,25 @@ app.use('/api/kpis-universais', authenticate, kpiUniversalRoutes);
 // Rotas de Gráficos Padrão (biblioteca gerenciável)
 app.use('/api/graficos-padrao', authenticate, graficosPadraoRoutes);
 
+// PDF unificado
+app.use('/api/pdf', authenticate, pdfRoutes);
+
 // Rotas do WhatsApp Cloud API
 app.use('/api/whatsapp', authenticate, whatsappRoutes);
 
 // Rotas do Catálogo de Tipos de Serviço
 app.use('/api/tipo-servico', authenticate, tipoServicoRoutes);
 
-// Rota consolidada para Dashboard Principal
+// Rotas consolidadas para Dashboard Principal
+app.get('/api/dashboard/diagnostico-servicos', authenticate, (req, res) => servicoCtrl.getDiagnosticoTodosServicos(req, res));
 app.get('/api/dashboard/kpis-consolidado', authenticate, (req, res) => servicoCtrl.getKpisConsolidado(req, res));
+app.get('/api/dashboard/servicos-por-tipo', authenticate, (req, res) => servicoCtrl.listarServicosPorTipoGlobal(req, res));
+app.get('/api/dashboard/comparar-por-tipo', authenticate, (req, res) => servicoCtrl.getCompararKpisGlobal(req, res));
 
-// Rota de geração de PDF (puppeteer) — requer autenticação
-import puppeteer from 'puppeteer';
-app.post('/api/generate-pdf', authenticate, async (req: Request, res: Response) => {
-  try {
-    const { html, filename = 'documento' } = req.body;
-    if (!html) return res.status(400).json({ error: 'HTML é obrigatório' });
-
-    const browser = await puppeteer.launch({
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
-    });
-    const page = await browser.newPage();
-    await page.setViewport({ width: 1200, height: 900 });
-    await page.setContent(html, { waitUntil: 'load', timeout: 60000 });
-    await new Promise(r => setTimeout(r, 4000));
-    const pdf = await page.pdf({
-      format: 'A4',
-      printBackground: true,
-      margin: { top: '15mm', right: '15mm', bottom: '15mm', left: '15mm' },
-    });
-    await browser.close();
-
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}.pdf"`);
-    res.send(pdf);
-  } catch (error: any) {
-    console.error('Erro ao gerar PDF:', error?.message || error);
-    res.status(500).json({ error: 'Erro ao gerar PDF: ' + (error?.message || '') });
-  }
+// Rota de geração de PDF (legado) — delega ao endpoint unificado
+app.post('/api/generate-pdf', authenticate, (req, res) => {
+  if (!req.body.margin) req.body.margin = 'default';
+  return pdfController.generate(req, res);
 });
 
 // Middleware de erro global
@@ -482,37 +314,64 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
 AppDataSource.initialize()
   .then(async () => {
     console.log('✅ Banco de dados conectado com sucesso');
-    // Seed da biblioteca de KPIs universais
-    try {
-      await seedKpisUniversais();
-    } catch (err) {
-      console.error('⚠️ Erro ao seed KPIs universais:', err);
+
+    const skipStartup = process.env.SKIP_STARTUP_SEED === 'true';
+
+    if (!skipStartup) {
+      try {
+        await seedKpisUniversais();
+      } catch (err) {
+        console.error('⚠️ Erro ao seed KPIs universais:', err);
+      }
+      try {
+        await seedKpisUniversaisExtra();
+      } catch (err) {
+        console.error('⚠️ Erro ao seed KPIs universais extra:', err);
+      }
+      try {
+        await seedKpisUniversaisReceita();
+      } catch (err) {
+        console.error('⚠️ Erro ao seed KPIs universais receita:', err);
+      }
+      if (process.env.SYNC_KPIS_UNIVERSAIS !== 'false') {
+        try {
+          await sincronizarKpisUniversaisBiblioteca();
+        } catch (err) {
+          console.error('⚠️ Erro ao sincronizar biblioteca de KPIs universais:', err);
+        }
+      }
+      try {
+        await seedGraficosPadrao();
+      } catch (err) {
+        console.error('⚠️ Erro ao seed gráficos padrão:', err);
+      }
+    } else {
+      console.log('⏭️ SKIP_STARTUP_SEED=true — seeds de biblioteca ignorados');
     }
-    // Seed complementar de KPIs universais
-    try {
-      await seedKpisUniversaisExtra();
-    } catch (err) {
-      console.error('⚠️ Erro ao seed KPIs universais extra:', err);
+
+    if (process.env.SKIP_STARTUP_MIGRATIONS !== 'true') {
+      try {
+        await migrateHorasProdutivas();
+      } catch (err) {
+        console.error('⚠️ Erro na migration de horas produtivas:', err);
+      }
+      try {
+        await migrateColetoresEquipeKpi();
+      } catch (err) {
+        console.error('⚠️ Erro na migration de coletores na equipe:', err);
+      }
+      try {
+        await migrateMediaHorasViagemKpi();
+      } catch (err) {
+        console.error('⚠️ Erro na migration de média horas/viagem:', err);
+      }
+    } else {
+      console.log('⏭️ SKIP_STARTUP_MIGRATIONS=true — migrations automáticas ignoradas');
     }
-    try {
-      await seedKpisUniversaisReceita();
-    } catch (err) {
-      console.error('⚠️ Erro ao seed KPIs universais receita:', err);
-    }
-    // Seed da biblioteca de gráficos padrão
-    try {
-      await seedGraficosPadrao();
-    } catch (err) {
-      console.error('⚠️ Erro ao seed gráficos padrão:', err);
-    }
-    // Migration automática: corrige expressões de horas em serviços existentes
-    try {
-      await migrateHorasProdutivas();
-    } catch (err) {
-      console.error('⚠️ Erro na migration de horas produtivas:', err);
-    }
+
     app.listen(PORT, () => {
       console.log(`✅ Servidor rodando em http://localhost:${PORT}`);
+      iniciarAgendamentoWarmupExecutivo();
     });
   })
   .catch((error) => {

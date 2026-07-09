@@ -19,7 +19,7 @@ import {
   FiAlertCircle, FiChevronDown, FiChevronRight, FiCheck,
   FiDatabase, FiBarChart2, FiRefreshCw,
   FiClock, FiSettings,
-  FiUpload, FiInfo, FiDollarSign,
+  FiUpload, FiInfo, FiDollarSign, FiTruck, FiUsers,
 } from 'react-icons/fi';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
@@ -28,6 +28,28 @@ import ServicoMiniFlow from '../components/ServicoMiniFlow';
 import type { EtapasStatus } from '../components/ServicoMiniFlow';
 import { TIPOS_SERVICO, TIPOS_SERVICO_LABELS, TIPOS_SERVICO_OPCOES, TIPOS_SERVICO_META } from '../types';
 import type { TipoServico } from '../types';
+import contractService from '../services/contractService';
+import servicoService from '../services/servicoService';
+import {
+  extrairPlacasReservaContrato,
+  parsePlacasReservaTexto,
+  placasReservaParaTexto,
+} from '../utils/placasReserva';
+import {
+  extrairCadastroOperacionalContrato,
+  listaParaTexto,
+  parseListaNomesTexto,
+  parseListaPlacasTexto,
+} from '../utils/configOperacional';
+import {
+  TIPOS_LIMITE_CAMINHAO,
+  LABEL_TIPO_CAMINHAO,
+  PESO_MAX_KG_PADRAO,
+  VOLUME_L_PADRAO,
+  mapaLimitesParaForm,
+  formLimitesParaMapa,
+  type TipoLimiteCaminhao,
+} from '../utils/limitesCaminhaoContrato';
 import '../styles/FluxoUnificado.css';
 import '../styles/ContratoDetalhe.css';
 
@@ -45,11 +67,21 @@ interface Contrato {
   id: string;
   numeroContrato: string;
   status: 'ativo' | 'encerrado';
+  diaInicioCiclo?: number;
   valorTonelada?: number | null;
   valorMini?: number | null;
   valorTruck?: number | null;
   valorToco?: number | null;
+  valorBasculante?: number | null;
   configResumo?: any | null;
+  configOperacional?: {
+    placasReserva?: string[];
+    placasAtivas?: string[];
+    motoristas?: string[];
+    coletores?: string[];
+    pesoMaximoKg?: { MINI?: number; TOCO?: number; BASCULANTE?: number; TRUCK?: number };
+    volumeL?: { MINI?: number; TOCO?: number; BASCULANTE?: number; TRUCK?: number };
+  } | null;
 }
 
 interface PlanilhaItem {
@@ -58,6 +90,22 @@ interface PlanilhaItem {
   totalLinhas: number;
   linhasImportadas: number;
   criadoEm: string;
+}
+
+function normalizarPlanilhasContrato(raw: unknown[] | undefined): PlanilhaItem[] {
+  return (raw || [])
+    .map((item) => {
+      const u = item as Record<string, unknown>;
+      const id = Number(u.id);
+      return {
+        id,
+        nomeArquivo: String(u.nomeArquivo ?? u.nome ?? ''),
+        totalLinhas: Number(u.totalLinhas ?? u.linhas ?? 0),
+        linhasImportadas: Number(u.linhasImportadas ?? u.importados ?? 0),
+        criadoEm: String(u.criadoEm ?? ''),
+      };
+    })
+    .filter(u => Number.isFinite(u.id) && u.id > 0);
 }
 
 interface ServicoComStatus extends Servico {
@@ -76,6 +124,7 @@ const TIPO_VALOR_POR_SERVICO: Record<string, TipoValor> = {
   rocadeira: 'm2',
   poda: 'por_arvore',
   pintura_meio_fio: 'km_linear',
+  capina: 'km_linear',
   geral: 'caminhao',
 };
 
@@ -96,19 +145,37 @@ function opcoesTipoValorDisponiveis(tipoServico: string): TipoValor[] {
   return ['caminhao', 'km_linear', 'm2', 'por_arvore'];
 }
 
+/** Aceita 0,43 / 0.43 / 1.234,56 (pt-BR) */
+function parseValorMonetario(v: string): number | null {
+  const s = String(v ?? '').trim().replace(/R\$\s?/gi, '').replace(/\s/g, '');
+  if (!s) return null;
+  let n: number;
+  if (s.includes(',') && s.includes('.')) {
+    n = s.lastIndexOf(',') > s.lastIndexOf('.')
+      ? Number(s.replace(/\./g, '').replace(',', '.'))
+      : Number(s.replace(/,/g, ''));
+  } else if (s.includes(',')) {
+    n = Number(s.replace(',', '.'));
+  } else {
+    n = Number(s);
+  }
+  return !Number.isNaN(n) && n >= 0 ? n : null;
+}
+
 function buildConfigFaturamento(
   tipoValor: TipoValor,
   valores: {
     valorMini: string;
     valorTruck: string;
     valorToco: string;
+    valorBasculante: string;
     valorKmLinear: string;
     valorM2: string;
     valorPorArvore: string;
     valorPorEquipe: string;
   }
 ) {
-  const parse = (v: string) => (v.trim() ? parseFloat(v) : null);
+  const parse = parseValorMonetario;
   const base = { ativo: true };
 
   if (tipoValor === 'caminhao') {
@@ -118,6 +185,7 @@ function buildConfigFaturamento(
       valorMini: parse(valores.valorMini),
       valorTruck: parse(valores.valorTruck),
       valorToco: parse(valores.valorToco),
+      valorBasculante: parse(valores.valorBasculante),
     };
   }
   if (tipoValor === 'km_linear') {
@@ -141,12 +209,27 @@ export default function ContratoDetalhe() {
   const [contrato, setContrato] = useState<Contrato | null>(null);
   const [servicos, setServicos] = useState<ServicoComStatus[]>([]);
   const [carregando, setCarregando] = useState(true);
+  const [salvandoCiclo, setSalvandoCiclo] = useState(false);
+  const [textoPlacasReserva, setTextoPlacasReserva] = useState('');
+  const [salvandoPlacasReserva, setSalvandoPlacasReserva] = useState(false);
+  const [textoPlacasAtivas, setTextoPlacasAtivas] = useState('');
+  const [textoMotoristas, setTextoMotoristas] = useState('');
+  const [textoColetores, setTextoColetores] = useState('');
+  const [salvandoCadastro, setSalvandoCadastro] = useState(false);
+  const [pesoMaxForm, setPesoMaxForm] = useState<Record<TipoLimiteCaminhao, string>>(
+    () => mapaLimitesParaForm(null, PESO_MAX_KG_PADRAO),
+  );
+  const [volumeForm, setVolumeForm] = useState<Record<TipoLimiteCaminhao, string>>(
+    () => mapaLimitesParaForm(null, VOLUME_L_PADRAO),
+  );
+  const [salvandoLimites, setSalvandoLimites] = useState(false);
 
   // ─── Valores (modal de criação) ───
   const [tipoValor, setTipoValor] = useState<TipoValor>('caminhao');
   const [valorMini, setValorMini] = useState('');
   const [valorTruck, setValorTruck] = useState('');
   const [valorToco, setValorToco] = useState('');
+  const [valorBasculante, setValorBasculante] = useState('');
   const [valorKmLinear, setValorKmLinear] = useState('');
   const [valorM2, setValorM2] = useState('');
   const [valorPorArvore, setValorPorArvore] = useState('');
@@ -170,44 +253,35 @@ export default function ContratoDetalhe() {
     if (!id) return;
     setCarregando(true);
     try {
-      const [resContrato, resServicos] = await Promise.all([
-        fetch(`/api/contracts/${id}`, { headers: { Authorization: `Bearer ${token}` } }),
-        fetch(`/api/contracts/${id}/servicos`, { headers: { Authorization: `Bearer ${token}` } }),
+      const [contratoData, lista] = await Promise.all([
+        contractService.buscar(id),
+        servicoService.listarServicosContrato(id),
       ]);
 
-      if (resContrato.ok) {
-        const c = await resContrato.json();
-        setContrato(c);
-      }
+      setContrato(contratoData);
+      setTextoPlacasReserva(placasReservaParaTexto(extrairPlacasReservaContrato(contratoData)));
+      const cadastro = extrairCadastroOperacionalContrato(contratoData);
+      setTextoPlacasAtivas(listaParaTexto(cadastro.placasAtivas));
+      setTextoMotoristas(listaParaTexto(cadastro.motoristas));
+      setTextoColetores(listaParaTexto(cadastro.coletores));
+      setPesoMaxForm(mapaLimitesParaForm(contratoData.configOperacional?.pesoMaximoKg, PESO_MAX_KG_PADRAO));
+      setVolumeForm(mapaLimitesParaForm(contratoData.configOperacional?.volumeL, VOLUME_L_PADRAO));
 
-      if (resServicos.ok) {
-        const data = await resServicos.json();
-        const lista = data.servicos || [];
-
-        const resultados = await Promise.allSettled(
-          lista.map(async (s: Servico) => {
-            try {
-              const res = await fetch(`/api/contracts/${id}/servicos/${s.id}/padrao`, {
-                headers: { Authorization: `Bearer ${token}` },
-              });
-              if (!res.ok) {
-                return {
-                  ...s,
-                  etapasStatus: { upload: 'pending', indicadoresAuto: 'pending', revisao: 'pending', config: 'pending' } satisfies EtapasStatus,
-                  planilhas: [],
-                  totalRegistros: 0,
-                  ultimoUpload: null,
-                };
-              }
-              const padrao = await res.json();
+      const resultados = await Promise.allSettled(
+        lista.map(async (s: Servico) => {
+          try {
+            const padrao = await servicoService.getPadrao(id, s.id);
               const cols = padrao.servico?.padraoPlanilha?.colunas || [];
-              const uploads = padrao.uploads?.ultimos || [];
+              const uploads = normalizarPlanilhasContrato(padrao.uploads?.ultimos || []);
               const config = padrao.servico?.configDashboard;
+              const totalRegistros = padrao.uploads?.registrosValidos
+                ?? padrao.uploads?.totalImportados
+                ?? 0;
 
               return {
                 ...s,
                 planilhas: uploads,
-                totalRegistros: padrao.uploads?.totalImportados || 0,
+                totalRegistros,
                 ultimoUpload: uploads[0]?.criadoEm || null,
                 etapasStatus: {
                   upload: cols.length > 0 ? 'done' : 'pending',
@@ -237,13 +311,94 @@ export default function ContratoDetalhe() {
             ultimoUpload: null,
           }))
         );
-      }
     } catch {
       adicionarToast('Erro ao carregar dados', 'error');
     } finally {
       setCarregando(false);
     }
   }, [id, token, adicionarToast]);
+
+  const salvarDiaInicioCiclo = async (dia: number) => {
+    if (!id || !contrato) return;
+    setSalvandoCiclo(true);
+    try {
+      const atualizado = await contractService.atualizar(id, { diaInicioCiclo: dia });
+      setContrato(atualizado);
+      adicionarToast('Ciclo de medição atualizado', 'success');
+    } catch {
+      adicionarToast('Erro ao salvar ciclo de medição', 'error');
+    } finally {
+      setSalvandoCiclo(false);
+    }
+  };
+
+  const salvarPlacasReserva = async () => {
+    if (!id || !contrato) return;
+    setSalvandoPlacasReserva(true);
+    try {
+      const placas = parsePlacasReservaTexto(textoPlacasReserva);
+      const atualizado = await contractService.atualizar(id, {
+        configOperacional: {
+          ...(contrato.configOperacional || {}),
+          placasReserva: placas,
+        },
+      });
+      setContrato(atualizado);
+      setTextoPlacasReserva(placasReservaParaTexto(extrairPlacasReservaContrato(atualizado)));
+      adicionarToast('Placas reserva atualizadas', 'success');
+    } catch {
+      adicionarToast('Erro ao salvar placas reserva', 'error');
+    } finally {
+      setSalvandoPlacasReserva(false);
+    }
+  };
+
+  const salvarLimitesCaminhao = async () => {
+    if (!id || !contrato) return;
+    setSalvandoLimites(true);
+    try {
+      const atualizado = await contractService.atualizar(id, {
+        configOperacional: {
+          ...(contrato.configOperacional || {}),
+          pesoMaximoKg: formLimitesParaMapa(pesoMaxForm),
+          volumeL: formLimitesParaMapa(volumeForm),
+        },
+      });
+      setContrato(atualizado);
+      setPesoMaxForm(mapaLimitesParaForm(atualizado.configOperacional?.pesoMaximoKg, PESO_MAX_KG_PADRAO));
+      setVolumeForm(mapaLimitesParaForm(atualizado.configOperacional?.volumeL, VOLUME_L_PADRAO));
+      adicionarToast('Limites de caminhão salvos no contrato', 'success');
+    } catch {
+      adicionarToast('Erro ao salvar limites de caminhão', 'error');
+    } finally {
+      setSalvandoLimites(false);
+    }
+  };
+
+  const salvarCadastroOperacional = async () => {
+    if (!id || !contrato) return;
+    setSalvandoCadastro(true);
+    try {
+      const atualizado = await contractService.atualizar(id, {
+        configOperacional: {
+          ...(contrato.configOperacional || {}),
+          placasAtivas: parseListaPlacasTexto(textoPlacasAtivas),
+          motoristas: parseListaNomesTexto(textoMotoristas),
+          coletores: parseListaNomesTexto(textoColetores),
+        },
+      });
+      setContrato(atualizado);
+      const cadastro = extrairCadastroOperacionalContrato(atualizado);
+      setTextoPlacasAtivas(listaParaTexto(cadastro.placasAtivas));
+      setTextoMotoristas(listaParaTexto(cadastro.motoristas));
+      setTextoColetores(listaParaTexto(cadastro.coletores));
+      adicionarToast('Cadastro operacional salvo', 'success');
+    } catch {
+      adicionarToast('Erro ao salvar cadastro operacional', 'error');
+    } finally {
+      setSalvandoCadastro(false);
+    }
+  };
 
   useEffect(() => { carregarDados(); }, [id]);
 
@@ -289,6 +444,7 @@ export default function ContratoDetalhe() {
     setValorMini('');
     setValorTruck('');
     setValorToco('');
+    setValorBasculante('');
     setValorKmLinear('');
     setValorM2('');
     setValorPorArvore('');
@@ -331,52 +487,91 @@ export default function ContratoDetalhe() {
       return;
     }
 
-    const tiposStr = tiposSelecionados.join(',');
-    const configFaturamento = buildConfigFaturamento(tipoValor, {
-      valorMini, valorTruck, valorToco, valorKmLinear, valorM2, valorPorArvore, valorPorEquipe,
-    });
+    const tipos = tiposSelecionados.length > 0 ? tiposSelecionados : [TIPOS_SERVICO.COLETA_CAMINHAO];
+    const multiplo = tipos.length > 1;
 
-    const temValor =
-      tipoValor === 'caminhao'
-        ? [valorMini, valorTruck, valorToco].some(v => v.trim())
-        : tipoValor === 'km_linear'
-          ? valorKmLinear.trim()
-          : tipoValor === 'm2'
-            ? valorM2.trim()
-            : tipoValor === 'por_equipe'
-              ? valorPorEquipe.trim()
-              : valorPorArvore.trim();
+    if (!multiplo) {
+      const configFaturamento = buildConfigFaturamento(tipoValor, {
+        valorMini, valorTruck, valorToco, valorBasculante, valorKmLinear, valorM2, valorPorArvore, valorPorEquipe,
+      });
 
-    if (!temValor) {
-      adicionarToast('Informe pelo menos um valor de receita para o serviço', 'warning');
+      const temValor =
+        tipoValor === 'caminhao'
+          ? [valorMini, valorTruck, valorToco, valorBasculante].some(v => v.trim())
+          : tipoValor === 'km_linear'
+            ? valorKmLinear.trim()
+            : tipoValor === 'm2'
+              ? valorM2.trim()
+              : tipoValor === 'por_equipe'
+                ? valorPorEquipe.trim()
+                : valorPorArvore.trim();
+
+      if (!temValor) {
+        adicionarToast('Informe pelo menos um valor de receita para o serviço', 'warning');
+        return;
+      }
+
+      const valorPrincipal =
+        tipoValor === 'caminhao'
+          ? [configFaturamento.valorMini, configFaturamento.valorTruck, configFaturamento.valorToco, configFaturamento.valorBasculante]
+              .find(v => v != null && v > 0)
+          : tipoValor === 'km_linear'
+            ? configFaturamento.valorKmLinear
+            : tipoValor === 'm2'
+              ? configFaturamento.valorM2
+              : tipoValor === 'por_equipe'
+                ? configFaturamento.valorPorEquipe
+                : configFaturamento.valorPorArvore;
+
+      if (valorPrincipal == null || Number(valorPrincipal) <= 0) {
+        adicionarToast('Valor inválido. Use formato 0,43 ou 0.43', 'warning');
+        return;
+      }
+
+      setSalvandoServico(true);
+      try {
+        await servicoService.criarServico(id!, {
+          nome: nomeServico.trim(),
+          tipo: tipos[0],
+          configFaturamento,
+        });
+        adicionarToast('Serviço criado!', 'success');
+        fecharModalCriacao();
+        await carregarDados();
+      } catch (err: any) {
+        const msg = err?.response?.data?.error || err?.message || 'Erro ao criar serviço';
+        adicionarToast(msg, 'error');
+      } finally {
+        setSalvandoServico(false);
+      }
       return;
     }
 
     setSalvandoServico(true);
-
+    let criados = 0;
     try {
-      const res = await fetch(`/api/contracts/${id}/servicos`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          nome: nomeServico.trim(),
-          tipo: tiposStr,
-          configFaturamento,
-        }),
-      });
-
-      if (!res.ok) {
-        adicionarToast('Erro ao criar serviço', 'error');
-        return;
+      for (const tipo of tipos) {
+        const label = TIPOS_SERVICO_LABELS[tipo as TipoServico] || tipo;
+        const nomeTipo = label.replace(/^[^\s]+\s/, '').trim();
+        await servicoService.criarServico(id!, {
+          nome: `${nomeServico.trim()} — ${nomeTipo}`,
+          tipo,
+          configFaturamento: { ativo: false },
+        });
+        criados++;
       }
-
-      adicionarToast('Serviço criado!', 'success');
+      adicionarToast(`${tipos.length} serviços criados! Configure a receita de cada um.`, 'success');
       fecharModalCriacao();
-      setSalvandoServico(false);
       await carregarDados();
-
     } catch {
-      adicionarToast('Erro ao criar serviço', 'error');
+      if (criados > 0) {
+        adicionarToast(`${criados} de ${tipos.length} serviços criados. Configure o restante manualmente.`, 'warning');
+        fecharModalCriacao();
+        await carregarDados();
+      } else {
+        adicionarToast('Erro ao criar serviços', 'error');
+      }
+    } finally {
       setSalvandoServico(false);
     }
   };
@@ -401,24 +596,39 @@ export default function ContratoDetalhe() {
       return;
     }
     try {
-      const res = await fetch(`/api/contracts/${id}/servicos/${excluindoId}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (res.ok) {
-        adicionarToast('Serviço excluído!', 'success');
+      await servicoService.excluirServico(id, excluindoId);
+      adicionarToast('Serviço excluído!', 'success');
         if (servicoExpandidoId === excluindoId) setServicoExpandidoId(null);
         setExcluindoId(null);
         setServicoExclusaoInfo(null);
         setConfirmacaoExclusao('');
         await carregarDados();
-      } else adicionarToast('Erro ao excluir', 'error');
     } catch { adicionarToast('Erro ao excluir', 'error'); }
   };
 
   /* ═══ Status change handler ═══ */
   const handleStatusChange = useCallback((servicoId: string, status: EtapasStatus) => {
     setServicos(prev => prev.map(s => s.id === servicoId ? { ...s, etapasStatus: status } : s));
+  }, []);
+
+  const handlePlanilhasChange = useCallback((
+    servicoId: string,
+    info: { totalRegistros: number; planilhas: PlanilhaItem[]; temUpload: boolean },
+  ) => {
+    setServicos(prev => prev.map(s => {
+      if (s.id !== servicoId) return s;
+      return {
+        ...s,
+        totalRegistros: info.totalRegistros,
+        planilhas: info.planilhas,
+        ultimoUpload: info.planilhas[0]?.criadoEm || null,
+        etapasStatus: {
+          ...s.etapasStatus,
+          upload: info.temUpload ? 'done' : 'pending',
+          revisao: info.temUpload ? 'done' : 'pending',
+        } satisfies EtapasStatus,
+      };
+    }));
   }, []);
 
   /* ═══ Render: Carregando ═══ */
@@ -513,6 +723,255 @@ export default function ContratoDetalhe() {
             <FiUpload size={10} style={{ marginRight: '0.2rem' }} /> Planilhas
           </div>
           <div style={{ fontSize: '1.3rem', fontWeight: 800, color: '#0f172a' }}>{totalPlanilhas}</div>
+        </div>
+        <div style={{
+          flex: 1.4, minWidth: 200, background: '#fff', borderRadius: '8px',
+          padding: '0.55rem 0.75rem', border: '1px solid #e2e8f0',
+          borderTop: '3px solid #0d9488', boxShadow: '0 1px 3px rgba(0,0,0,0.03)',
+        }}>
+          <div style={{ fontSize: '0.65rem', color: '#64748b', fontWeight: 600, textTransform: 'uppercase', marginBottom: '0.25rem' }}>
+            <FiClock size={10} style={{ marginRight: '0.2rem' }} /> Ciclo de medição
+          </div>
+          <select
+            value={contrato.diaInicioCiclo ?? 1}
+            disabled={salvandoCiclo}
+            onChange={(e) => salvarDiaInicioCiclo(Number(e.target.value))}
+            style={{
+              width: '100%', fontSize: '0.8rem', fontWeight: 600,
+              border: '1px solid #e2e8f0', borderRadius: '6px', padding: '0.3rem 0.4rem',
+              color: '#0f172a', background: '#f8fafc',
+            }}
+          >
+            <option value={1}>Dia 1 — mês civil</option>
+            {Array.from({ length: 27 }, (_, i) => i + 2).map(d => (
+              <option key={d} value={d}>Dia {d} — início do ciclo</option>
+            ))}
+          </select>
+          <div style={{ fontSize: '0.62rem', color: '#64748b', marginTop: '0.2rem' }}>
+            Usado no comparativo entre contratos
+          </div>
+        </div>
+        <div style={{
+          flex: 1.6, minWidth: 220, background: '#fff', borderRadius: '8px',
+          padding: '0.55rem 0.75rem', border: '1px solid #e2e8f0',
+          borderTop: '3px solid #f59e0b', boxShadow: '0 1px 3px rgba(0,0,0,0.03)',
+        }}>
+          <div style={{ fontSize: '0.65rem', color: '#64748b', fontWeight: 600, textTransform: 'uppercase', marginBottom: '0.25rem' }}>
+            <FiTruck size={10} style={{ marginRight: '0.2rem' }} /> Placas reserva
+          </div>
+          <textarea
+            value={textoPlacasReserva}
+            disabled={salvandoPlacasReserva}
+            onChange={(e) => setTextoPlacasReserva(e.target.value)}
+            placeholder={'ABC1234\nDEF5678'}
+            rows={2}
+            style={{
+              width: '100%', fontSize: '0.75rem', fontWeight: 600,
+              border: '1px solid #e2e8f0', borderRadius: '6px', padding: '0.35rem 0.45rem',
+              color: '#0f172a', background: '#f8fafc', resize: 'vertical', minHeight: '44px',
+            }}
+          />
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '0.25rem', gap: '0.35rem' }}>
+            <div style={{ fontSize: '0.62rem', color: '#64748b' }}>
+              Uma placa por linha — aparece como RESERVA no relatório operacional
+            </div>
+            <button
+              type="button"
+              onClick={salvarPlacasReserva}
+              disabled={salvandoPlacasReserva}
+              style={{
+                fontSize: '0.65rem', fontWeight: 700, padding: '0.25rem 0.5rem',
+                border: 'none', borderRadius: '5px', cursor: salvandoPlacasReserva ? 'wait' : 'pointer',
+                background: '#f59e0b', color: '#fff', flexShrink: 0,
+              }}
+            >
+              {salvandoPlacasReserva ? 'Salvando…' : 'Salvar'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Limites de caminhão por tipo (peso / volume) */}
+      <div style={{
+        marginBottom: '0.75rem', background: '#fff', borderRadius: '8px',
+        padding: '0.65rem 0.75rem', border: '1px solid #e2e8f0',
+        borderTop: '3px solid #ef4444', boxShadow: '0 1px 3px rgba(0,0,0,0.03)',
+      }}>
+        <div style={{ fontSize: '0.72rem', fontWeight: 700, color: '#334155', marginBottom: '0.35rem' }}>
+          <FiTruck size={12} style={{ marginRight: '0.25rem', verticalAlign: '-2px' }} />
+          Limites por tipo de caminhão
+        </div>
+        <div style={{ fontSize: '0.62rem', color: '#64748b', marginBottom: '0.55rem', lineHeight: 1.4 }}>
+          Defina o <strong>peso máximo (kg)</strong> e o <strong>volume da caixa (L)</strong> de cada tipo neste contrato.
+          A <strong>CAIXA MÉDIA (L)</strong> na Visão Geral usa a coluna Volume — média ponderada só dos tipos
+          que existem na frota da planilha (se não houver TOCO nos dados, mudar o volume do TOCO não altera o número).
+          Depois de salvar, clique em <strong>Atualizar</strong> na comparação.
+        </div>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.72rem' }}>
+            <thead>
+              <tr style={{ background: '#f8fafc', color: '#64748b', textAlign: 'left' }}>
+                <th style={{ padding: '0.35rem 0.4rem', fontWeight: 700 }}>Tipo</th>
+                <th style={{ padding: '0.35rem 0.4rem', fontWeight: 700 }}>Peso máx. (kg)</th>
+                <th style={{ padding: '0.35rem 0.4rem', fontWeight: 700, color: '#b91c1c' }}>
+                  Volume caixa (L) → CAIXA MÉDIA
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {TIPOS_LIMITE_CAMINHAO.map((tipo) => (
+                <tr key={tipo} style={{ borderTop: '1px solid #f1f5f9' }}>
+                  <td style={{
+                    padding: '0.4rem',
+                    fontWeight: 700,
+                    color: tipo === 'BASCULANTE' ? '#dc2626' : '#0f172a',
+                  }}>
+                    {LABEL_TIPO_CAMINHAO[tipo]}
+                    {tipo === 'BASCULANTE' && (
+                      <span style={{
+                        marginLeft: '0.35rem', fontSize: '0.58rem', fontWeight: 600,
+                        color: '#991b1b', background: '#fee2e2', padding: '0.1rem 0.35rem', borderRadius: '4px',
+                      }}>
+                        padrão 14.000 kg
+                      </span>
+                    )}
+                  </td>
+                  <td style={{ padding: '0.3rem 0.4rem' }}>
+                    <input
+                      type="number"
+                      min={1}
+                      step={100}
+                      disabled={salvandoLimites}
+                      value={pesoMaxForm[tipo]}
+                      onChange={(e) => setPesoMaxForm((prev) => ({ ...prev, [tipo]: e.target.value }))}
+                      placeholder={String(PESO_MAX_KG_PADRAO[tipo])}
+                      style={{
+                        width: '100%', maxWidth: 140, fontSize: '0.72rem',
+                        border: '1px solid #e2e8f0', borderRadius: '6px',
+                        padding: '0.3rem 0.45rem', background: '#f8fafc', color: '#0f172a',
+                      }}
+                    />
+                  </td>
+                  <td style={{ padding: '0.3rem 0.4rem' }}>
+                    <input
+                      type="number"
+                      min={1}
+                      step={100}
+                      disabled={salvandoLimites}
+                      value={volumeForm[tipo]}
+                      onChange={(e) => setVolumeForm((prev) => ({ ...prev, [tipo]: e.target.value }))}
+                      placeholder={String(VOLUME_L_PADRAO[tipo])}
+                      style={{
+                        width: '100%', maxWidth: 140, fontSize: '0.72rem',
+                        border: '1px solid #e2e8f0', borderRadius: '6px',
+                        padding: '0.3rem 0.45rem', background: '#f8fafc', color: '#0f172a',
+                      }}
+                    />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.5rem' }}>
+          <button
+            type="button"
+            onClick={salvarLimitesCaminhao}
+            disabled={salvandoLimites}
+            style={{
+              fontSize: '0.68rem', fontWeight: 700, padding: '0.3rem 0.65rem',
+              border: 'none', borderRadius: '5px', cursor: salvandoLimites ? 'wait' : 'pointer',
+              background: '#ef4444', color: '#fff',
+            }}
+          >
+            {salvandoLimites ? 'Salvando…' : 'Salvar limites'}
+          </button>
+        </div>
+      </div>
+
+      {/* Cadastro operacional — conferência com planilha */}
+      <div style={{
+        marginBottom: '0.75rem', background: '#fff', borderRadius: '8px',
+        padding: '0.65rem 0.75rem', border: '1px solid #e2e8f0',
+        borderTop: '3px solid #6366f1', boxShadow: '0 1px 3px rgba(0,0,0,0.03)',
+      }}>
+        <div style={{ fontSize: '0.72rem', fontWeight: 700, color: '#334155', marginBottom: '0.35rem' }}>
+          <FiUsers size={12} style={{ marginRight: '0.25rem', verticalAlign: '-2px' }} />
+          Cadastro operacional — conferência com a planilha
+        </div>
+        <div style={{ fontSize: '0.62rem', color: '#64748b', marginBottom: '0.45rem' }}>
+          Cadastre a frota, motoristas e coletores ativos. Na validação do upload, o sistema compara com os nomes/placas da planilha.
+        </div>
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+          gap: '0.5rem',
+        }}>
+          <div>
+            <div style={{ fontSize: '0.62rem', fontWeight: 600, color: '#64748b', marginBottom: '0.2rem' }}>
+              Placas ativas (frota)
+            </div>
+            <textarea
+              value={textoPlacasAtivas}
+              disabled={salvandoCadastro}
+              onChange={(e) => setTextoPlacasAtivas(e.target.value)}
+              placeholder={'ABC1D23\nXYZ9W87'}
+              rows={3}
+              style={{
+                width: '100%', fontSize: '0.72rem', border: '1px solid #e2e8f0',
+                borderRadius: '6px', padding: '0.35rem 0.45rem', resize: 'vertical',
+                color: '#0f172a', background: '#f8fafc', minHeight: '56px',
+              }}
+            />
+          </div>
+          <div>
+            <div style={{ fontSize: '0.62rem', fontWeight: 600, color: '#64748b', marginBottom: '0.2rem' }}>
+              Motoristas
+            </div>
+            <textarea
+              value={textoMotoristas}
+              disabled={salvandoCadastro}
+              onChange={(e) => setTextoMotoristas(e.target.value)}
+              placeholder={'João Silva\nMaria Souza'}
+              rows={3}
+              style={{
+                width: '100%', fontSize: '0.72rem', border: '1px solid #e2e8f0',
+                borderRadius: '6px', padding: '0.35rem 0.45rem', resize: 'vertical',
+                color: '#0f172a', background: '#f8fafc', minHeight: '56px',
+              }}
+            />
+          </div>
+          <div>
+            <div style={{ fontSize: '0.62rem', fontWeight: 600, color: '#64748b', marginBottom: '0.2rem' }}>
+              Coletores ativos
+            </div>
+            <textarea
+              value={textoColetores}
+              disabled={salvandoCadastro}
+              onChange={(e) => setTextoColetores(e.target.value)}
+              placeholder={'Carlos\nAna Paula'}
+              rows={3}
+              style={{
+                width: '100%', fontSize: '0.72rem', border: '1px solid #e2e8f0',
+                borderRadius: '6px', padding: '0.35rem 0.45rem', resize: 'vertical',
+                color: '#0f172a', background: '#f8fafc', minHeight: '56px',
+              }}
+            />
+          </div>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.4rem' }}>
+          <button
+            type="button"
+            onClick={salvarCadastroOperacional}
+            disabled={salvandoCadastro}
+            style={{
+              fontSize: '0.68rem', fontWeight: 700, padding: '0.3rem 0.65rem',
+              border: 'none', borderRadius: '5px', cursor: salvandoCadastro ? 'wait' : 'pointer',
+              background: '#6366f1', color: '#fff',
+            }}
+          >
+            {salvandoCadastro ? 'Salvando…' : 'Salvar cadastro'}
+          </button>
         </div>
       </div>
 
@@ -637,11 +1096,11 @@ export default function ContratoDetalhe() {
                               } else if (etp.key === 'kpis') {
                                 navigate(`/contratos/${id}/servicos/${servico.id}/configurar`);
                               } else if (etp.key === 'dashboard') {
-                                navigate(`/contratos/${id}/servicos/${servico.id}/dashboard`);
+                                navigate(`/contratos/${id}/servicos/${servico.id}`);
                               }
                             } else {
                               if (etp.key === 'dashboard') {
-                                navigate(`/contratos/${id}/servicos/${servico.id}/dashboard`);
+                                navigate(`/contratos/${id}/servicos/${servico.id}`);
                               } else if (etp.key === 'upload') {
                                 setServicoExpandidoId(servico.id);
                               }
@@ -713,7 +1172,7 @@ export default function ContratoDetalhe() {
                         className="btn-servico-acao primaria"
                         onClick={(e) => {
                           e.stopPropagation();
-                          navigate(`/contratos/${id}/servicos/${servico.id}/dashboard`);
+                          navigate(`/contratos/${id}/servicos/${servico.id}`);
                         }}
                         title="Ver Dashboard"
                       >
@@ -753,6 +1212,7 @@ export default function ContratoDetalhe() {
                       servicoId={servico.id}
                       servicoNome={servico.nome}
                       onStatusChange={(status) => handleStatusChange(servico.id, status)}
+                      onPlanilhasChange={(info) => handlePlanilhasChange(servico.id, info)}
                     />
                   </div>
                 )}
@@ -802,7 +1262,16 @@ export default function ContratoDetalhe() {
                     );
                   })}
                 </div>
-                {tiposSelecionados.length > 0 && TIPOS_SERVICO_META[tiposSelecionados[0] as TipoServico] && (
+                {tiposSelecionados.length > 1 && (
+                  <div style={{
+                    marginTop: '0.4rem', padding: '0.5rem 0.6rem',
+                    background: '#eff6ff', borderRadius: '6px',
+                    border: '1px solid #bfdbfe', fontSize: '0.72rem', color: '#1d4ed8',
+                  }}>
+                    Será criado um serviço para cada tipo selecionado. Configure a receita de cada um após a criação.
+                  </div>
+                )}
+                {tiposSelecionados.length === 1 && TIPOS_SERVICO_META[tiposSelecionados[0] as TipoServico] && (
                   <div style={{
                     marginTop: '0.4rem', padding: '0.5rem 0.6rem',
                     background: '#f8fafc', borderRadius: '6px',
@@ -813,6 +1282,7 @@ export default function ContratoDetalhe() {
                 )}
               </div>
 
+              {tiposSelecionados.length === 1 && (
               <div className="form-group modal-valores-servico">
                 <label>
                   <FiDollarSign size={12} style={{ marginRight: '0.25rem', verticalAlign: '-2px' }} />
@@ -847,21 +1317,21 @@ export default function ContratoDetalhe() {
                       { key: 'MINI', val: valorMini, set: setValorMini, cor: '#22c55e' },
                       { key: 'TRUCK', val: valorTruck, set: setValorTruck, cor: '#f59e0b' },
                       { key: 'TOCO', val: valorToco, set: setValorToco, cor: '#a855f7' },
+                      { key: 'BASCULANTE', val: valorBasculante, set: setValorBasculante, cor: '#ef4444' },
                     ].map(item => (
                       <div key={item.key} className="valor-input-group">
                         <label style={{ color: item.cor }}>{item.key}</label>
                         <input
-                          type="number"
-                          step="0.01"
-                          min="0"
+                          type="text"
+                          inputMode="decimal"
                           value={item.val}
-                          onChange={e => item.set(e.target.value)}
-                          placeholder="0,00"
+                          onChange={e => item.set(e.target.value.replace(/[^\d.,]/g, ''))}
+                          placeholder="0,43"
                         />
                       </div>
                     ))}
                     <p style={{ fontSize: '0.68rem', color: '#64748b', margin: '0.35rem 0 0', lineHeight: 1.4, flexBasis: '100%' }}>
-                      Cada viagem usará o valor do tipo correspondente (Mini, Truck ou Toco) conforme a coluna da planilha.
+                      Cada viagem usará o valor do tipo correspondente (Mini, Truck, Toco ou Basculante) conforme a coluna da planilha.
                     </p>
                   </div>
                 )}
@@ -871,12 +1341,11 @@ export default function ContratoDetalhe() {
                     <div className="valor-input-group">
                       <label style={{ color: '#0ea5e9' }}>Valor por KM (R$)</label>
                       <input
-                        type="number"
-                        step="0.01"
-                        min="0"
+                        type="text"
+                        inputMode="decimal"
                         value={valorKmLinear}
-                        onChange={e => setValorKmLinear(e.target.value)}
-                        placeholder="0,00"
+                        onChange={e => setValorKmLinear(e.target.value.replace(/[^\d.,]/g, ''))}
+                        placeholder="0,43"
                       />
                     </div>
                   </div>
@@ -887,13 +1356,15 @@ export default function ContratoDetalhe() {
                     <div className="valor-input-group">
                       <label style={{ color: '#f97316' }}>Valor por m² (R$)</label>
                       <input
-                        type="number"
-                        step="0.01"
-                        min="0"
+                        type="text"
+                        inputMode="decimal"
                         value={valorM2}
-                        onChange={e => setValorM2(e.target.value)}
-                        placeholder="0,00"
+                        onChange={e => setValorM2(e.target.value.replace(/[^\d.,]/g, ''))}
+                        placeholder="0,43"
                       />
+                      <span style={{ fontSize: '0.62rem', color: '#64748b', marginTop: '0.2rem' }}>
+                        Use vírgula ou ponto (ex.: 0,43)
+                      </span>
                     </div>
                   </div>
                 )}
@@ -903,12 +1374,11 @@ export default function ContratoDetalhe() {
                     <div className="valor-input-group">
                       <label style={{ color: '#22d3ee' }}>Valor por Árvore (R$)</label>
                       <input
-                        type="number"
-                        step="0.01"
-                        min="0"
+                        type="text"
+                        inputMode="decimal"
                         value={valorPorArvore}
-                        onChange={e => setValorPorArvore(e.target.value)}
-                        placeholder="0,00"
+                        onChange={e => setValorPorArvore(e.target.value.replace(/[^\d.,]/g, ''))}
+                        placeholder="0,43"
                       />
                     </div>
                   </div>
@@ -919,17 +1389,17 @@ export default function ContratoDetalhe() {
                     <div className="valor-input-group">
                       <label style={{ color: '#ef4444' }}>Valor por Equipe (R$)</label>
                       <input
-                        type="number"
-                        step="0.01"
-                        min="0"
+                        type="text"
+                        inputMode="decimal"
                         value={valorPorEquipe}
-                        onChange={e => setValorPorEquipe(e.target.value)}
-                        placeholder="0,00"
+                        onChange={e => setValorPorEquipe(e.target.value.replace(/[^\d.,]/g, ''))}
+                        placeholder="0,43"
                       />
                     </div>
                   </div>
                 )}
               </div>
+              )}
 
               <div className="modal-actions" style={{ marginTop: '1rem' }}>
                 <button type="submit" className="btn btn-primary" disabled={salvandoServico} style={{
@@ -937,7 +1407,11 @@ export default function ContratoDetalhe() {
                   background: 'linear-gradient(135deg, #6366f1, #818cf8)',
                   fontSize: '0.85rem',
                 }}>
-                  {salvandoServico ? 'Criando...' : 'Criar Serviço'}
+                  {salvandoServico
+                    ? 'Criando...'
+                    : tiposSelecionados.length > 1
+                      ? `Criar ${tiposSelecionados.length} Serviços`
+                      : 'Criar Serviço'}
                 </button>
                 <button type="button" className="btn btn-secondary" onClick={fecharModalCriacao}>
                   Cancelar

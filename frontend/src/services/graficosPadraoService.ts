@@ -1,13 +1,4 @@
-const API_URL = '/api/graficos-padrao';
-const TOKEN_KEY = '@abastecimento:token';
-
-async function getHeaders(): Promise<Record<string, string>> {
-  const token = localStorage.getItem(TOKEN_KEY);
-  return {
-    'Content-Type': 'application/json',
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-  };
-}
+import api from './api';
 
 export interface GraficoPadraoConfig {
   id: string;
@@ -37,50 +28,28 @@ export interface GraficoPadraoResponse {
 }
 
 const graficosPadraoService = {
-  /**
-   * Lista a biblioteca de gráficos padrão
-   */
   async listarBiblioteca(tipoServico?: string, apenasAtivos?: boolean): Promise<GraficoPadraoResponse> {
-    const params = new URLSearchParams();
-    if (tipoServico) params.set('tipoServico', tipoServico);
-    if (apenasAtivos) params.set('apenasAtivos', 'true');
-
-    const url = `${API_URL}/biblioteca${params.toString() ? '?' + params.toString() : ''}`;
-    const res = await fetch(url, { headers: await getHeaders() });
-    if (!res.ok) throw new Error('Erro ao carregar biblioteca de gráficos');
-    return res.json();
+    const params: Record<string, string> = {};
+    if (tipoServico) params.tipoServico = tipoServico;
+    if (apenasAtivos) params.apenasAtivos = 'true';
+    const { data } = await api.get<GraficoPadraoResponse>('/graficos-padrao/biblioteca', { params });
+    return data;
   },
 
-  /**
-   * Ativa/desativa um gráfico na biblioteca
-   */
   async toggleAtivo(id: string, ativo: boolean): Promise<{ message: string; grafico: GraficoPadraoConfig }> {
-    const res = await fetch(`${API_URL}/biblioteca/${id}/ativar`, {
-      method: 'PUT',
-      headers: await getHeaders(),
-      body: JSON.stringify({ ativo }),
-    });
-    if (!res.ok) throw new Error('Erro ao alterar status do gráfico');
-    return res.json();
+    const { data } = await api.put(`/graficos-padrao/biblioteca/${id}/ativar`, { ativo });
+    return data;
   },
 
-  /**
-   * Atualiza configuração de um gráfico na biblioteca
-   */
-  async atualizarConfig(id: string, data: Partial<GraficoPadraoConfig>): Promise<{ message: string; grafico: GraficoPadraoConfig }> {
-    const res = await fetch(`${API_URL}/biblioteca/${id}`, {
-      method: 'PUT',
-      headers: await getHeaders(),
-      body: JSON.stringify(data),
-    });
-    if (!res.ok) throw new Error('Erro ao atualizar gráfico');
-    return res.json();
+  async atualizarConfig(
+    id: string,
+    payload: Partial<GraficoPadraoConfig>,
+  ): Promise<{ message: string; grafico: GraficoPadraoConfig }> {
+    const { data } = await api.put(`/graficos-padrao/biblioteca/${id}`, payload);
+    return data;
   },
 
-  /**
-   * Salva um gráfico personalizado como padrão
-   */
-  async salvarComoPadrao(data: {
+  async salvarComoPadrao(payload: {
     servicoId: string;
     titulo: string;
     tipo: string;
@@ -90,36 +59,18 @@ const graficosPadraoService = {
     categoria?: string;
     cor?: string;
   }): Promise<{ message: string; grafico: GraficoPadraoConfig }> {
-    const res = await fetch(`${API_URL}/salvar-padrao`, {
-      method: 'POST',
-      headers: await getHeaders(),
-      body: JSON.stringify(data),
-    });
-    if (!res.ok) throw new Error('Erro ao salvar gráfico como padrão');
-    return res.json();
+    const { data } = await api.post('/graficos-padrao/salvar-padrao', payload);
+    return data;
   },
 
-  /**
-   * Remove um gráfico personalizado da biblioteca
-   */
   async excluir(id: string): Promise<{ message: string }> {
-    const res = await fetch(`${API_URL}/biblioteca/${id}`, {
-      method: 'DELETE',
-      headers: await getHeaders(),
-    });
-    if (!res.ok) throw new Error('Erro ao excluir gráfico');
-    return res.json();
+    const { data } = await api.delete(`/graficos-padrao/biblioteca/${id}`);
+    return data;
   },
 
-  /**
-   * Verifica gráficos padrão para um serviço específico
-   */
-  async verificarServico(servicoId: string): Promise<any> {
-    const res = await fetch(`${API_URL}/biblioteca/verificar-servico/${servicoId}`, {
-      headers: await getHeaders(),
-    });
-    if (!res.ok) throw new Error('Erro ao verificar gráficos do serviço');
-    return res.json();
+  async verificarServico(servicoId: string): Promise<unknown> {
+    const { data } = await api.get(`/graficos-padrao/biblioteca/verificar-servico/${servicoId}`);
+    return data;
   },
 };
 

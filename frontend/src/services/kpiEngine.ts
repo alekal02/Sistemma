@@ -53,6 +53,7 @@ export interface ValoresCaminhao {
   VALOR_MINI: number | null;
   VALOR_TRUCK: number | null;
   VALOR_TOCO: number | null;
+  VALOR_BASCULANTE: number | null;
 }
 
 export interface ConfigFaturamentoValores {
@@ -62,6 +63,7 @@ export interface ConfigFaturamentoValores {
   valorMini?: number | null;
   valorTruck?: number | null;
   valorToco?: number | null;
+  valorBasculante?: number | null;
   valorKmLinear?: number | null;
   valorM2?: number | null;
   valorPorArvore?: number | null;
@@ -85,6 +87,7 @@ export function buildValoresFixosFromConfigFaturamento(
   set('VALOR_MINI', cfg.valorMini);
   set('VALOR_TRUCK', cfg.valorTruck);
   set('VALOR_TOCO', cfg.valorToco);
+  set('VALOR_BASCULANTE', cfg.valorBasculante);
   set('VALOR_KM_LINEAR', cfg.valorKmLinear);
   set('VALOR_M2', cfg.valorM2);
   set('VALOR_POR_ARVORE', cfg.valorPorArvore);
@@ -93,7 +96,7 @@ export function buildValoresFixosFromConfigFaturamento(
   return v;
 }
 
-const KPI_RECEITA_PATTERN = /FATURAMENTO_EST|VALOR_MINI|VALOR_TRUCK|VALOR_TOCO|VALOR_TONELADA|VALOR_KM_LINEAR|VALOR_M2|VALOR_POR_/i;
+const KPI_RECEITA_PATTERN = /FATURAMENTO_EST|VALOR_MINI|VALOR_TRUCK|VALOR_TOCO|VALOR_BASCULANTE|VALOR_TONELADA|VALOR_KM_LINEAR|VALOR_M2|VALOR_POR_/i;
 
 /** Sincroniza KPIs de receita com a config de faturamento por tipo de caminhão */
 export function sincronizarKpisComFaturamento(

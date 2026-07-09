@@ -4,6 +4,8 @@ import AppDataSource from '../database/data-source';
 import { KpiUniversal, PlaceholderKpi } from '../entities/KpiUniversal';
 import { Servico } from '../entities/Servico';
 import { TIPOS_SERVICO_VALORES } from '../enums/TipoServico';
+import { deduplicarKpisLista } from '../services/kpiDeduplicacaoService';
+import { sincronizarKpisUniversaisBiblioteca } from '../database/sincronizarKpisUniversaisBiblioteca';
 
 /** Helper: extrai param como string */
 function paramStr(req: Request, name: string): string {
@@ -199,6 +201,9 @@ export class KpiUniversalController {
     try {
       const kpi = await this.repository.findOne({ where: { id: paramStr(req, 'id') } });
       if (!kpi) return res.status(404).json({ error: 'KPI universal não encontrado' });
+      if (!kpi.isPersonalizado) {
+        return res.status(403).json({ error: 'KPIs de sistema não podem ser editados. Duplique para criar uma versão personalizada.' });
+      }
 
       const { nome, label, formula, agregacao, formato, unidade, categoria, cor, descricao, metaSugerida, tipoServico, placeholders } = req.body;
 
@@ -236,6 +241,9 @@ export class KpiUniversalController {
     try {
       const kpi = await this.repository.findOne({ where: { id: paramStr(req, 'id') } });
       if (!kpi) return res.status(404).json({ error: 'KPI universal não encontrado' });
+      if (!kpi.isPersonalizado) {
+        return res.status(403).json({ error: 'KPIs de sistema não podem ser excluídos. Duplique para criar uma versão personalizada.' });
+      }
 
       await this.repository.remove(kpi);
       return res.json({ message: 'KPI universal excluído com sucesso' });
@@ -341,10 +349,13 @@ export class KpiUniversalController {
       // ⭐ Mantém os KPIs manuais (que NÃO têm origemUniversal)
       const kpisSemEste = kpisExistentes.filter((k: any) => k.origemUniversal !== kpi.id);
 
+      const { kpis: kpisDedup } = deduplicarKpisLista([...kpisSemEste, kpiAtivado], { manterInativos: true });
+
       servico.configDashboard = {
         ...(servico.configDashboard || {}),
-        kpis: [...kpisSemEste, kpiAtivado],
+        kpis: kpisDedup,
         graficos: servico.configDashboard?.graficos || [],
+        ultimaAtivacaoUniversal: new Date().toISOString(),
       };
 
       await this.servicoRepo.save(servico);
@@ -416,7 +427,10 @@ export class KpiUniversalController {
         const kpisUniversaisExistentes = kpisExistentes.filter(
           (k: any) => k.origemUniversal && !idsSendoAtivados.has(k.origemUniversal)
         );
-        const kpisFinais = [...kpisManuais, ...kpisUniversaisExistentes, ...kpisAtivados];
+        const { kpis: kpisFinais } = deduplicarKpisLista(
+          [...kpisManuais, ...kpisUniversaisExistentes, ...kpisAtivados],
+          { manterInativos: true },
+        );
 
         servico.configDashboard = {
           ...(servico.configDashboard || {}),
@@ -494,8 +508,11 @@ export class KpiUniversalController {
         (k: any) => k.origemUniversal && !idsSendoAtivados.has(k.origemUniversal)
       );
 
-      // 3) Juntar: manuais + universais existentes (não reativados) + novos ativados
-      const kpisFinais = [...kpisManuais, ...kpisUniversaisExistentes, ...kpisAtivados];
+      // 3) Juntar e deduplicar (nome, fórmula e aliases)
+      const { kpis: kpisFinais } = deduplicarKpisLista(
+        [...kpisManuais, ...kpisUniversaisExistentes, ...kpisAtivados],
+        { manterInativos: true },
+      );
 
       servico.configDashboard = {
         ...(servico.configDashboard || {}),
@@ -518,6 +535,20 @@ export class KpiUniversalController {
     } catch (error: any) {
       console.error('Erro ao ativar múltiplos KPIs universais:', error?.message || error);
       return res.status(500).json({ error: 'Erro ao ativar múltiplos KPIs universais' });
+    }
+  }
+
+  /**
+   * POST /api/kpis-universais/sincronizar-biblioteca
+   * Remove KPIs de sistema obsoletos e alinha a biblioteca ao catálogo do código.
+   */
+  async sincronizarBiblioteca(req: Request, res: Response): Promise<any> {
+    try {
+      const resultado = await sincronizarKpisUniversaisBiblioteca();
+      return res.json({ sucesso: true, ...resultado });
+    } catch (error) {
+      console.error('Erro ao sincronizar biblioteca de KPIs universais:', error);
+      return res.status(500).json({ error: 'Erro ao sincronizar biblioteca de KPIs universais' });
     }
   }
 
@@ -566,6 +597,14 @@ export class KpiUniversalController {
       const importados: KpiUniversal[] = [];
 
       for (const kpi of kpisParaImportar) {
+        const nomeKpi = (kpi.nome || kpi.label || '').trim();
+        if (!nomeKpi) continue;
+
+        const existente = await this.repository.findOne({
+          where: { nome: nomeKpi, tipoServico },
+        });
+        if (existente) continue;
+
         // Extrair placeholders da fórmula
         const placeholders: PlaceholderKpi[] = [];
         if (kpi.expressao) {
@@ -588,8 +627,8 @@ export class KpiUniversalController {
         }
 
         const novo = new KpiUniversal();
-        novo.nome = kpi.nome || kpi.label || 'KPI importado';
-        novo.label = kpi.label || kpi.nome || 'KPI importado';
+        novo.nome = nomeKpi;
+        novo.label = kpi.label || nomeKpi || 'KPI importado';
         novo.formula = kpi.expressao || '';
         novo.agregacao = kpi.agregacao || 'sum';
         novo.formato = kpi.formato || 'numero';

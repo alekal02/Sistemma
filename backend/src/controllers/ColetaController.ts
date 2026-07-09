@@ -1,10 +1,20 @@
 import { Request, Response } from 'express';
 import PlanilhaService from '../services/PlanilhaService';
 import DeduplicacaoService from '../services/DeduplicacaoService';
+import RocadaImportService from '../services/rocadaImportService';
 import QualidadeDadosService from '../services/QualidadeDadosService';
 import { analisarQualidadePlanilha } from '../services/QualidadePlanilhaPreviewService';
 import AppDataSource from '../database/data-source';
 import { User } from '../entities/User';
+import { TipoServico } from '../enums/TipoServico';
+import { buildConfigDashboardPadraoColeta } from '../config/dashboardPadraoColeta';
+import { Servico } from '../entities/Servico';
+import { PlanilhaUpload } from '../entities/PlanilhaUpload';
+import { invalidarCacheDashboardServico } from './ServicoController';
+import { invalidarCacheDadosServico } from '../services/servicoDadosCache';
+import { dashboardCache } from '../services/DashboardCacheManager';
+import { agendarWarmupPosUpload } from '../services/executivoCacheWarmupService';
+import { gerarConfigGraficosPadrao, reResolverGraficos } from '../services/graficosPadrao';
 
 // Extensão para request com file do multer
 interface RequestWithFile extends Request {
@@ -51,8 +61,8 @@ export class ColetaController {
 
       // Validar extensão
       const ext = file.originalname.split('.').pop()?.toLowerCase();
-      if (ext !== 'xlsx' && ext !== 'xls') {
-        res.status(400).json({ error: 'Formato inválido. Envie um arquivo .xlsx ou .xls.' });
+      if (ext !== 'xlsx' && ext !== 'xls' && ext !== 'xlsm') {
+        res.status(400).json({ error: 'Formato inválido. Envie um arquivo .xlsx, .xls ou .xlsm.' });
         return;
       }
 
@@ -60,6 +70,61 @@ export class ColetaController {
 
       // Validar usuarioId contra o banco (evita FK violation se banco foi resetado)
       const usuarioIdValido = await this.validarUsuarioId(req.usuario?.id);
+
+      // Serviço de roçada: pipeline multi-modelo (não usa validação de viagem)
+      if (servico_id) {
+        const servicoRepo = AppDataSource.getRepository(Servico);
+        const servicoTipo = await servicoRepo.findOne({
+          where: { id: servico_id },
+          select: ['id', 'tipo'],
+        });
+        if (servicoTipo?.tipo === TipoServico.ROCADEIRA || servicoTipo?.tipo === 'rocadeira') {
+          const temPlanilhaAnterior = await AppDataSource.getRepository(PlanilhaUpload).count({
+            where: { servico_id },
+          });
+          const resultadoRocada = await RocadaImportService.importar(
+            file.buffer,
+            file.originalname,
+            servico_id,
+            usuarioIdValido ?? undefined,
+            temPlanilhaAnterior > 0 || estrategiaRaw === 'atualizar_data',
+          );
+
+          // Gráficos padrão de roçada
+          try {
+            const servico = await servicoRepo.findOne({ where: { id: servico_id } });
+            if (servico) {
+              const colunasNomes = ['DATA', 'BAIRRO', 'Area m²', 'Equipamento', 'Operador', 'Equipe', 'LOGRADOURO'];
+              const graficosAtuais = servico.configDashboard?.graficos || [];
+              const graficosReResolvidos = graficosAtuais.length > 0
+                ? reResolverGraficos(graficosAtuais, colunasNomes)
+                : gerarConfigGraficosPadrao('rocadeira', colunasNomes);
+              const cfgAtual = servico.configDashboard || {};
+              servico.configDashboard = {
+                ...cfgAtual,
+                graficos: graficosReResolvidos,
+                reResolvidoEm: new Date().toISOString(),
+                graficosPadraoAplicados: true,
+              };
+              await servicoRepo.save(servico);
+            }
+          } catch (err) {
+            console.warn('[ColetaController] Erro ao aplicar gráficos roçada:', err);
+          }
+
+          res.json({
+            sucesso: true,
+            ...resultadoRocada,
+            importadas: resultadoRocada.importados,
+            mensagem: `Roçada importada (${resultadoRocada.modelo}): ${resultadoRocada.importados} registro(s), `
+              + `${resultadoRocada.areaTotalM2.toLocaleString('pt-BR')} m² em ${resultadoRocada.dias} dia(s).`
+              + (resultadoRocada.consolidacao?.uploadsRemovidos
+                ? ` ${resultadoRocada.consolidacao.uploadsRemovidos} planilha(s) antiga(s) removida(s).`
+                : ''),
+          });
+          return;
+        }
+      }
 
       // Normalizar estratégia
       let estrategia: 'ignorar' | 'substituir' | 'atualizar_data' | 'inserir_data' = 'ignorar';
@@ -93,8 +158,8 @@ export class ColetaController {
         try {
           const { detectarPadraoPlanilha } = await import('../services/PadraoPlanilhaDetector');
           const { gerarConfigGraficosPadrao, reResolverGraficos } = await import('../services/graficosPadrao');
-          const ServicoRepo = (await import('../database/data-source')).default.getRepository('Servico');
-          const servico = await ServicoRepo.findOne({ where: { id: servico_id } });
+          const servicoRepo = AppDataSource.getRepository(Servico);
+          const servico = await servicoRepo.findOne({ where: { id: servico_id } });
           if (servico) {
             const colunas = detectarPadraoPlanilha(file.buffer);
             const colunasNomes = colunas.map((c: any) => c.nome);
@@ -110,28 +175,52 @@ export class ColetaController {
               ultimoUploadNome: file.originalname,
               detectadoEm: new Date().toISOString(),
             };
+            const cfgAtual = servico.configDashboard || {};
+            const tipoColeta = servico.tipo === TipoServico.COLETA_CAMINHAO;
+            const padraoColeta = tipoColeta ? buildConfigDashboardPadraoColeta() : null;
+            const semKpis = !cfgAtual.kpis?.length;
+
             servico.configDashboard = {
-              ...(servico.configDashboard || {}),
+              ...cfgAtual,
+              kpis: semKpis && padraoColeta ? padraoColeta.kpis : cfgAtual.kpis,
               graficos: graficosReResolvidos,
+              rankingsOperacionais: cfgAtual.rankingsOperacionais ?? padraoColeta?.rankingsOperacionais,
               reResolvidoEm: new Date().toISOString(),
               reResolvido: true,
               graficosPadraoAplicados: true,
               graficosPadraoTotal: graficosReResolvidos.length,
+              ...(semKpis && padraoColeta ? { dashboardPadraoVersao: padraoColeta.dashboardPadraoVersao } : {}),
             };
-            await ServicoRepo.save(servico);
+            await servicoRepo.save(servico);
           }
         } catch (err) {
           console.warn('[ColetaController] Erro ao detectar padrão:', err);
         }
+        invalidarCacheDadosServico(servico_id);
+        invalidarCacheDashboardServico(servico_id);
+        dashboardCache.invalidar(servico_id);
+        agendarWarmupPosUpload(servico_id);
       }
 
       let mensagem: string;
       if (estrategia === 'atualizar_data' || estrategia === 'inserir_data') {
-        if (resultado.ignorados > 0) {
-          mensagem = `Planilha processada! ${resultado.importados} registros importados, ${resultado.ignorados} ignorados (${resultado.datasApagadas?.length || 0} datas substituídas).`;
-        } else {
-          mensagem = `Planilha processada! ${resultado.importados} registros importados de ${resultado.totalLinhas}.`;
+        const cons = (resultado as any).consolidacao;
+        const partes = [
+          `${resultado.importados} registro(s) na planilha ativa`,
+        ];
+        if (resultado.datasApagadas?.length) {
+          partes.push(`${resultado.datasApagadas.length} dia(s) atualizado(s)`);
         }
+        if (cons?.registrosPreservados > 0) {
+          partes.push(`${cons.registrosPreservados} registro(s) de dias só no sistema preservados`);
+        }
+        if (cons?.uploadsRemovidos > 0) {
+          partes.push(`${cons.uploadsRemovidos} planilha(s) antiga(s) removida(s)`);
+        }
+        if (resultado.ignorados > 0) {
+          partes.push(`${resultado.ignorados} linha(s) ignorada(s)`);
+        }
+        mensagem = `Planilha processada! ${partes.join('; ')}.`;
       } else {
         mensagem = resultado.ignorados > 0
           ? `Planilha processada! ${resultado.importados} registros importados, ${resultado.ignorados} duplicatas ignoradas.`
@@ -145,7 +234,56 @@ export class ColetaController {
       });
     } catch (error: any) {
       console.error('Erro ao importar planilha:', error);
-      res.status(500).json({ error: error.message || 'Erro ao processar planilha.' });
+      const msg = error.message || 'Erro ao processar planilha.';
+      const status = msg.includes('ciclo(s) já fechado') ? 409 : 500;
+      res.status(status).json({ error: msg });
+    }
+  }
+
+  /**
+   * POST /api/coleta/upload/preview-rocada
+   * Pré-visualiza planilha de roçada (multi-modelo) sem importar.
+   */
+  async previewRocada(req: RequestWithFile, res: Response): Promise<void> {
+    try {
+      const file = req.file;
+      if (!file) {
+        res.status(400).json({ error: 'Nenhum arquivo enviado.' });
+        return;
+      }
+      const ext = file.originalname.split('.').pop()?.toLowerCase();
+      if (ext !== 'xlsx' && ext !== 'xls' && ext !== 'xlsm') {
+        res.status(400).json({ error: 'Formato inválido. Envie .xlsx, .xls ou .xlsm.' });
+        return;
+      }
+      const preview = RocadaImportService.preview(file.buffer);
+      const podeImportar = preview.resumo.podeImportar;
+      let mensagem: string;
+      if (podeImportar) {
+        mensagem = `Modelo ${preview.resumo.modelo}: ${preview.resumo.registros} registro(s), `
+          + `${preview.resumo.areaTotalM2.toLocaleString('pt-BR')} m², `
+          + `${preview.resumo.dias} dia(s), ${preview.resumo.bairros} bairro(s).`;
+        if (preview.resumo.linhasSemArea > 0) {
+          mensagem += ` ${preview.resumo.linhasSemArea} linha(s) sem m² serão ignoradas.`;
+        }
+      } else if (preview.semColunaArea) {
+        mensagem = 'Planilha sem coluna de metragem/área (m²). Inclua METRAGEM, TOTAL (M²), Área ou EXECUTADO.';
+      } else if (preview.linhasSemArea > 0) {
+        mensagem = `Nenhuma linha com m²/área válida (${preview.linhasSemArea} linha(s) sem metragem).`;
+      } else {
+        mensagem = preview.avisos[0] || 'Nenhuma linha de roçada reconhecida.';
+      }
+
+      res.json({
+        sucesso: podeImportar,
+        arquivo: file.originalname,
+        ...preview,
+        mensagem,
+        podeImportar,
+      });
+    } catch (error: any) {
+      console.error('Erro preview roçada:', error);
+      res.status(500).json({ error: error.message || 'Erro ao analisar planilha de roçada.' });
     }
   }
 
@@ -166,8 +304,8 @@ export class ColetaController {
       }
 
       const ext = file.originalname.split('.').pop()?.toLowerCase();
-      if (ext !== 'xlsx' && ext !== 'xls') {
-        res.status(400).json({ error: 'Formato inválido. Envie um arquivo .xlsx ou .xls.' });
+      if (ext !== 'xlsx' && ext !== 'xls' && ext !== 'xlsm') {
+        res.status(400).json({ error: 'Formato inválido. Envie um arquivo .xlsx, .xls ou .xlsm.' });
         return;
       }
 
@@ -258,6 +396,46 @@ export class ColetaController {
     } catch (error: any) {
       console.error('Erro ao analisar planilha por data:', error);
       res.status(500).json({ error: error.message || 'Erro ao analisar planilha.' });
+    }
+  }
+
+  /**
+   * POST /api/coleta/upload/conferencia-diaria
+   * Compara planilha vs sistema por dia (rotas, viagens, peso, km).
+   */
+  async conferenciaDiaria(req: RequestWithFile, res: Response): Promise<void> {
+    try {
+      const file = req.file;
+      if (!file) {
+        res.status(400).json({ error: 'Nenhum arquivo enviado.' });
+        return;
+      }
+
+      const ext = file.originalname.split('.').pop()?.toLowerCase();
+      if (ext !== 'xlsx' && ext !== 'xls') {
+        res.status(400).json({ error: 'Formato inválido. Envie um arquivo .xlsx ou .xls.' });
+        return;
+      }
+
+      const { servico_id } = req.body;
+      if (!servico_id) {
+        res.status(400).json({ error: 'servico_id é obrigatório.' });
+        return;
+      }
+
+      const conferencia = await DeduplicacaoService.conferirPlanilhaDiaria(
+        file.buffer,
+        servico_id,
+      );
+
+      res.json({
+        sucesso: true,
+        arquivo: file.originalname,
+        ...conferencia,
+      });
+    } catch (error: any) {
+      console.error('Erro na conferência diária:', error);
+      res.status(500).json({ error: error.message || 'Erro na conferência diária.' });
     }
   }
 
@@ -532,8 +710,13 @@ export class ColetaController {
         res.status(400).json({ error: 'ID inválido.' });
         return;
       }
-      await PlanilhaService.excluirUpload(id);
-      res.json({ sucesso: true, mensagem: 'Upload excluído com sucesso.' });
+      const resultado = await PlanilhaService.excluirUpload(id);
+      if (resultado.servicoId) {
+        invalidarCacheDashboardServico(resultado.servicoId);
+        dashboardCache.invalidar(resultado.servicoId);
+        agendarWarmupPosUpload(resultado.servicoId);
+      }
+      res.json({ sucesso: true, mensagem: resultado.message, ...resultado });
     } catch (error: any) {
       console.error('Erro ao excluir upload:', error);
       res.status(500).json({ error: error.message || 'Erro ao excluir upload.' });

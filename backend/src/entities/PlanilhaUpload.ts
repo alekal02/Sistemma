@@ -44,6 +44,13 @@ export class PlanilhaUpload {
     detalhes?: { data: string; placa: string; motivo: string }[];
     viagensInconsistentes?: number;
     viagensValidasDashboard?: number;
+    linhasDescartadasSemDados?: number;
+    viagensCorrigidas?: number;
+    consolidacao?: {
+      registrosPreservados: number;
+      uploadsRemovidos: number;
+      diasPreservados: string[];
+    };
   } | null;
 
   @Column('text', { nullable: true })
@@ -54,6 +61,17 @@ export class PlanilhaUpload {
 
   @Column('uuid', { nullable: true })
   servico_id!: string | null;
+
+  /** Ciclo de faturamento ao qual este upload pertence */
+  @Column('int', { nullable: true })
+  cicloMesReferencia!: number | null;
+
+  @Column('int', { nullable: true })
+  cicloAnoReferencia!: number | null;
+
+  /** Quando preenchido, os dados deste upload não são alterados por novas importações */
+  @Column('timestamptz', { nullable: true })
+  cicloFechadoEm!: Date | null;
 
   @Column('uuid', { nullable: true })
   usuarioId!: string | null;

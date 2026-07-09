@@ -6,35 +6,23 @@ import {
 } from 'react-icons/fi';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
+import contractService, { type ContratoSaude } from '../services/contractService';
 import { TIPOS_SERVICO_LABELS } from '../types';
 import '../styles/Contratos.css';
 
-interface ContratoSaude {
-  id: string;
-  numeroContrato: string;
-  status: 'ativo' | 'encerrado';
-  statusSaude: 'green' | 'yellow' | 'red';
-  totalServicos: number;
-  servicosConfigurados: number;
-  servicosComUpload: number;
-  servicosSemKpi: number;
-  totalRegistros: number;
-  totalKpisAtivos: number;
-  ultimoUpload: string | null;
-  tiposServico: string[];
-}
-
 interface FormData {
   numeroContrato: string;
+  diaInicioCiclo: number;
 }
 
 const formVazio: FormData = {
   numeroContrato: '',
+  diaInicioCiclo: 1,
 };
 
 export default function Contratos() {
   const navigate = useNavigate();
-  const { token } = useAuth();
+  const { user, isAdmin } = useAuth();
   const { adicionarToast } = useToast();
 
   const [contratos, setContratos] = useState<ContratoSaude[]>([]);
@@ -50,20 +38,15 @@ export default function Contratos() {
   const carregarContratos = useCallback(async () => {
     setCarregando(true);
     try {
-      const res = await fetch('/api/contracts/saude', {
-        headers: { Authorization: 'Bearer ' + token },
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setContratos(data.contratos || []);
-      }
-    } catch (error) {
-      console.error('Erro ao carregar contratos:', error);
-      adicionarToast('Erro ao carregar contratos', 'error');
+      const lista = await contractService.listarSaude();
+      setContratos(lista);
+    } catch (error: unknown) {
+      const msg = (error as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      adicionarToast(msg || 'Erro ao carregar contratos', 'error');
     } finally {
       setCarregando(false);
     }
-  }, [token, adicionarToast]);
+  }, [adicionarToast]);
 
   useEffect(() => {
     carregarContratos();
@@ -109,7 +92,10 @@ export default function Contratos() {
 
   const abrirModalEditar = (contrato: ContratoSaude) => {
     setEditandoId(contrato.id);
-    setForm({ numeroContrato: contrato.numeroContrato });
+    setForm({
+      numeroContrato: contrato.numeroContrato,
+      diaInicioCiclo: contrato.diaInicioCiclo ?? 1,
+    });
     setModalAberto(true);
   };
 
@@ -119,44 +105,43 @@ export default function Contratos() {
     setForm(formVazio);
   };
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
-    setForm(prev => ({ ...prev, [name]: value }));
+    setForm(prev => ({
+      ...prev,
+      [name]: name === 'diaInicioCiclo' ? Number(value) : value,
+    }));
   };
 
   const handleSalvar = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!user) {
+      adicionarToast('Sessão expirada. Faça login novamente.', 'warning');
+      navigate('/login');
+      return;
+    }
     if (!form.numeroContrato.trim()) {
       adicionarToast('Nome do contrato é obrigatório', 'warning');
       return;
     }
     setSalvando(true);
     try {
-      const body = { numeroContrato: form.numeroContrato.trim() };
-      let res;
+      const body = {
+        numeroContrato: form.numeroContrato.trim(),
+        diaInicioCiclo: form.diaInicioCiclo,
+      };
       if (editandoId) {
-        res = await fetch('/api/contracts/' + editandoId, {
-          method: 'PUT',
-          headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
+        await contractService.atualizar(editandoId, body);
+        adicionarToast('Contrato atualizado!', 'success');
       } else {
-        res = await fetch('/api/contracts', {
-          method: 'POST',
-          headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
+        await contractService.criar(body);
+        adicionarToast('Contrato cadastrado!', 'success');
       }
-      if (res.ok) {
-        adicionarToast(editandoId ? 'Contrato atualizado!' : 'Contrato cadastrado!', 'success');
-        fecharModal();
-        await carregarContratos();
-      } else {
-        const err = await res.json();
-        adicionarToast(err.error || 'Erro ao salvar contrato', 'error');
-      }
-    } catch {
-      adicionarToast('Ocorreu um erro. Tente novamente.', 'error');
+      fecharModal();
+      await carregarContratos();
+    } catch (error: unknown) {
+      const msg = (error as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      adicionarToast(msg || 'Erro ao salvar contrato', 'error');
     } finally {
       setSalvando(false);
     }
@@ -165,20 +150,13 @@ export default function Contratos() {
   const confirmarExclusao = async () => {
     if (!excluindoId) return;
     try {
-      const res = await fetch('/api/contracts/' + excluindoId, {
-        method: 'DELETE',
-        headers: { Authorization: 'Bearer ' + token },
-      });
-      if (res.ok) {
-        adicionarToast('Contrato excluído!', 'success');
-        setExcluindoId(null);
-        await carregarContratos();
-      } else {
-        const err = await res.json();
-        adicionarToast(err.error || 'Erro ao excluir contrato', 'error');
-      }
-    } catch {
-      adicionarToast('Erro ao excluir contrato', 'error');
+      await contractService.excluir(excluindoId);
+      adicionarToast('Contrato excluído!', 'success');
+      setExcluindoId(null);
+      await carregarContratos();
+    } catch (error: unknown) {
+      const msg = (error as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      adicionarToast(msg || 'Erro ao excluir contrato', 'error');
     }
   };
 
@@ -311,6 +289,11 @@ export default function Contratos() {
 
                   <td>
                     <strong>{contrato.numeroContrato}</strong>
+                    {(contrato.diaInicioCiclo ?? 1) > 1 && (
+                      <div style={{ fontSize: '0.65rem', color: '#64748b', marginTop: '0.1rem' }}>
+                        Medição dia {contrato.diaInicioCiclo}
+                      </div>
+                    )}
                   </td>
 
                   <td>
@@ -391,13 +374,15 @@ export default function Contratos() {
                     >
                       <FiEdit2 size={13} />
                     </button>
-                    <button
-                      className="acao-btn acao-btn-excluir"
-                      onClick={(e) => { e.stopPropagation(); setExcluindoId(contrato.id); }}
-                      title="Excluir contrato"
-                    >
-                      <FiTrash2 size={13} />
-                    </button>
+                    {isAdmin && (
+                      <button
+                        className="acao-btn acao-btn-excluir"
+                        onClick={(e) => { e.stopPropagation(); setExcluindoId(contrato.id); }}
+                        title="Excluir contrato"
+                      >
+                        <FiTrash2 size={13} />
+                      </button>
+                    )}
                     <button
                       className="acao-btn acao-btn-dashboard"
                       onClick={(e) => { e.stopPropagation(); navigate('/contratos/' + contrato.id); }}
@@ -427,6 +412,24 @@ export default function Contratos() {
                   placeholder="Ex: Contrato Prefeitura SP"
                   required autoFocus disabled={salvando}
                 />
+              </div>
+              <div className="form-group">
+                <label htmlFor="diaInicioCiclo">Dia de início da medição mensal</label>
+                <select
+                  id="diaInicioCiclo"
+                  name="diaInicioCiclo"
+                  value={form.diaInicioCiclo}
+                  onChange={handleChange}
+                  disabled={salvando}
+                >
+                  <option value={1}>Dia 1 (mês civil)</option>
+                  {Array.from({ length: 27 }, (_, i) => i + 2).map(d => (
+                    <option key={d} value={d}>Dia {d}</option>
+                  ))}
+                </select>
+                <span style={{ fontSize: '0.72rem', color: '#64748b', marginTop: '0.25rem', display: 'block' }}>
+                  Ex.: dia 25 = medição de 25 do mês anterior até 24 do mês de referência.
+                </span>
               </div>
               <div className="modal-actions">
                 <button type="submit" disabled={salvando} className="btn-salvar">

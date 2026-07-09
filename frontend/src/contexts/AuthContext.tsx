@@ -5,6 +5,9 @@
    ============================================ */
 import { createContext, useContext, useState, useEffect, type ReactNode } from 'react'
 import api from '../services/api'
+import { migrarStorageLegado, STORAGE_TOKEN, STORAGE_USER } from '../utils/storage'
+
+migrarStorageLegado()
 import type { UserData, AuthResponse } from '../types'
 
 // ---------- Tipos do contexto ----------
@@ -32,22 +35,39 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
-  /* ── Auto-login ao montar ── */
-  useEffect(() => {
-    const storedToken = localStorage.getItem('@abastecimento:token')
-    const storedUser = localStorage.getItem('@abastecimento:user')
+  const limparSessao = () => {
+    localStorage.removeItem(STORAGE_TOKEN)
+    localStorage.removeItem(STORAGE_USER)
+    localStorage.removeItem('@abastecimento:token')
+    localStorage.removeItem('@abastecimento:user')
+    setToken(null)
+    setUser(null)
+  }
 
-    if (storedToken && storedUser) {
+  /* ── Restaura sessão e valida token no backend ── */
+  useEffect(() => {
+    const storedToken = localStorage.getItem(STORAGE_TOKEN)
+      || localStorage.getItem('@abastecimento:token')
+    if (!storedToken) {
+      setLoading(false)
+      return
+    }
+
+    const validarSessao = async () => {
       try {
-        const parsedUser = JSON.parse(storedUser) as UserData
+        const { data } = await api.get<{ user: UserData }>('/auth/me', {
+          headers: { Authorization: `Bearer ${storedToken}` },
+        })
         setToken(storedToken)
-        setUser(parsedUser)
+        setUser(data.user)
       } catch {
-        localStorage.removeItem('@abastecimento:token')
-        localStorage.removeItem('@abastecimento:user')
+        limparSessao()
+      } finally {
+        setLoading(false)
       }
     }
-    setLoading(false)
+
+    validarSessao()
   }, [])
 
   /* ── Login ── */
@@ -55,8 +75,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const response = await api.post<AuthResponse>('/auth/login', { email, senha })
     const { token: newToken, user: userData } = response.data
 
-    localStorage.setItem('@abastecimento:token', newToken)
-    localStorage.setItem('@abastecimento:user', JSON.stringify(userData))
+    localStorage.setItem(STORAGE_TOKEN, newToken)
+    localStorage.setItem(STORAGE_USER, JSON.stringify(userData))
+    localStorage.removeItem('@abastecimento:token')
+    localStorage.removeItem('@abastecimento:user')
 
     setToken(newToken)
     setUser(userData)
@@ -64,10 +86,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   /* ── Logout ── */
   const logout = () => {
-    localStorage.removeItem('@abastecimento:token')
-    localStorage.removeItem('@abastecimento:user')
-    setToken(null)
-    setUser(null)
+    limparSessao()
   }
 
   /* ── Helper: isAdmin ── */

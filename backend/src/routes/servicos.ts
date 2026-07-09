@@ -11,6 +11,9 @@ router.get('/', authenticate, (req, res) => controller.listar(req, res));
 // GET /api/contracts/:contractId/servicos-kpis
 router.get('/kpis', authenticate, (req, res) => controller.listarKpisDeServicos(req, res));
 
+// GET /api/contracts/:contractId/servicos/comparar-por-tipo?tipoServico=coleta_caminhao
+router.get('/comparar-por-tipo', authenticate, (req, res) => controller.getCompararKpisPorTipo(req, res));
+
 // POST /api/contracts/:contractId/servicos
 router.post('/', authenticate, (req, res) => controller.criar(req, res));
 
@@ -26,8 +29,35 @@ router.get('/:id/dados', authenticate, (req, res) => controller.listarDados(req,
 // GET /api/contracts/:contractId/servicos/:id/dados-brutos
 router.get('/:id/dados-brutos', authenticate, (req, res) => controller.listarDadosBrutos(req, res));
 
+// GET /api/contracts/:contractId/servicos/:id/dados-dia/:data
+router.get('/:id/dados-dia/:data', authenticate, (req, res) => controller.listarDadosDia(req, res));
+
+// GET /api/contracts/:contractId/servicos/:id/rocada/agregacao
+router.get('/:id/rocada/agregacao', authenticate, (req, res) => controller.getRocadaAgregacao(req, res));
+
+// GET /api/contracts/:contractId/servicos/:id/coleta/agregacao
+router.get('/:id/coleta/agregacao', authenticate, (req, res) => controller.getColetaAgregacao(req, res));
+
 // GET /api/contracts/:contractId/servicos/:id/inconsistencias-viagens
 router.get('/:id/inconsistencias-viagens', authenticate, (req, res) => controller.getInconsistenciasViagens(req, res));
+
+// GET /api/contracts/:contractId/servicos/:id/resumo-ciclo-por-dia
+router.get('/:id/resumo-ciclo-por-dia', authenticate, (req, res) => controller.getResumoCicloPorDia(req, res));
+
+// GET /api/contracts/:contractId/servicos/:id/ciclos-fechados
+router.get('/:id/ciclos-fechados', authenticate, (req, res) => controller.listarCiclosFechados(req, res));
+
+// GET /api/contracts/:contractId/servicos/:id/ciclos/status
+router.get('/:id/ciclos/status', authenticate, (req, res) => controller.getStatusCiclo(req, res));
+
+// POST /api/contracts/:contractId/servicos/:id/ciclos/fechar
+router.post('/:id/ciclos/fechar', authenticate, (req, res) => controller.fecharCiclo(req, res));
+
+// GET /api/contracts/:contractId/servicos/:id/verificacao-viagens
+router.get('/:id/verificacao-viagens', authenticate, (req, res) => controller.getVerificacaoViagens(req, res));
+
+// GET /api/contracts/:contractId/servicos/:id/relatorio-sobrecarga-peso
+router.get('/:id/relatorio-sobrecarga-peso', authenticate, (req, res) => controller.getRelatorioSobrecargaPeso(req, res));
 
 // PUT /api/contracts/:contractId/servicos/:id/config-dashboard
 router.put('/:id/config-dashboard', authenticate, (req, res) => controller.salvarConfigDashboard(req, res));
@@ -70,8 +100,10 @@ router.get('/:id/kpi-exec-metrics', authenticate, (req, res) => controller.getEx
 router.post('/:id/kpi-calculate', authenticate, (req, res) => controller.calculateKpis(req, res));
 
 // POST /api/contracts/:contractId/servicos/:id/grafico-agregado
-// ⚡ Agrega dados para gráficos no backend (processa TODOS os registros, sem limite)
 router.post('/:id/grafico-agregado', authenticate, (req, res) => controller.getGraficoAgregado(req, res));
+
+// POST /api/contracts/:contractId/servicos/:id/graficos-agregados — todos os gráficos em 1 requisição
+router.post('/:id/graficos-agregados', authenticate, (req, res) => controller.getGraficosAgregadosBatch(req, res));
 
 // GET /api/contracts/:contractId/servicos/:id/modelo-executivo
 // Retorna o template de fórmulas do Modelo Executivo + valores do contrato

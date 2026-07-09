@@ -4,18 +4,29 @@ import { Link, useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { useBreadcrumbs } from '../contexts/BreadcrumbContext'
 import { HiChevronLeft, HiChevronRight } from 'react-icons/hi2'
-import { FiDatabase, FiChevronRight as FiChevronRightSmall, FiBarChart2 } from 'react-icons/fi'
-import { LuLayoutDashboard } from 'react-icons/lu'
+import {
+  FiDatabase,
+  FiChevronRight as FiChevronRightSmall,
+  FiBarChart2,
+  FiActivity,
+  FiUsers,
+  FiPieChart,
+  FiLogOut,
+} from 'react-icons/fi'
 import './Layout.css'
+import { useAppVersion } from '../hooks/useAppVersion'
 
 interface LayoutProps {
   children: ReactNode
 }
 
 const MAPA_TITULOS: Record<string, string> = {
-  '/visao-geral': 'Visão Geral',
+  '/visao-geral': 'Visão geral',
   '/contratos': 'Contratos',
   '/kpis-universais': 'Biblioteca de KPIs',
+  '/graficos-padrao': 'Gráficos padrão',
+  '/usuarios': 'Usuários',
+  '/dashboard/executivo': 'Relatórios executivos',
 }
 
 function getInitials(nome: string): string {
@@ -29,27 +40,22 @@ function getInitials(nome: string): string {
 }
 
 function Layout({ children }: LayoutProps) {
-  const { user, logout } = useAuth()
+  const { user, logout, isAdmin } = useAuth()
   const location = useLocation()
   const [sidebarAberta, setSidebarAberta] = useState(true)
   const { breadcrumbs } = useBreadcrumbs()
+  const versaoLabel = useAppVersion()
 
-  const toggleSidebar = () => {
-    setSidebarAberta(prev => !prev)
-  }
+  const toggleSidebar = () => setSidebarAberta(prev => !prev)
 
-  // Determinar o título e breadcrumbs
   const temBreadcrumbsCustomizados = breadcrumbs.length > 0
-
   let titulo: string
   let breadcrumbElements: { label: string; href?: string }[]
 
   if (temBreadcrumbsCustomizados) {
-    // Usar breadcrumbs definidos pela página
     titulo = breadcrumbs[breadcrumbs.length - 1]?.label || 'Sistemma'
     breadcrumbElements = breadcrumbs
   } else {
-    // Breadcrumbs automáticos baseados na URL
     const path = location.pathname
     if (MAPA_TITULOS[path]) {
       titulo = MAPA_TITULOS[path]
@@ -57,18 +63,17 @@ function Layout({ children }: LayoutProps) {
     } else if (path.startsWith('/contratos/')) {
       const parts = path.split('/').filter(Boolean)
       if (parts.length === 2) {
-        // /contratos/:id
-        titulo = 'Detalhe do Contrato'
+        titulo = 'Detalhe do contrato'
         breadcrumbElements = [
-          { label: 'Visão Geral', href: '/visao-geral' },
+          { label: 'Visão geral', href: '/visao-geral' },
           { label: 'Contratos', href: '/contratos' },
           { label: titulo },
         ]
       } else if (parts.length >= 4) {
-        const isConfig = parts.includes('configurar');
-        titulo = isConfig ? 'Configuração do Serviço' : 'Serviço';
+        const isConfig = parts.includes('configurar')
+        titulo = isConfig ? 'Configuração do serviço' : 'Relatório do serviço'
         breadcrumbElements = [
-          { label: 'Visão Geral', href: '/visao-geral' },
+          { label: 'Visão geral', href: '/visao-geral' },
           { label: 'Contratos', href: '/contratos' },
           { label: titulo },
         ]
@@ -82,82 +87,139 @@ function Layout({ children }: LayoutProps) {
     }
   }
 
+  const fecharSidebarMobile = () => {
+    if (window.innerWidth <= 768) setSidebarAberta(false)
+  }
+
   return (
     <div className="layout">
-      {/* Overlay do sidebar em mobile */}
       <div
         className={`sidebar-overlay ${sidebarAberta ? '' : 'hidden'}`}
         onClick={() => setSidebarAberta(false)}
+        aria-hidden="true"
       />
 
-      {/* Sidebar */}
       <aside className={`sidebar ${sidebarAberta ? '' : 'collapsed'}`}>
-        <div className="sidebar-header">
-          <div className="sidebar-header-content">
-            <h2 className={sidebarAberta ? '' : 'hidden-text'}>Sistemma</h2>
-            <button className={`btn-toggle ${sidebarAberta ? '' : 'collapsed'}`} onClick={toggleSidebar} title="Alternar menu">
-              {sidebarAberta ? <HiChevronLeft size={16} /> : <HiChevronRight size={16} />}
-            </button>
+        <div className="sidebar-brand">
+          <div className="sidebar-brand-icon" aria-hidden="true">
+            <FiBarChart2 size={22} />
           </div>
+          <div className={`sidebar-brand-text ${sidebarAberta ? '' : 'hidden-text'}`}>
+            <span className="sidebar-brand-name">Sistemma</span>
+            <span className="sidebar-brand-tag">Analytics</span>
+          </div>
+          <button
+            type="button"
+            className="btn-toggle"
+            onClick={toggleSidebar}
+            title="Recolher menu"
+            aria-label="Recolher menu"
+          >
+            {sidebarAberta ? <HiChevronLeft size={18} /> : <HiChevronRight size={18} />}
+          </button>
         </div>
 
-        <nav className="sidebar-nav">
-          <div className={`sidebar-section-label ${sidebarAberta ? '' : 'hidden-text'}`}>Principal</div>
+        <nav className="sidebar-nav" aria-label="Navegação principal">
+          <div className={`sidebar-section-label ${sidebarAberta ? '' : 'hidden-text'}`}>
+            Relatórios
+          </div>
 
           <Link
             to="/visao-geral"
             className={`sidebar-link ${location.pathname === '/visao-geral' ? 'active' : ''}`}
-            onClick={() => { if (window.innerWidth <= 768) setSidebarAberta(false); }}
+            onClick={fecharSidebarMobile}
           >
-            <span className="sidebar-icon"><LuLayoutDashboard size={20} /></span>
-            <span className={sidebarAberta ? '' : 'hidden-text'}>Dashboard</span>
+            <span className="sidebar-icon"><FiActivity size={20} /></span>
+            <span className={sidebarAberta ? '' : 'hidden-text'}>Visão geral</span>
           </Link>
+
+          <Link
+            to="/dashboard/executivo"
+            className={`sidebar-link ${location.pathname === '/dashboard/executivo' ? 'active' : ''}`}
+            onClick={fecharSidebarMobile}
+          >
+            <span className="sidebar-icon"><FiPieChart size={20} /></span>
+            <span className={sidebarAberta ? '' : 'hidden-text'}>Executivo</span>
+          </Link>
+
+          <div className={`sidebar-section-label ${sidebarAberta ? '' : 'hidden-text'}`}>
+            Dados
+          </div>
 
           <Link
             to="/contratos"
             className={`sidebar-link ${location.pathname.startsWith('/contratos') ? 'active' : ''}`}
-            onClick={() => { if (window.innerWidth <= 768) setSidebarAberta(false); }}
+            onClick={fecharSidebarMobile}
           >
             <span className="sidebar-icon"><FiDatabase size={20} /></span>
             <span className={sidebarAberta ? '' : 'hidden-text'}>Contratos</span>
           </Link>
 
-          <div className={`sidebar-section-label ${sidebarAberta ? '' : 'hidden-text'}`}>Bibliotecas</div>
+          {isAdmin && (
+            <>
+              <div className={`sidebar-section-label ${sidebarAberta ? '' : 'hidden-text'}`}>
+                Administração
+              </div>
 
-          <Link
-            to="/kpis-universais"
-            className={`sidebar-link ${location.pathname === '/kpis-universais' ? 'active' : ''}`}
-            onClick={() => { if (window.innerWidth <= 768) setSidebarAberta(false); }}
-          >
-            <span className="sidebar-icon"><FiBarChart2 size={18} /></span>
-            <span className={sidebarAberta ? '' : 'hidden-text'}>KPIs Universais</span>
-          </Link>
+              <Link
+                to="/kpis-universais"
+                className={`sidebar-link ${location.pathname === '/kpis-universais' ? 'active' : ''}`}
+                onClick={fecharSidebarMobile}
+              >
+                <span className="sidebar-icon"><FiBarChart2 size={18} /></span>
+                <span className={sidebarAberta ? '' : 'hidden-text'}>KPIs universais</span>
+              </Link>
 
+              <Link
+                to="/graficos-padrao"
+                className={`sidebar-link ${location.pathname === '/graficos-padrao' ? 'active' : ''}`}
+                onClick={fecharSidebarMobile}
+              >
+                <span className="sidebar-icon"><FiBarChart2 size={18} /></span>
+                <span className={sidebarAberta ? '' : 'hidden-text'}>Gráficos padrão</span>
+              </Link>
+
+              <Link
+                to="/usuarios"
+                className={`sidebar-link ${location.pathname === '/usuarios' ? 'active' : ''}`}
+                onClick={fecharSidebarMobile}
+              >
+                <span className="sidebar-icon"><FiUsers size={18} /></span>
+                <span className={sidebarAberta ? '' : 'hidden-text'}>Usuários</span>
+              </Link>
+            </>
+          )}
         </nav>
 
         <div className="sidebar-footer">
-          <span className={`sidebar-version ${sidebarAberta ? '' : 'hidden-text'}`}>v1.0.0</span>
+          <span className={`sidebar-version ${sidebarAberta ? '' : 'hidden-text'}`}>
+            {versaoLabel}
+          </span>
         </div>
       </aside>
 
-      {/* Conteúdo principal */}
       <div className="layout-main">
         <header className="header">
           <div className="header-left">
-            <button className="btn-toggle-mobile" onClick={toggleSidebar} title="Alternar menu">
+            <button
+              type="button"
+              className="btn-toggle-mobile"
+              onClick={toggleSidebar}
+              title="Abrir menu"
+              aria-label="Abrir menu"
+            >
               <HiChevronRight size={20} />
             </button>
-            <div>
-              {/* Breadcrumbs */}
+            <div className="header-titles">
               {breadcrumbElements.length > 1 && (
-                <nav className="breadcrumb-nav">
+                <nav className="breadcrumb-nav" aria-label="Breadcrumb">
                   {breadcrumbElements.map((item, idx) => (
-                    <span key={idx}>
-                      {idx > 0 && <FiChevronRightSmall size={10} style={{ color: '#cbd5e1' }} />}
+                    <span key={idx} className="breadcrumb-item">
+                      {idx > 0 && <FiChevronRightSmall size={12} className="breadcrumb-sep" />}
                       {item.href ? (
                         <Link to={item.href}>{item.label}</Link>
                       ) : (
-                        <span>{item.label}</span>
+                        <span className="breadcrumb-current">{item.label}</span>
                       )}
                     </span>
                   ))}
@@ -166,16 +228,21 @@ function Layout({ children }: LayoutProps) {
               <h1 title={titulo}>{titulo}</h1>
             </div>
           </div>
+
           <div className="header-user">
-            <div className="header-user-avatar" title={user?.nome || 'Usuário'}>
-              {getInitials(user?.nome || 'U')}
+            <div className="header-user-chip">
+              <div className="header-user-avatar" title={user?.nome || 'Usuário'}>
+                {getInitials(user?.nome || 'U')}
+              </div>
+              <span className="header-user-name">{user?.nome || 'Usuário'}</span>
             </div>
-            <span className="header-user-name">{user?.nome || 'Usuário'}</span>
-            <button className="btn-logout-header" onClick={logout}>
-              Sair
+            <button type="button" className="btn-logout-header" onClick={logout} title="Sair">
+              <FiLogOut size={16} />
+              <span>Sair</span>
             </button>
           </div>
         </header>
+
         <main className="main-content">
           {children}
         </main>

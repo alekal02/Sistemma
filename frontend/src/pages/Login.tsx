@@ -6,7 +6,11 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
+import { STORAGE_EMAIL, migrarStorageLegado } from '../utils/storage'
 import '../styles/Login.css'
+import { useAppVersion } from '../hooks/useAppVersion'
+
+migrarStorageLegado()
 
 /* ---------- Ícones SVG inline ---------- */
 const IconEmail = () => (
@@ -60,6 +64,7 @@ function Login() {
   const [shake, setShake] = useState(false)
 
   const emailRef = useRef<HTMLInputElement>(null)
+  const versaoLabel = useAppVersion()
 
   useEffect(() => {
     // Foco automático no email ao montar
@@ -75,7 +80,8 @@ function Login() {
 
   useEffect(() => {
     // Restaura email salvo se "lembrar" estava ativo
-    const saved = localStorage.getItem('abastecimento_email')
+    const saved = localStorage.getItem(STORAGE_EMAIL)
+      || localStorage.getItem('abastecimento_email')
     if (saved) {
       setEmail(saved)
       setLembrar(true)
@@ -108,8 +114,9 @@ function Login() {
 
       // Salva / remove email conforme "lembrar"
       if (lembrar) {
-        localStorage.setItem('abastecimento_email', email.trim())
+        localStorage.setItem(STORAGE_EMAIL, email.trim())
       } else {
+        localStorage.removeItem(STORAGE_EMAIL)
         localStorage.removeItem('abastecimento_email')
       }
 
@@ -145,7 +152,7 @@ function Login() {
               <path d="M9 12h6" />
             </svg>
           </div>
-          <h1>Abastecimento</h1>
+          <h1>Sistemma</h1>
           <p className="subtitle">Faça login para continuar</p>
         </div>
 
@@ -220,9 +227,6 @@ function Login() {
               <span className="checkbox-mark" />
               <span>Lembrar email</span>
             </label>
-            <a href="#" className="forgot-link" onClick={(e) => e.preventDefault()}>
-              Esqueceu a senha?
-            </a>
           </div>
 
           {/* Botão */}
@@ -240,7 +244,7 @@ function Login() {
 
         {/* Rodapé */}
         <p className="login-footer">
-          Sistema de Abastecimento v1.0
+          {versaoLabel}
         </p>
       </div>
     </div>

@@ -1,0 +1,27 @@
+# Build local — somente na maquina de DEV (pastas backend/ e frontend/)
+# NAO copie este arquivo para C:\Sistemma (maquina destino usa so docker-compose.yml)
+services:
+  backend:
+    platform: linux/amd64
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      platforms:
+        - linux/amd64
+      args:
+        BUILD_SHA: ${BUILD_SHA:-local}
+    pull_policy: build
+
+  frontend:
+    platform: linux/amd64
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      platforms:
+        - linux/amd64
+      args:
+        VITE_API_URL: /api
+        VITE_APP_NAME: Sistemma
+        VITE_APP_VERSION: ${VITE_APP_VERSION:-dev}
+        VITE_ENV: production
+    pull_policy: build

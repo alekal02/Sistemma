@@ -1,6 +1,9 @@
 # ============== BUILD STAGE ==============
 FROM node:22-alpine AS builder
 
+ARG BUILD_SHA=unknown
+ENV BUILD_SHA=${BUILD_SHA}
+
 WORKDIR /app
 
 # Copia arquivos de dependências
@@ -9,7 +12,7 @@ COPY package.json package-lock.json ./
 # Instala dependências
 RUN npm ci
 
-# Copia código fonte
+# Copia código fonte (inclui config/*.json, database migrations, seeds)
 COPY tsconfig.json ./
 COPY src/ ./src/
 
@@ -23,6 +26,7 @@ FROM node:22-alpine AS runner
 # Instala Chromium e dependências para Puppeteer (geração de PDF)
 RUN apk add --no-cache \
   postgresql-client \
+  wget \
   chromium \
   nss \
   freetype \
@@ -36,6 +40,9 @@ RUN apk add --no-cache \
 # Configura Puppeteer para usar o Chromium do Alpine
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+
+ARG BUILD_SHA=unknown
+ENV BUILD_SHA=${BUILD_SHA}
 
 WORKDIR /app
 
@@ -58,7 +65,9 @@ EXPOSE 3200
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=5 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:3200/health || exit 1
 
-# Usuário não-root (mudamos para root para entrypoint poder instalar pacotes, mas roda app como appuser)
-USER appuser
+RUN mkdir -p /app/uploads && chown -R appuser:appgroup /app
+
+# Entrypoint roda como root (ajusta volume) e inicia o Node como appuser
+USER root
 
 ENTRYPOINT ["/entrypoint.sh"]

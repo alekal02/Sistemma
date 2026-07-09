@@ -1,5 +1,7 @@
 import * as XLSX from 'xlsx';
 import { isNomeColunaInvalido } from './PadraoPlanilhaDetector';
+import { analisarKmRotaExcessivoPreview, MAX_KM_ROTA } from './kmRotaValidacaoService';
+import { excelSerialDataInvalido, formatarDataPlanilha, parseDataPlanilha } from '../utils/formatarDataPlanilha';
 
 /* ═══════════════════════════════════════════════════════
    QUALIDADE PLANILHA PREVIEW SERVICE
@@ -286,7 +288,9 @@ export function analisarQualidadePlanilha(
       celulasPreenchidas: preenchidas,
       celulasVazias: vazias,
       percentualPreenchimento: percentual,
-      amostraValores: amostra,
+      amostraValores: tipoColuna === 'data'
+        ? amostra.map(v => formatarDataPlanilha(v) ?? v)
+        : amostra,
     });
 
     // Verificar se é coluna crítica
@@ -376,7 +380,7 @@ export function analisarQualidadePlanilha(
         totalDuplicatas += linhas.length - 1;
         if (linhasDuplicadas.length < 5) {
           const [data, placa] = chave.split('|');
-          linhasDuplicadas.push(`Data: ${data}, Placa: ${placa} (${linhas.length}x)`);
+          linhasDuplicadas.push(`Data: ${formatarDataPlanilha(data) ?? data}, Placa: ${placa} (${linhas.length}x)`);
         }
       }
     }
@@ -441,22 +445,10 @@ export function analisarQualidadePlanilha(
       const valor = linhas[i][idxReal];
       if (valor !== null && valor !== undefined && valor !== '') {
         if (typeof valor === 'number') {
-          // Serial Excel válido: 1 a 2958465 (01/01/1900 a 31/12/9999)
-          if (valor < 1 || valor > 2958465) {
-            datasInvalidas++;
-          }
-          // Data muito antiga ou futura demais
-          if (valor > 0 && valor < 40000) {
-            datasInvalidas++; // anterior a 01/01/1900 ~ 2009
-          }
-          if (valor > 60000) {
-            datasInvalidas++; // após ~2064
-          }
+          if (excelSerialDataInvalido(valor)) datasInvalidas++;
         } else if (typeof valor === 'string') {
-          const d = new Date(valor);
-          if (isNaN(d.getTime()) && valor.trim().length > 0) {
-            datasInvalidas++;
-          }
+          const trimmed = valor.trim();
+          if (trimmed.length > 0 && !parseDataPlanilha(trimmed)) datasInvalidas++;
         }
       }
     }
@@ -507,7 +499,25 @@ export function analisarQualidadePlanilha(
     });
   }
 
-  // ─── 14. Cálculo de pontuação de qualidade ───
+  // ─── 14. KM da rota acima do limite operacional ───
+  const analiseKmRota = analisarKmRotaExcessivoPreview(
+    cabecalhoLimpo,
+    indicesValidos,
+    linhas,
+    linhasComDados,
+  );
+  if (analiseKmRota.registrosAfetados > 0) {
+    problemas.push({
+      tipo: 'km_rota_alto',
+      label: `KM da Rota acima de ${MAX_KM_ROTA} km`,
+      descricao: `${analiseKmRota.registrosAfetados} registro(s) com quilometragem de rota superior a ${MAX_KM_ROTA} km (${analiseKmRota.totalOcorrencias} ocorrência(s)). Verifique distâncias por rota (01 a 04) ou diferença KM CHEGADA − KM SAÍDA.`,
+      gravidade: analiseKmRota.registrosAfetados > 5 ? 'alto' : 'médio',
+      quantidade: analiseKmRota.registrosAfetados,
+      detalhes: analiseKmRota.detalhes,
+    });
+  }
+
+  // ─── 15. Cálculo de pontuação de qualidade ───
   let pontuacao = 100;
   const totalCelulasGeral = colunasInfo.reduce((acc, c) => acc + c.totalCelulas, 0);
   const totalPreenchidasGeral = colunasInfo.reduce((acc, c) => acc + c.celulasPreenchidas, 0);
@@ -568,6 +578,13 @@ export function analisarQualidadePlanilha(
     recomendacoes.push('Corrija os valores negativos de KM e Peso — eles indicam erro de digitação ou leitura do hodômetro.');
   }
 
+  const probKmRota = problemas.find(p => p.tipo === 'km_rota_alto');
+  if (probKmRota) {
+    recomendacoes.push(
+      `Revise registros com KM de rota acima de ${MAX_KM_ROTA} km — confira se a coluna traz distância da rota e não leitura do hodômetro.`,
+    );
+  }
+
   if (percGeral < 80) {
     recomendacoes.push(`A planilha tem apenas ${percGeral}% de preenchimento geral. Revise os dados antes de importar.`);
   }
@@ -590,7 +607,7 @@ export function analisarQualidadePlanilha(
     pontuacaoQualidade: pontuacao,
     pontuacaoLegenda,
     resumo: {
-      registrosValidos: linhasComDados.length,
+      registrosValidos: linhasComDados.length, // linhas com algum dado (pré-importação)
       celulasPreenchidas: totalPreenchidasGeral,
       celulasVazias: totalVaziasGeral,
       percentualGeralPreenchimento: percGeral,

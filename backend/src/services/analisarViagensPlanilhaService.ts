@@ -1,0 +1,481 @@
+import * as XLSX from 'xlsx';
+import { ColetaData } from '../entities/ColetaData';
+import { formatarDataPlanilha, parseDataPlanilha } from '../utils/formatarDataPlanilha';
+import {
+  prepararViagemParaImportacao,
+  MAX_KM_DASHBOARD,
+  REGRAS_VIAGEM_DASHBOARD,
+} from './validacaoViagemService';
+import {
+  auditarPlacasPlanilha,
+  validarPlacaBr,
+  type AuditoriaPlacasPlanilha,
+} from '../utils/validarPlacaBr';
+import { colunaEhPlaca } from '../utils/normalizarPlaca';
+import {
+  contarViagensPorRotaRegistro,
+  obterContadorViagensRegistro,
+} from './viagensPorRotaService';
+import {
+  conferirCadastroOperacional,
+  type ConferenciaCadastroOperacional,
+} from './conferirCadastroOperacionalService';
+import {
+  extrairCadastroOperacional,
+  normalizarNomeOperacional,
+  type ConfigOperacionalContrato,
+} from '../utils/configOperacional';
+
+function normalizarColuna(s: string): string {
+  return s.toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Z0-9\s]/g, '').replace(/\s+/g, '').trim();
+}
+
+function encontrarColuna(cabecalho: string[], termos: string[]): number {
+  for (const t of termos) {
+    const tn = normalizarColuna(t);
+    for (let i = 0; i < cabecalho.length; i++) {
+      if (normalizarColuna(cabecalho[i]) === tn) return i;
+    }
+  }
+  return -1;
+}
+
+function parseNum(val: unknown): number | null {
+  if (val === null || val === undefined || val === '') return null;
+  const n = Number(val);
+  return isNaN(n) ? null : n;
+}
+
+function parseStr(val: unknown): string | null {
+  if (val === null || val === undefined || val === '') return null;
+  const s = String(val).trim();
+  return s || null;
+}
+
+function valorColuna(linha: unknown[], idx: number): unknown {
+  return idx >= 0 ? linha[idx] : null;
+}
+
+function buildDadosBrutos(cabecalho: string[], linha: unknown[]): Record<string, unknown> {
+  const dados: Record<string, unknown> = {};
+  for (let i = 0; i < cabecalho.length; i++) {
+    const h = cabecalho[i];
+    if (!h || h.startsWith('__EMPTY')) continue;
+    const v = linha[i];
+    if (v !== null && v !== undefined && v !== '') dados[h] = v;
+  }
+  return dados;
+}
+
+function motivoParaCategoria(motivo: string): string {
+  const m = motivo.toLowerCase();
+  if (m.includes('negativo')) return 'Valor negativo (fora do dashboard)';
+  if (m.includes('acima de') || m.includes(String(MAX_KM_DASHBOARD))) return `KM acima de ${MAX_KM_DASHBOARD} km`;
+  if (m.includes('hora')) return 'Formato de hora inválido (use HH:MM)';
+  if (m.includes('km')) return 'KM insuficiente ou ausente';
+  if (m.includes('peso')) return 'Peso zerado, negativo ou ausente';
+  if (m.includes('data')) return 'Data de saída ausente ou inválida';
+  if (m.includes('placa') || m.startsWith('placa')) return 'Placa inválida ou ausente';
+  return 'Outros';
+}
+
+/** Motivos informativos — não bloqueiam o dashboard */
+function motivoIgnorarNoRelatorio(motivo: string): boolean {
+  const m = motivo.toLowerCase();
+  return (
+    m.includes('placa será unificada')
+    || m.includes('placa unificada')
+    || m.startsWith('corrigido automaticamente')
+    || m.includes('unificada:')
+    || (m.startsWith('placa:') && (m.includes('hífen') || m.includes('hifen') || m.includes('espaço') || m.includes('espaco')))
+  );
+}
+
+/** Aplica placa canônica (sem hífen) no registro — igual à importação. */
+function aplicarPlacaNormalizadaNoRegistro(
+  partial: Partial<ColetaData>,
+  placaNormalizada: string,
+): void {
+  partial.placa = placaNormalizada;
+  const dados = partial.dados;
+  if (!dados || typeof dados !== 'object') return;
+  for (const key of Object.keys(dados)) {
+    if (colunaEhPlaca(key)) {
+      (dados as Record<string, unknown>)[key] = placaNormalizada;
+    }
+  }
+}
+
+export interface ResumoPlacasSaude {
+  totalValidas: number;
+  totalInvalidas: number;
+  totalSemPlaca: number;
+  unificadasAutomaticamente: number;
+  grafiasDuplicadas: number;
+  /** Uma linha para o relatório */
+  resumo: string;
+  /** Só aparece se houver algo que exige correção na planilha */
+  alerta: string | null;
+}
+
+function montarResumoPlacas(
+  ap: AuditoriaPlacasPlanilha,
+  viagensForaDashboard: ResultadoAnaliseViagens['viagens'],
+): ResumoPlacasSaude {
+  const alertas: string[] = [];
+
+  if (ap.totalInvalidas > 0) {
+    alertas.push(`${ap.totalInvalidas} linha(s) com placa inválida (fora do padrão BR)`);
+  }
+
+  const comProblemaPlaca = viagensForaDashboard.filter((v) =>
+    (v.problemas || []).some((p) => {
+      const pl = p.toLowerCase();
+      return pl.startsWith('placa:') && !motivoIgnorarNoRelatorio(p);
+    }),
+  ).length;
+  if (comProblemaPlaca > 0) {
+    alertas.push(`${comProblemaPlaca} viagem(ns) fora do dashboard por placa inválida`);
+  } else if (ap.totalSemPlaca > 0) {
+    alertas.push(`${ap.totalSemPlaca} linha(s) sem placa (precisa KM ou Peso se placa vazia)`);
+  }
+
+  const grafiasReais = ap.gruposDuplicados?.length ?? 0;
+  if (grafiasReais > 0) {
+    alertas.push(`${grafiasReais} placa(s) com grafias conflitantes (não só hífen)`);
+  }
+
+  let resumo: string;
+  if (alertas.length === 0) {
+    resumo = `${ap.totalComPlacaValida} placa(s) válida(s) — hífen/espaço corrigido automaticamente na importação`;
+  } else {
+    resumo = `${ap.totalComPlacaValida} placa(s) válida(s)`;
+    if (ap.totalNormalizadas > 0) {
+      resumo += ` (${ap.totalNormalizadas} com hífen/espaço — já unificadas)`;
+    }
+  }
+
+  return {
+    totalValidas: ap.totalComPlacaValida,
+    totalInvalidas: ap.totalInvalidas,
+    totalSemPlaca: ap.totalSemPlaca,
+    unificadasAutomaticamente: ap.totalNormalizadas,
+    grafiasDuplicadas: grafiasReais,
+    resumo,
+    alerta: alertas.length > 0 ? alertas.join(' · ') : null,
+  };
+}
+
+export interface ResultadoAnaliseViagens {
+  sucesso: boolean;
+  nomeArquivo: string;
+  aba: string;
+  totalViagens: number;
+  viagensCompletas: number;
+  viagensIncompletas: number;
+  viagensComValorNegativo: number;
+  viagensValidasDashboard: number;
+  viagensInconsistentesTotal: number;
+  linhasDescartadasSemDados?: number;
+  podeImportar: boolean;
+  avisoDashboard: string | null;
+  percentualCompleto: number;
+  problemasAgrupados: { tipo: string; quantidade: number }[];
+  viagens: Array<{
+    linha: number;
+    data: string | null;
+    placa: string | null;
+    motorista: string | null;
+    rota: string | null;
+    kmTotal: number | null;
+    pesoTotal: number | null;
+    kmSaida: number | null;
+    kmChegada: number | null;
+    kmTotalCalculado: number | null;
+    completa: boolean;
+    temIdentificacao: boolean;
+    temValorNegativo: boolean;
+    problemas: string[];
+  }>;
+  mensagem?: string;
+  regrasSaude?: string[];
+  /** Resumo compacto de placas (sem tabelas) */
+  resumoPlacas?: ResumoPlacasSaude;
+  /** Problemas que excluem viagens do dashboard — sem ruído de normalização de placa */
+  problemasDashboard?: { tipo: string; quantidade: number }[];
+  auditoriaPlacas?: AuditoriaPlacasPlanilha;
+  /** Soma do CONTADOR DE VIAGENS nas linhas analisadas (células preenchidas) */
+  somaContadorViagens?: number;
+  /** Total de viagens com fallback (PESO 1–4) — mesmo critério do dashboard */
+  viagensCalculadasDashboard?: number;
+  /** Linhas sem contador preenchido */
+  linhasSemContador?: number;
+  /** Conferência planilha × cadastro operacional do contrato */
+  conferenciaCadastro?: ConferenciaCadastroOperacional | null;
+}
+
+export function analisarViagensPlanilha(
+  buffer: Buffer,
+  nomeArquivo: string,
+  cadastroOperacional?: ConfigOperacionalContrato | null,
+): ResultadoAnaliseViagens {
+  const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: false });
+  const nomeAba = workbook.SheetNames[0];
+  const sheet = workbook.Sheets[nomeAba];
+  const dadosBrutos: unknown[][] = XLSX.utils.sheet_to_json(sheet, {
+    header: 1,
+    defval: null,
+    blankrows: true,
+    raw: true,
+  });
+
+  if (dadosBrutos.length < 2) {
+    return {
+      sucesso: true,
+      nomeArquivo,
+      aba: nomeAba,
+      viagens: [],
+      viagensCompletas: 0,
+      viagensIncompletas: 0,
+      viagensComValorNegativo: 0,
+      viagensValidasDashboard: 0,
+      viagensInconsistentesTotal: 0,
+      totalViagens: 0,
+      podeImportar: true,
+      avisoDashboard: null,
+      percentualCompleto: 0,
+      problemasAgrupados: [],
+      mensagem: 'Planilha sem dados de viagens.',
+    };
+  }
+
+  const cabecalho = (dadosBrutos[0] || []).map(v =>
+    v !== null && v !== undefined ? String(v).trim() : ''
+  );
+  const linhas = dadosBrutos.slice(1);
+
+  const idx = {
+    data: encontrarColuna(cabecalho, ['DATA SAIDA', 'DATA SAÍDA', 'DATA', 'DIA']),
+    placa: encontrarColuna(cabecalho, ['PLACA', 'VEICULO', 'VEÍCULO', 'CAMINHAO', 'CAMINHÃO']),
+    motorista: encontrarColuna(cabecalho, ['MOTORISTA', 'OPERADOR', 'NOME MOTORISTA']),
+    rota: encontrarColuna(cabecalho, ['ROTA', 'SETOR', 'DESTINO']),
+    regional: encontrarColuna(cabecalho, ['REGIONAL', 'REGIAO', 'REGIÃO']),
+    distrito: encontrarColuna(cabecalho, ['DISTRITO', 'BAIRRO']),
+    kmTotal: encontrarColuna(cabecalho, ['KM TOTAL', 'KM PERCORRIDO', 'DISTANCIA', 'DISTÂNCIA']),
+    pesoTotal: encontrarColuna(cabecalho, ['PESO TOTAL', 'PESO', 'PESO BRUTO']),
+    kmSaida: encontrarColuna(cabecalho, ['KM SAIDA', 'KM SAÍDA', 'KM SAIDA BASE']),
+    kmChegada: encontrarColuna(cabecalho, ['KM CHEGADA', 'KM DE CHEGADA', 'KM CHEGADA BASE']),
+    kmRota1: encontrarColuna(cabecalho, ['KM ROTA 01', 'KM ROTA 1', 'KM ROTA01']),
+    kmRota2: encontrarColuna(cabecalho, ['KM ROTA 02', 'KM ROTA 2', 'KM ROTA02']),
+    kmRota3: encontrarColuna(cabecalho, ['KM ROTA 03', 'KM ROTA 3', 'KM ROTA03']),
+    kmRota4: encontrarColuna(cabecalho, ['KM ROTA 04', 'KM ROTA 4', 'KM ROTA04']),
+    peso1: encontrarColuna(cabecalho, ['PESO 1']),
+    peso2: encontrarColuna(cabecalho, ['PESO 2']),
+    peso3: encontrarColuna(cabecalho, ['PESO 3']),
+    peso4: encontrarColuna(cabecalho, ['PESO 4']),
+    peso5: encontrarColuna(cabecalho, ['PESO 5']),
+    coletor1: encontrarColuna(cabecalho, ['COLETOR 01', 'COLETOR 1']),
+    coletor2: encontrarColuna(cabecalho, ['COLETOR 02', 'COLETOR 2']),
+    coletor3: encontrarColuna(cabecalho, ['COLETOR 03', 'COLETOR 3']),
+    coletor4: encontrarColuna(cabecalho, ['COLETOR 04', 'COLETOR 4']),
+  };
+
+  const placasPlanilha = new Set<string>();
+  const motoristasPlanilha = new Set<string>();
+  const coletoresPlanilha = new Set<string>();
+
+  const viagens: ResultadoAnaliseViagens['viagens'] = [];
+  let viagensCompletas = 0;
+  let viagensIncompletas = 0;
+  let viagensComValorNegativo = 0;
+  let linhasDescartadasSemDados = 0;
+  let somaContadorViagens = 0;
+  let viagensCalculadasDashboard = 0;
+  let linhasSemContador = 0;
+  const problemasPorCategoria = new Map<string, Set<number>>();
+
+  const auditoriaPlacas = auditarPlacasPlanilha({
+    cabecalho,
+    linhas,
+    idxPlaca: idx.placa,
+    idxData: idx.data,
+    idxKmTotal: idx.kmTotal,
+    idxPesoTotal: idx.pesoTotal,
+    parseNum: (raw) => parseNum(raw),
+    parseData: (raw) => formatarDataPlanilha(raw),
+  });
+
+  for (let i = 0; i < linhas.length; i++) {
+    const linha = linhas[i] || [];
+    const temAlgumValor = linha.some(v => v !== null && v !== '' && v !== undefined);
+    if (!temAlgumValor) continue;
+
+    const dataRaw = valorColuna(linha, idx.data);
+    const placaBruta = parseStr(valorColuna(linha, idx.placa));
+    const validacaoPlaca = validarPlacaBr(placaBruta);
+    const placa = validacaoPlaca.valida ? validacaoPlaca.normalizada : placaBruta;
+    const motorista = parseStr(valorColuna(linha, idx.motorista));
+    const rota = parseStr(valorColuna(linha, idx.rota));
+    const regional = parseStr(valorColuna(linha, idx.regional));
+    const distrito = parseStr(valorColuna(linha, idx.distrito));
+
+    if (validacaoPlaca.valida && validacaoPlaca.normalizada) {
+      placasPlanilha.add(validacaoPlaca.normalizada);
+    }
+    const motoristaNorm = normalizarNomeOperacional(motorista);
+    if (motoristaNorm) motoristasPlanilha.add(motoristaNorm);
+    for (const idxCol of [idx.coletor1, idx.coletor2, idx.coletor3, idx.coletor4]) {
+      const nomeCol = normalizarNomeOperacional(valorColuna(linha, idxCol));
+      if (nomeCol) coletoresPlanilha.add(nomeCol);
+    }
+
+    const temIdentificacao = !!(dataRaw || placa || motorista);
+
+    const partial: Partial<ColetaData> = {
+      dataSaida: parseDataPlanilha(dataRaw),
+      placa,
+      motorista,
+      regional,
+      distrito,
+      kmTotal: parseNum(valorColuna(linha, idx.kmTotal)),
+      pesoTotal: parseNum(valorColuna(linha, idx.pesoTotal)),
+      kmSaida: parseNum(valorColuna(linha, idx.kmSaida)),
+      kmChegada: parseNum(valorColuna(linha, idx.kmChegada)),
+      kmRota1: parseNum(valorColuna(linha, idx.kmRota1)),
+      kmRota2: parseNum(valorColuna(linha, idx.kmRota2)),
+      kmRota3: parseNum(valorColuna(linha, idx.kmRota3)),
+      kmRota4: parseNum(valorColuna(linha, idx.kmRota4)),
+      peso1: parseNum(valorColuna(linha, idx.peso1)),
+      peso2: parseNum(valorColuna(linha, idx.peso2)),
+      peso3: parseNum(valorColuna(linha, idx.peso3)),
+      peso4: parseNum(valorColuna(linha, idx.peso4)),
+      peso5: parseNum(valorColuna(linha, idx.peso5)),
+      dados: buildDadosBrutos(cabecalho, linha) as Record<string, any>,
+    };
+
+    if (validacaoPlaca.valida && validacaoPlaca.normalizada) {
+      aplicarPlacaNormalizadaNoRegistro(partial, validacaoPlaca.normalizada);
+    }
+
+    const coletaTmp = partial as ColetaData;
+    const validacao = prepararViagemParaImportacao(coletaTmp);
+    if (validacao.descartada) {
+      linhasDescartadasSemDados++;
+      continue;
+    }
+
+    const contador = obterContadorViagensRegistro(coletaTmp);
+    const viagensLinha = contarViagensPorRotaRegistro(coletaTmp);
+    viagensCalculadasDashboard += viagensLinha;
+    if (contador !== null && contador > 0) {
+      somaContadorViagens += contador;
+    } else {
+      linhasSemContador++;
+    }
+
+    const completa = validacao.validoDashboard;
+    const problemas = [...validacao.motivos];
+    if (validacao.correcoes?.length) {
+      for (const c of validacao.correcoes) {
+        problemas.push(`Corrigido automaticamente: ${c}`);
+      }
+    }
+
+    if (!validacaoPlaca.valida && validacaoPlaca.motivo) {
+      problemas.push(`Placa: ${validacaoPlaca.motivo}${validacaoPlaca.original ? ` (${validacaoPlaca.original})` : ''}`);
+    }
+    const temValorNegativo = problemas.some(p => p.toLowerCase().includes('negativo'));
+
+    if (completa) viagensCompletas++;
+    else if (temIdentificacao) viagensIncompletas++;
+    if (temValorNegativo && temIdentificacao) viagensComValorNegativo++;
+
+    const linhaPlanilha = i + 2;
+    if (!completa && temIdentificacao) {
+      for (const motivo of problemas) {
+        if (motivoIgnorarNoRelatorio(motivo)) continue;
+        const cat = motivoParaCategoria(motivo);
+        if (!problemasPorCategoria.has(cat)) problemasPorCategoria.set(cat, new Set());
+        problemasPorCategoria.get(cat)!.add(linhaPlanilha);
+      }
+    }
+
+    const kmTotalRaw = parseNum(valorColuna(linha, idx.kmTotal));
+    const kmTotalCalculado = coletaTmp.kmTotal != null && coletaTmp.kmTotal > 0
+      ? Number(coletaTmp.kmTotal.toFixed(1))
+      : (validacao.kmEfetivo != null ? Number(validacao.kmEfetivo.toFixed(1)) : null);
+
+    const item = {
+      linha: linhaPlanilha,
+      data: formatarDataPlanilha(dataRaw),
+      placa: validacaoPlaca.valida ? validacaoPlaca.normalizada : (validacaoPlaca.original || placa),
+      placaNormalizada: validacaoPlaca.valida ? validacaoPlaca.normalizada : null,
+      placaValida: validacaoPlaca.valida,
+      motorista,
+      rota: rota || regional || distrito,
+      kmTotal: kmTotalRaw,
+      pesoTotal: coletaTmp.pesoTotal ?? parseNum(valorColuna(linha, idx.pesoTotal)),
+      kmSaida: parseNum(valorColuna(linha, idx.kmSaida)),
+      kmChegada: parseNum(valorColuna(linha, idx.kmChegada)),
+      kmTotalCalculado,
+      completa,
+      temIdentificacao,
+      temValorNegativo,
+      problemas,
+    };
+
+    const incluirNoDetalhe = !completa && temIdentificacao;
+
+    if (incluirNoDetalhe) {
+      viagens.push(item);
+    }
+  }
+
+  const totalViagens = viagensCompletas + viagensIncompletas;
+  const problemasDashboard = Array.from(problemasPorCategoria.entries())
+    .map(([tipo, linhasSet]) => ({ tipo, quantidade: linhasSet.size }))
+    .sort((a, b) => b.quantidade - a.quantidade);
+  const resumoPlacas = montarResumoPlacas(auditoriaPlacas, viagens);
+
+  const cadastro = extrairCadastroOperacional(cadastroOperacional);
+  const conferenciaCadastro = cadastro
+    ? conferirCadastroOperacional(cadastro, {
+        placas: placasPlanilha,
+        motoristas: motoristasPlanilha,
+        coletores: coletoresPlanilha,
+      })
+    : null;
+
+  const avisoDashboard = viagensIncompletas > 0
+    ? `${viagensIncompletas} viagem(ns) ficam fora do dashboard. ${viagensCompletas} viagem(ns) válida(s) entrarão nos KPIs.${
+      linhasDescartadasSemDados > 0 ? ` ${linhasDescartadasSemDados} linha(s) ignorada(s) (sem dados mínimos).` : ''
+    }`
+    : linhasDescartadasSemDados > 0
+      ? `${linhasDescartadasSemDados} linha(s) ignorada(s) por não ter placa, KM Total e Peso Total.`
+      : null;
+
+  return {
+    sucesso: true,
+    nomeArquivo,
+    aba: nomeAba,
+    totalViagens,
+    viagensCompletas,
+    viagensIncompletas,
+    viagensComValorNegativo,
+    viagensValidasDashboard: viagensCompletas,
+    viagensInconsistentesTotal: viagensIncompletas,
+    linhasDescartadasSemDados,
+    podeImportar: true,
+    avisoDashboard,
+    percentualCompleto: totalViagens > 0 ? Math.round((viagensCompletas / totalViagens) * 100) : 0,
+    problemasAgrupados: problemasDashboard,
+    problemasDashboard,
+    regrasSaude: [...REGRAS_VIAGEM_DASHBOARD],
+    resumoPlacas,
+    viagens: viagens.slice(0, 500),
+    somaContadorViagens,
+    viagensCalculadasDashboard,
+    linhasSemContador,
+    conferenciaCadastro,
+  };
+}

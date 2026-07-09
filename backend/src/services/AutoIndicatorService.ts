@@ -17,6 +17,7 @@ import AppDataSource from '../database/data-source';
 import { Servico } from '../entities/Servico';
 import { Contract } from '../entities/Contract';
 import PlanilhaService from './PlanilhaService';
+import { obterDadosServicoComCache } from './servicoDadosCache';
 import { normalizarChave } from './FormulaEngine';
 import { TipoServico } from '../enums/TipoServico';
 
@@ -167,7 +168,7 @@ export class AutoIndicatorService {
     let dados = dadosBrutos || [];
     if (dados.length === 0) {
       try {
-        dados = await PlanilhaService.getDadosBrutosPorServico(servicoId, 999999);
+        dados = await obterDadosServicoComCache(servicoId);
       } catch { /* sem dados */ }
     }
 
@@ -330,11 +331,11 @@ export class AutoIndicatorService {
         descricao: 'Soma total de horas em todas as rotas (ate 4). Calcula HORA SAIDA - HORA CHEGADA de cada rota, soma tudo e converte serial Excel para horas (*24).',
         expressao: expressaoTotalRotas, unidade: 'h', cor: corDaCategoria('Produtividade'),
       });
-      var expressaoMediaRotas = 'ROUND(DIVIDE(' + partesFormulaRotas.join('') + ', COUNT(*)) * 24, 1)';
+      var expressaoMediaRotas = 'ROUND(DIVIDE(' + partesFormulaRotas.join('') + ', VIAGENS_POR_ROTA()) * 24, 1)';
       indicadores.push({
         coluna: 'ROTAS', operacao: 'avg', nomeSugerido: 'Media de Horas por Rota',
         formato: 'numero', categoria: 'Produtividade',
-        descricao: 'Media de horas em todas as rotas (ate 4) por viagem. Calcula (HORA SAIDA - HORA CHEGADA) / COUNT e converte para horas (*24).',
+        descricao: 'Media de horas em todas as rotas (ate 4) por viagem. Calcula (HORA SAIDA - HORA CHEGADA) / VIAGENS_POR_ROTA() e converte para horas (*24).',
         expressao: expressaoMediaRotas, unidade: 'h/viagem', cor: corDaCategoria('Produtividade'),
       });
     }
@@ -397,8 +398,8 @@ export class AutoIndicatorService {
         indicadores.push({
           coluna: colKm, operacao: 'avg', nomeSugerido: 'KM por Viagem',
           formato: 'numero', categoria: 'Produtividade',
-          descricao: 'Quilometragem media por viagem',
-          expressao: 'DIVIDE(SUM(' + colKm + '), SUM(' + colViagemUsar + '))',
+          descricao: 'Quilometragem media por viagem (contagem pelas rotas 01–04)',
+          expressao: 'DIVIDE(SUM(' + colKm + '), VIAGENS_POR_ROTA())',
           unidade: 'km', performance: true, cor: corDaCategoria('Produtividade'),
         });
       } else {
@@ -434,7 +435,7 @@ export class AutoIndicatorService {
         coluna: 'ROTA 01', operacao: 'avg', nomeSugerido: 'Horas por Coleta',
         formato: 'numero', categoria: 'Produtividade',
         descricao: 'Tempo medio por coleta em horas, baseado nas horas das rotas (ate 4 rotas)',
-        expressao: 'ROUND(DIVIDE(' + partesFormulaHoraColeta.join('') + ', COUNT(*)) * 24, 1)',
+        expressao: 'ROUND(DIVIDE(' + partesFormulaHoraColeta.join('') + ', VIAGENS_POR_ROTA()) * 24, 1)',
         unidade: 'h', performance: true, cor: corDaCategoria('Produtividade'),
       });
     } else if (colHora) {
@@ -637,18 +638,18 @@ export class AutoIndicatorService {
           }
         }
         if (partesFormulaRota.length > 0) {
-          var expressaoHoraRota = 'ROUND(DIVIDE(' + partesFormulaRota.join('') + ', COUNT(*)) * 24, 1)';
+          var expressaoHoraRota = 'ROUND(DIVIDE(' + partesFormulaRota.join('') + ', VIAGENS_POR_ROTA()) * 24, 1)';
           indicadores.push({
             coluna: 'ROTA 01', operacao: 'avg', nomeSugerido: 'Hora Produtiva por Viagem',
             formato: 'numero', categoria: 'Produtividade',
-            descricao: 'Tempo medio produtivo por viagem baseado nas horas das rotas (ate 4 rotas): soma de (HORA SAIDA - HORA CHEGADA) de cada rota / COUNT. Converte serial Excel para horas (*24).',
+            descricao: 'Tempo medio produtivo por viagem baseado nas horas das rotas (ate 4 rotas): soma de (HORA SAIDA - HORA CHEGADA) de cada rota / VIAGENS_POR_ROTA(). Converte serial Excel para horas (*24).',
             expressao: expressaoHoraRota, unidade: 'h', performance: true, cor: '#f97316',
           });
         } else if (colHora && colHoraChegada) {
           indicadores.push({
             coluna: cHoraCheg, operacao: 'avg', nomeSugerido: 'Hora Produtiva por Viagem',
             formato: 'numero', categoria: 'Produtividade', descricao: 'Tempo medio produtivo (HR CHEGADA - HR SAIDA) por viagem',
-            expressao: 'DIVIDE(SUM(' + cHoraCheg + ') - SUM(' + cHora + '), COUNT(*))', unidade: 'h', performance: true, cor: '#f97316',
+            expressao: 'DIVIDE(SUM(' + cHoraCheg + ') - SUM(' + cHora + '), VIAGENS_POR_ROTA())', unidade: 'h', performance: true, cor: '#f97316',
           });
         }
       }
@@ -1268,6 +1269,9 @@ export class AutoIndicatorService {
     if (contract.valorMini !== null && contract.valorMini !== undefined) fixos['VALOR_MINI'] = Number(contract.valorMini);
     if (contract.valorTruck !== null && contract.valorTruck !== undefined) fixos['VALOR_TRUCK'] = Number(contract.valorTruck);
     if (contract.valorToco !== null && contract.valorToco !== undefined) fixos['VALOR_TOCO'] = Number(contract.valorToco);
+    if (contract.valorBasculante !== null && contract.valorBasculante !== undefined) {
+      fixos['VALOR_BASCULANTE'] = Number(contract.valorBasculante);
+    }
     return fixos;
   }
 

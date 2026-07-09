@@ -1,6 +1,7 @@
-import { useEffect, useState, useRef } from 'react';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line } from 'recharts';
+import { useEffect, useState, useRef, useMemo } from 'react';
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 import { useAuth } from '../contexts/AuthContext';
+import servicoService from '../services/servicoService';
 
 interface ChartData {
   name: string;
@@ -17,355 +18,133 @@ interface GraficoConfig {
 
 interface ChartGridProps {
   graficos: GraficoConfig[];
-  /** Fallback local — usado apenas se contractId/servicoId/token não forem passados */
   dadosBrutos?: any[];
   colunasHoraSet?: Set<string>;
   CORES?: string[];
-  /** Propriedades para usar o endpoint de agregação no backend */
   contractId?: string;
   servicoId?: string;
-  /** Filtros ativos para enviar ao backend */
   filtrosAtivos?: Record<string, any>;
 }
 
 const CORES_PADRAO = ['#059669', '#22c55e', '#f59e0b', '#a855f7', '#ef4444', '#14b8a6', '#3b82f6', '#ec4899', '#84cc16', '#06b6d4'];
 
-/**
- * Formata valor de forma inteligente baseado no nome do eixo Y
- */
-function formatarValor(valor: number, eixoY: string): string {
-  const nome = eixoY.toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-
-  // Moeda
-  if (nome.includes('R$') || nome.includes('$') || nome.includes('VALOR') ||
-      nome.includes('PRECO') || nome.includes('PRECO') || nome.includes('CUSTO') ||
-      nome.includes('FATURAMENTO') || nome.includes('RECEITA') || nome.includes('VENDA') ||
-      nome.includes('TOTAL_R') || nome.includes('TOTAL_V')) {
-    return valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+function fmt(v: number, e: string): string {
+  const n = e.toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  if (['R$','$','VALOR','PRECO','CUSTO','RECEITA','VENDA'].some(x => n.includes(x)))
+    return v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+  if (['TON','PESO','KG','COLET'].some(x => n.includes(x)))
+    return v >= 1000 ? (v/1000).toFixed(2) + ' t' : v.toFixed(2) + ' kg';
+  if (['KM','DISTAN'].some(x => n.includes(x)))
+    return v >= 1000 ? (v/1000).toFixed(2) + ' mil km' : v.toFixed(1) + ' km';
+  if (['HORA','SAIDA','CHEGADA'].some(x => n.includes(x))) {
+    const h = Math.floor(Math.abs(v)/60), m = Math.round(Math.abs(v)%60);
+    return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')} h`;
   }
-
-  // Toneladas / Peso
-  if (nome.includes('TON') || nome.includes('TONELADA') || nome.includes('PESO') ||
-      nome.includes('KG') || nome.includes('COLET') || nome.includes('COLETADA') ||
-      nome.includes('CARGA')) {
-    if (valor >= 1000) {
-      return (valor / 1000).toFixed(2) + ' t';
-    }
-    return valor.toFixed(2) + ' kg';
-  }
-
-  // KM / Distancia
-  if (nome.includes('KM') || nome.includes('KILOMETRO') || nome.includes('QUILOMETRO') ||
-      nome.includes('DISTAN') || nome.includes('DISTANCIA')) {
-    if (valor >= 1000) {
-      return (valor / 1000).toFixed(2) + ' mil km';
-    }
-    return valor.toFixed(1) + ' km';
-  }
-
-  // Horas (formato serial Excel ou texto HH:MM)
-  if (nome.includes('HORA') || nome.includes('HORAR') || nome.includes('TEMPO') ||
-      nome.includes('DURACAO') || nome.includes('MINUT') || nome.includes('ENTRADA') ||
-      nome.includes('SAIDA') || nome.includes('CHEGADA')) {
-    const h = Math.floor(Math.abs(valor) / 60);
-    const m = Math.round(Math.abs(valor) % 60);
-    return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0') + ' h';
-  }
-
-  // Porcentagem
-  if (nome.includes('%') || nome.includes('PORCENT') || nome.includes('PERCENT') ||
-      nome.includes('PROPORCAO') || nome.includes('TAXA')) {
-    return valor.toFixed(1) + '%';
-  }
-
-  // Numeros grandes (> 10000)
-  if (Math.abs(valor) >= 1000000) {
-    return (valor / 1000000).toFixed(2) + ' M';
-  }
-  if (Math.abs(valor) >= 10000) {
-    return (valor / 1000).toFixed(1) + ' mil';
-  }
-
-  // Padrao
-  return valor.toLocaleString('pt-BR', { maximumFractionDigits: 2 });
-}
-
-/**
- * Encontra valor em um objeto por chave com fallback case-insensitive
- */
-function encontrarValor(dado: Record<string, any>, nomeColuna: string): any {
-  if (!dado || !nomeColuna) return undefined;
-  if (dado[nomeColuna] !== undefined && dado[nomeColuna] !== null) return dado[nomeColuna];
-
-  const normalizar = (s: string) => s.trim().toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, '');
-  const chaveNorm = normalizar(nomeColuna);
-
-  for (const [k, v] of Object.entries(dado)) {
-    if (v !== null && v !== undefined && normalizar(k) === chaveNorm) return v;
-  }
-
-  if (dado.dados && typeof dado.dados === 'object' && !Array.isArray(dado.dados)) {
-    return encontrarValor(dado.dados, nomeColuna);
-  }
-
-  return undefined;
-}
-
-/**
- * Converte serial Excel de hora em minutos totais
- */
-function serialParaMinutos(v: any): number {
-  if (v === null || v === undefined) return 0;
-  if (typeof v === 'string' && /^\d{1,2}:\d{2}/.test(v)) {
-    const [h, m] = v.split(':').map(Number);
-    return h * 60 + (m || 0);
-  }
-  if (typeof v === 'string') {
-    const num = parseFloat(v.trim());
-    if (!isNaN(num) && num > 0) {
-      const dias = Math.floor(num);
-      const fracao = num - dias;
-      return Math.round(dias * 24 * 60 + fracao * 24 * 60);
-    }
-    return 0;
-  }
-  if (typeof v === 'number' && v > 0) {
-    if (v < 100) return Math.round(v * 24 * 60);
-    return Math.round(v);
-  }
-  return Number(v) || 0;
-}
-
-/**
- * Agregacao LOCAL (fallback) — para quando o backend nao esta disponivel
- */
-function agregarGraficoLocal(
-  eixoX: string,
-  eixoY: string,
-  dadosBrutos: any[],
-  colunasHoraSet: Set<string>
-): ChartData[] {
-  const nomeUpperY = eixoY.toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-  const temKM = nomeUpperY.includes('KM') || nomeUpperY.includes('KILOMETRO') || nomeUpperY.includes('QUILOMETRO');
-  const isHoraY = colunasHoraSet.has(eixoY) || (!temKM && (
-    nomeUpperY.includes('HORA') || nomeUpperY.includes('HORAR') ||
-    nomeUpperY.includes('TEMPO') || nomeUpperY.includes('DURACAO') ||
-    nomeUpperY.includes('MINUT') || nomeUpperY.includes('ENTRADA') ||
-    nomeUpperY.includes('SAIDA') || nomeUpperY.includes('CHEGADA')
-  ));
-
-  const agrupado: Record<string, number> = {};
-  for (const d of dadosBrutos) {
-    const key = String(encontrarValor(d, eixoX) || 'N/A');
-    const valRaw = encontrarValor(d, eixoY);
-    const val = isHoraY ? serialParaMinutos(valRaw) : Number(valRaw) || 0;
-    agrupado[key] = (agrupado[key] || 0) + val;
-  }
-
-  return Object.entries(agrupado)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 10)
-    .map(([name, value]) => ({ name, value }));
-}
-
-function agregarPizzaLocal(eixo: string, dadosBrutos: any[]): ChartData[] {
-  const agrupado: Record<string, number> = {};
-  for (const d of dadosBrutos) {
-    const key = String(encontrarValor(d, eixo) || 'N/A');
-    agrupado[key] = (agrupado[key] || 0) + 1;
-  }
-
-  return Object.entries(agrupado)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 8)
-    .map(([name, value]) => ({ name, value }));
+  if (['%','TAXA'].some(x => n.includes(x))) return v.toFixed(1) + '%';
+  if (Math.abs(v) >= 1000000) return (v/1000000).toFixed(2) + ' M';
+  if (Math.abs(v) >= 10000) return (v/1000).toFixed(1) + ' mil';
+  return v.toLocaleString('pt-BR', { maximumFractionDigits: 2 });
 }
 
 export default function ChartGrid({
-  graficos,
-  dadosBrutos = [],
-  colunasHoraSet = new Set(),
-  CORES = CORES_PADRAO,
-  contractId,
-  servicoId,
-  filtrosAtivos,
+  graficos, dadosBrutos = [], colunasHoraSet = new Set(),
+  CORES = CORES_PADRAO, contractId, servicoId, filtrosAtivos,
 }: ChartGridProps) {
   const { token } = useAuth();
-  const [dadosGraficos, setDadosGraficos] = useState<Record<number, ChartData[]>>({});
-  const [carregandoGraficos, setCarregandoGraficos] = useState<Record<number, boolean>>({});
-  const carregadosRef = useRef<Set<number>>(new Set());
+  const [dados, setDados] = useState<Record<number, ChartData[]>>({});
+  const [carregando, setCarregando] = useState<Record<number, boolean>>({});
+  const rid = useRef(0);
+  const mon = useRef(true);
 
-  // Usa backend se contractId, servicoId e token estiverem disponiveis
-  const usaBackend = !!(contractId && servicoId && token);
+  useEffect(() => { mon.current = true; return () => { mon.current = false; }; }, []);
+
+  // Evita re-render por colunasHoraSet
+  const chs = useMemo(() => colunasHoraSet, [colunasHoraSet.size]);
+  const gk = useMemo(() => graficos.map(g => `${g.titulo}|${g.tipo}|${g.eixoX}|${g.eixoY}|${g.ativo}`).join(';;'), [graficos]);
+  const fk = useMemo(() => JSON.stringify(filtrosAtivos ?? {}), [filtrosAtivos]);
+  const bk = `${dadosBrutos.length}`;
 
   useEffect(() => {
-    if (!usaBackend) {
-      // Modo fallback local — usa dadosBrutos diretamente
-      const dados: Record<number, ChartData[]> = {};
-      graficos.forEach((g, idx) => {
-        dados[idx] = g.tipo === 'pizza'
-          ? agregarPizzaLocal(g.eixoX, dadosBrutos)
-          : agregarGraficoLocal(g.eixoX, g.eixoY, dadosBrutos, colunasHoraSet);
-      });
-      setDadosGraficos(dados);
-      return;
-    }
+    if (!graficos.length) { setDados({}); setCarregando({}); return; }
+    const req = ++rid.current;
+    const controller = new AbortController();
+    const to = setTimeout(() => controller.abort(), 25000);
 
-    // Modo backend: busca cada grafico via API
-    graficos.forEach((g, idx) => {
-      if (carregadosRef.current.has(idx)) return;
+    const loading: Record<number, boolean> = {};
+    graficos.forEach((_, i) => { loading[i] = true; });
+    setCarregando(loading);
 
-      setCarregandoGraficos(prev => ({ ...prev, [idx]: true }));
-      carregadosRef.current.add(idx);
+    const pl = graficos.map((g, i) => ({ idx: i, eixoX: g.eixoX, eixoY: g.tipo === 'pizza' ? undefined : g.eixoY, tipo: g.tipo, topN: g.tipo === 'pizza' ? 8 : 10 }));
+    const body: Record<string, unknown> = { graficos: pl };
+    if (filtrosAtivos && Object.keys(filtrosAtivos).length) body.filtros = filtrosAtivos;
 
-      const body: any = {
-        eixoX: g.eixoX,
-        tipo: g.tipo,
-        topN: g.tipo === 'pizza' ? 8 : 10,
-      };
-      if (g.tipo !== 'pizza') {
-        body.eixoY = g.eixoY;
-      }
-      // Incluir filtros ativos se houver
-      if (filtrosAtivos && Object.keys(filtrosAtivos).length > 0) {
-        body.filtros = filtrosAtivos;
-      }
-
-      fetch(`/api/contracts/${contractId}/servicos/${servicoId}/grafico-agregado`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(body),
+    servicoService.getGraficosAgregados(contractId!, servicoId!, body, controller.signal)
+      .then(data => {
+        if (rid.current !== req || !mon.current) return;
+        const r: Record<number, ChartData[]> = {};
+        const l: Record<number, boolean> = {};
+        for (const item of data.graficos || []) {
+          r[item.idx] = (item.dados || []).map((d: any) => ({ name: d.name, value: Math.round(d.value * 100) / 100 }));
+          l[item.idx] = false;
+        }
+        graficos.forEach((_, i) => { if (l[i] === undefined) { r[i] = []; l[i] = false; } });
+        setDados(r);
+        setCarregando(l);
       })
-        .then(res => {
-          if (!res.ok) throw new Error('Erro na resposta');
-          return res.json();
-        })
-        .then(data => {
-          setDadosGraficos(prev => ({
-            ...prev,
-            [idx]: (data.dados || []).map((d: any) => ({
-              name: d.name,
-              value: Math.round(d.value * 100) / 100,
-            })),
-          }));
-        })
-        .catch(err => {
-          console.error('[ChartGrid] Erro ao carregar grafico ' + idx + ':', err);
-          // Fallback: agregacao local com dados limitados
-          setDadosGraficos(prev => ({
-            ...prev,
-            [idx]: g.tipo === 'pizza'
-              ? agregarPizzaLocal(g.eixoX, dadosBrutos)
-              : agregarGraficoLocal(g.eixoX, g.eixoY, dadosBrutos, colunasHoraSet),
-          }));
-        })
-        .finally(() => {
-          setCarregandoGraficos(prev => ({ ...prev, [idx]: false }));
-        });
-    });
-  }, [graficos, dadosBrutos, colunasHoraSet, contractId, servicoId, token, usaBackend, filtrosAtivos]);
+      .catch(err => {
+        if (err?.name === 'AbortError' || rid.current !== req) return;
+        const r: Record<number, ChartData[]> = {};
+        const l: Record<number, boolean> = {};
+        graficos.forEach((_, i) => { r[i] = []; l[i] = false; });
+        setDados(r);
+        setCarregando(l);
+      })
+      .finally(() => clearTimeout(to));
+
+    return () => { controller.abort(); };
+  }, [gk, fk, bk, contractId, servicoId, token]);
 
   if (!graficos.length) return null;
 
   return (
-    <>
-      <div
-        style={{
-          fontSize: 'var(--text-sm)',
-          fontWeight: 700,
-          color: 'var(--color-text-muted)',
-          textTransform: 'uppercase',
-          letterSpacing: '0.5px',
-          marginBottom: '0.6rem',
-        }}
-      >
-        Graficos ({graficos.length})
-      </div>
-      <div className="chart-grid">
-        {graficos.map((g, idx) => {
-          const dadosGrafico = dadosGraficos[idx] || [];
-
-          return (
-            <div
-              key={idx}
-              className="card card-bordered"
-              style={{ padding: '1rem' }}
-            >
-              <h4
-                style={{
-                  margin: '0 0 0.75rem',
-                  fontSize: '0.85rem',
-                  color: 'var(--color-text-primary)',
-                }}
-              >
-                {g.titulo}
-                {carregandoGraficos[idx] && (
-                  <span style={{ marginLeft: '0.5rem', fontSize: '0.65rem', color: '#94a3b8' }}>
-                    carregando...
-                  </span>
+    <div className="chart-grid">
+      {graficos.map((g, idx) => {
+        const dd = dados[idx] || [];
+        return (
+          <div key={idx} className="card card-bordered" style={{ padding: '1rem' }}>
+            <h4 style={{ margin: '0 0 0.75rem', fontSize: '0.85rem' }}>
+              {g.titulo}
+              {carregando[idx] && <span style={{ marginLeft: '0.5rem', fontSize: '0.65rem', color: '#94a3b8' }}>carregando...</span>}
+            </h4>
+            {!dd.length && !carregando[idx] ? (
+              <div style={{ textAlign: 'center', padding: '40px 0', color: '#94a3b8', fontSize: '0.78rem' }}>
+                Nenhum dado disponivel para este grafico
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={220}>
+                {g.tipo === 'pizza' ? (
+                  <PieChart>
+                    <Pie data={dd} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} isAnimationActive={false}
+                      label={({ name, value, percent }: any) => `${name}: ${fmt(value, g.eixoX)} (${((percent??0)*100).toFixed(0)}%)`}>
+                      {dd.map((_: any, i: number) => <Cell key={i} fill={CORES[i % CORES.length]} />)}
+                    </Pie>
+                    <Tooltip formatter={(v: number) => [fmt(v, g.eixoX), 'Total']} />
+                  </PieChart>
+                ) : (
+                  <BarChart data={dd} margin={{ top: 8, right: 12, left: 4, bottom: 4 }}>
+                    <XAxis dataKey="name" tick={{ fontSize: 11, fill: '#64748b' }} />
+                    <YAxis tick={{ fontSize: 11, fill: '#64748b' }} width={48}
+                      tickFormatter={(v: number) => fmt(v, g.eixoY)} />
+                    <Tooltip contentStyle={{ borderRadius: 8, border: '1px solid #e2e8f0', fontSize: '0.78rem' }}
+                      formatter={(v: number) => [fmt(v, g.eixoY), g.eixoY]} />
+                    <Bar dataKey="value" fill={CORES[idx % CORES.length]} radius={[4,4,0,0]} isAnimationActive={false} maxBarSize={48} />
+                  </BarChart>
                 )}
-              </h4>
-              {dadosGrafico.length === 0 && !carregandoGraficos[idx] ? (
-                <div style={{
-                  textAlign: 'center', padding: '40px 0', color: '#94a3b8', fontSize: '0.78rem'
-                }}>
-                  Nenhum dado disponivel para este grafico
-                </div>
-              ) : (
-                <ResponsiveContainer width="100%" height={220}>
-                  {g.tipo === 'barra' ? (
-                    <BarChart data={dadosGrafico}>
-                      <XAxis dataKey="name" tick={{ fontSize: 11 }} />
-                      <YAxis tick={{ fontSize: 11 }}
-                        tickFormatter={(v: number) => formatarValor(v, g.eixoY)}
-                      />
-                      <Tooltip
-                        formatter={(value: number) => [formatarValor(value, g.eixoY), g.eixoY]}
-                        labelFormatter={(label: string) => g.eixoX + ': ' + label}
-                      />
-                      <Bar dataKey="value" fill={CORES[idx % CORES.length]} radius={[4, 4, 0, 0]} />
-                    </BarChart>
-                  ) : g.tipo === 'linha' ? (
-                    <LineChart data={dadosGrafico}>
-                      <XAxis dataKey="name" tick={{ fontSize: 11 }} />
-                      <YAxis tick={{ fontSize: 11 }}
-                        tickFormatter={(v: number) => formatarValor(v, g.eixoY)}
-                      />
-                      <Tooltip
-                        formatter={(value: number) => [formatarValor(value, g.eixoY), g.eixoY]}
-                        labelFormatter={(label: string) => g.eixoX + ': ' + label}
-                      />
-                      <Line type="monotone" dataKey="value" stroke={CORES[idx % CORES.length]} strokeWidth={2} dot={{ r: 3 }} />
-                    </LineChart>
-                  ) : (
-                    <PieChart>
-                      <Pie
-                        data={dadosGrafico}
-                        dataKey="value"
-                        nameKey="name"
-                        cx="50%"
-                        cy="50%"
-                        outerRadius={80}
-                        label={({ name, value, percent }) => name + ': ' + formatarValor(value, g.eixoX) + ' (' + ((percent ?? 0) * 100).toFixed(0) + '%)'}
-                      >
-                        {dadosGrafico.map((_: any, i: number) => (
-                          <Cell key={i} fill={CORES[i % CORES.length]} />
-                        ))}
-                      </Pie>
-                      <Tooltip
-                        formatter={(value: number) => [formatarValor(value, g.eixoX), 'Total']}
-                      />
-                    </PieChart>
-                  )}
-                </ResponsiveContainer>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </>
+              </ResponsiveContainer>
+            )}
+          </div>
+        );
+      })}
+    </div>
   );
 }

@@ -2,6 +2,8 @@ import 'reflect-metadata';
 import AppDataSource from './data-source';
 import { KpiUniversal, PlaceholderKpi } from '../entities/KpiUniversal';
 import { TipoServico } from '../enums/TipoServico';
+import { KPIS_UNIVERSAIS_REMOVIDOS_COLETA } from '../services/kpiDeduplicacaoService';
+import { renomearKpiSistema, upsertKpiSistema } from './kpiUniversalSeedUtils';
 
 /**
  * Seed complementar de KPIs Universais.
@@ -9,9 +11,8 @@ import { TipoServico } from '../enums/TipoServico';
  * 
  * Executar: npx ts-node src/database/seedKpiUniversalExtra.ts
  */
-export async function seedKpisUniversaisExtra(): Promise<void> {
-  const repo = AppDataSource.getRepository(KpiUniversal);
-
+/** Catálogo canônico do seed complementar (sem gravar no banco). */
+export function buildKpisUniversaisExtraNovos(): Partial<KpiUniversal>[] {
   // ─── Placeholders (reaproveitados do seed principal) ───
 
   const PH_PESO: PlaceholderKpi = {
@@ -35,7 +36,7 @@ export async function seedKpisUniversaisExtra(): Promise<void> {
   const PH_TIPO: PlaceholderKpi = {
     nome: 'TIPO_PLACEHOLDER',
     label: 'Coluna de Tipo de Caminhão',
-    colunasCandidatas: ['TIPO CAMINHAO', 'TIPO_CAMINHAO', 'CAMINHAO', 'TIPO DE CAMINHAO', 'TIPODECAMINHAO'],
+    colunasCandidatas: ['TIPO DE CAMINHÃO', 'TIPO CAMINHAO', 'TIPO_CAMINHAO', 'CAMINHAO', 'TIPO DE CAMINHAO', 'TIPODECAMINHAO'],
   };
 
   const PH_HORA: PlaceholderKpi = {
@@ -92,10 +93,10 @@ export async function seedKpisUniversaisExtra(): Promise<void> {
     colunasCandidatas: ['PESO 1', 'PESO1', 'PRIMEIRA PESAGEM', 'PESO INICIAL'],
   };
 
-  const PH_PESO5: PlaceholderKpi = {
-    nome: 'PESO5_PLACEHOLDER',
-    label: 'Coluna de Peso 5 (última pesagem)',
-    colunasCandidatas: ['PESO 5', 'PESO5', 'ULTIMA PESAGEM', 'PESO FINAL'],
+  const PH_PESO4: PlaceholderKpi = {
+    nome: 'PESO4_PLACEHOLDER',
+    label: 'Coluna de Peso 4 (última pesagem na planilha padrão)',
+    colunasCandidatas: ['PESO 4', 'PESO4', 'ULTIMA PESAGEM', 'PESO FINAL'],
   };
 
   const PH_KM_SAIDA: PlaceholderKpi = {
@@ -181,101 +182,87 @@ export async function seedKpisUniversaisExtra(): Promise<void> {
 
     // ─── Eficiência e Produtividade ───
     {
-      nome: 'Jornada Total (Horas Fora)',
-      label: 'Jornada Total',
-      formula: 'SUM(HORA_FORA_PLACEHOLDER)',
-      agregacao: 'sum',
-      formato: 'numero',
-      unidade: 'h',
-      categoria: 'Produtividade',
-      cor: '#06b6d4',
-      descricao: 'Soma total de horas que os caminhões ficaram fora da unidade',
-      metaSugerida: null,
-      tipoServico: TipoServico.COLETA_CAMINHAO,
-      placeholders: [PH_HORA_FORA],
-    },
-    {
-      nome: 'Média de Horas Fora por Viagem',
-      label: 'Média Horas Fora',
-      formula: 'AVG(HORA_FORA_PLACEHOLDER)',
+      nome: 'Horas Produtivas por Viagem',
+      label: 'Horas Produtivas por Viagem',
+      formula: 'DIVIDE(HORAS_PRODUTIVAS(HORA SÁIDA BASE, HORA CHEGADA BASE), VIAGENS_POR_ROTA())',
       agregacao: 'avg',
       formato: 'numero',
-      unidade: 'h',
+      unidade: 'h/viagem',
       categoria: 'Produtividade',
       cor: '#0891b2',
-      descricao: 'Média de horas que cada viagem ficou fora da unidade',
+      descricao: 'Média de horas produtivas (base) por viagem (CONTADOR DE VIAGENS ou rotas 01–04)',
       metaSugerida: null,
       tipoServico: TipoServico.COLETA_CAMINHAO,
-      placeholders: [PH_HORA_FORA],
+      placeholders: [PH_VIAGENS],
     },
     {
-      nome: 'KM por Hora Fora',
-      label: 'KM/Hora Fora',
-      formula: 'DIVIDE(SUM(KM_PLACEHOLDER), SUM(HORA_FORA_PLACEHOLDER))',
+      nome: 'KM por Hora Produtiva',
+      label: 'KM por Hora Produtiva',
+      formula: 'DIVIDE(SUM(KM_PLACEHOLDER), HORAS_PRODUTIVAS(HORA SÁIDA BASE, HORA CHEGADA BASE))',
       agregacao: 'sum',
       formato: 'numero',
       unidade: 'km/h',
       categoria: 'Eficiência',
       cor: '#3b82f6',
-      descricao: 'Eficiência: KM rodados por hora fora da unidade',
+      descricao: 'KM TOTAL dividido pelas horas produtivas (HORA SÁIDA BASE → HORA CHEGADA BASE)',
       metaSugerida: null,
       tipoServico: TipoServico.COLETA_CAMINHAO,
-      placeholders: [PH_KM, PH_HORA_FORA],
+      placeholders: [PH_KM],
     },
     {
-      nome: 'Toneladas por Hora Fora',
-      label: 'Ton./Hora Fora',
-      formula: 'DIVIDE(SUM(PESO_PLACEHOLDER) / 1000, SUM(HORA_FORA_PLACEHOLDER))',
+      nome: 'Toneladas por Hora Produtiva',
+      label: 'Ton. por Hora Produtiva',
+      formula: 'DIVIDE(SUM(PESO_PLACEHOLDER) / 1000, HORAS_PRODUTIVAS(HORA SÁIDA BASE, HORA CHEGADA BASE))',
       agregacao: 'sum',
       formato: 'numero',
       unidade: 'ton/h',
       categoria: 'Eficiência',
       cor: '#10b981',
-      descricao: 'Produtividade: toneladas coletadas por hora fora da unidade',
+      descricao: 'Tonelagem total dividida pelas horas produtivas da base',
       metaSugerida: null,
       tipoServico: TipoServico.COLETA_CAMINHAO,
-      placeholders: [PH_PESO, PH_HORA_FORA],
+      placeholders: [PH_PESO],
+    },
+    {
+      nome: 'KM por Tonelada',
+      label: 'KM/Ton',
+      formula: 'DIVIDE(SUM(KM_PLACEHOLDER), SUM(PESO_PLACEHOLDER) / 1000)',
+      agregacao: 'sum',
+      formato: 'numero',
+      unidade: 'km/t',
+      categoria: 'Eficiência',
+      cor: '#0ea5e9',
+      descricao: 'KM TOTAL dividido pela tonelagem total — quilômetros rodados por tonelada transportada',
+      metaSugerida: null,
+      tipoServico: TipoServico.COLETA_CAMINHAO,
+      placeholders: [PH_KM, PH_PESO],
     },
 
     // ─── Carga por Viagem ───
     {
       nome: 'Carga Média por Viagem',
       label: 'Carga Média/Viagem',
-      formula: 'DIVIDE(SUM(PESO_PLACEHOLDER), SUM(VIAGENS_PLACEHOLDER))',
+      formula: 'DIVIDE(SUM(PESO_PLACEHOLDER), VIAGENS_POR_ROTA())',
       agregacao: 'sum',
       formato: 'numero',
       unidade: 'kg/viagem',
       categoria: 'Operacional',
       cor: '#22c55e',
-      descricao: 'Peso médio por viagem (considerando Nº DE VIAGENS por registro)',
+      descricao: 'Peso médio por viagem (usa CONTADOR DE VIAGENS ou rotas 01–04)',
       metaSugerida: null,
       tipoServico: TipoServico.COLETA_CAMINHAO,
       placeholders: [PH_PESO, PH_VIAGENS],
     },
     {
-      nome: 'Total de Viagens (Contador)',
-      label: 'Total Viagens (Contador)',
-      formula: 'SUM(VIAGENS_PLACEHOLDER)',
-      agregacao: 'sum',
-      formato: 'numero',
-      unidade: 'viagens',
-      categoria: 'Operacional',
-      cor: '#14b8a6',
-      descricao: 'Soma do contador de viagens — quantidade total de viagens realizadas',
-      metaSugerida: null,
-      tipoServico: TipoServico.COLETA_CAMINHAO,
-      placeholders: [PH_VIAGENS],
-    },
-    {
       nome: 'Média de Viagens por Registro',
       label: 'Viagens/Registro',
-      formula: 'AVG(VIAGENS_PLACEHOLDER)',
+      formula: 'DIVIDE(VIAGENS_POR_ROTA(), COUNT(*))',
       agregacao: 'avg',
       formato: 'numero',
       unidade: 'viagens/reg',
       categoria: 'Operacional',
       cor: '#2dd4bf',
-      descricao: 'Média do contador de viagens por registro — indica se há registros com múltiplas viagens',
+      descricao: 'Média de viagens por registro — CONTADOR DE VIAGENS ou rotas 01–04 dividido pelo número de linhas',
       metaSugerida: null,
       tipoServico: TipoServico.COLETA_CAMINHAO,
       placeholders: [PH_VIAGENS],
@@ -284,14 +271,14 @@ export async function seedKpisUniversaisExtra(): Promise<void> {
     // ─── Análise de Carga por Coletor ───
     {
       nome: 'Peso por Coletor (kg)',
-      label: 'Peso/Coletor',
-      formula: 'DIVIDE(SUM(PESO_PLACEHOLDER), SUM(COLETOR_NUM_PLACEHOLDER))',
+      label: 'Ton/Coletor',
+      formula: 'DIVIDE(SUM(PESO_PLACEHOLDER) / 1000, PLACAS_UNICAS())',
       agregacao: 'sum',
       formato: 'numero',
-      unidade: 'kg/coletor',
+      unidade: 'ton/coletor',
       categoria: 'Frota',
       cor: '#8b5cf6',
-      descricao: 'Peso total dividido pelo número total de coletores — eficiência por coletor',
+      descricao: 'Tonelagem total do período dividida pelos coletores únicos (nomes ou placas)',
       metaSugerida: null,
       tipoServico: TipoServico.COLETA_CAMINHAO,
       placeholders: [PH_PESO, PH_COLETOR_NUM],
@@ -327,18 +314,18 @@ export async function seedKpisUniversaisExtra(): Promise<void> {
 
     // ─── Análise de Pesos Individuais ───
     {
-      nome: 'Variação entre Peso 1 e Peso 5',
-      label: 'Variação Peso1→Peso5',
-      formula: 'AVG(PESO5_PLACEHOLDER) - AVG(PESO1_PLACEHOLDER)',
+      nome: 'Variação entre Peso 1 e Peso 4',
+      label: 'Variação Peso1→Peso4',
+      formula: 'AVG(PESO4_PLACEHOLDER) - AVG(PESO1_PLACEHOLDER)',
       agregacao: 'avg',
       formato: 'numero',
       unidade: 'kg',
       categoria: 'Qualidade',
       cor: '#f43f5e',
-      descricao: 'Diferença média entre a primeira e última pesagem — indica acúmulo de carga',
+      descricao: 'Diferença média entre PESO 1 e PESO 4 (última pesagem na planilha padrão)',
       metaSugerida: null,
       tipoServico: TipoServico.COLETA_CAMINHAO,
-      placeholders: [PH_PESO1, PH_PESO5],
+      placeholders: [PH_PESO1, PH_PESO4],
     },
     {
       nome: 'Peso Máximo Coletado',
@@ -368,21 +355,6 @@ export async function seedKpisUniversaisExtra(): Promise<void> {
       tipoServico: TipoServico.COLETA_CAMINHAO,
       placeholders: [PH_PESO],
     },
-    {
-      nome: 'Amplitude de Peso',
-      label: 'Amplitude de Peso',
-      formula: 'SUBTRACT(MAX(PESO_PLACEHOLDER), MIN(PESO_PLACEHOLDER))',
-      agregacao: 'sum',
-      formato: 'numero',
-      unidade: 'kg',
-      categoria: 'Qualidade',
-      cor: '#f97316',
-      descricao: 'Diferença entre o maior e menor peso coletado — amplitude total',
-      metaSugerida: null,
-      tipoServico: TipoServico.COLETA_CAMINHAO,
-      placeholders: [PH_PESO],
-    },
-
     // ─── Análise por Tipo de Caminhão ───
     {
       nome: 'Média de Peso por Tipo',
@@ -398,63 +370,76 @@ export async function seedKpisUniversaisExtra(): Promise<void> {
       tipoServico: TipoServico.COLETA_CAMINHAO,
       placeholders: [PH_PESO],
     },
+    // ─── Horas produtivas por rota (01–04) ───
     {
-      nome: 'KM Médio por Tipo',
-      label: 'KM Médio por Tipo',
-      formula: 'AVG(KM_PLACEHOLDER)',
-      agregacao: 'avg',
-      formato: 'numero',
-      unidade: 'km',
-      categoria: 'Frota',
-      cor: '#0891b2',
-      descricao: 'Média de KM rodados — útil combinado com filtro por tipo de caminhão',
-      metaSugerida: null,
-      tipoServico: TipoServico.COLETA_CAMINHAO,
-      placeholders: [PH_KM],
-    },
-
-    // ─── Eficiência Avançada (3 novos KPIs) ───
-    {
-      nome: 'KM por Viagem Individual',
-      label: 'KM/Viagem Individual',
-      formula: 'DIVIDE(SUM(KM_PLACEHOLDER), SUM(VIAGENS_PLACEHOLDER))',
+      nome: 'Horas Produtivas Rota 01',
+      label: 'Horas Produtivas Rota 01',
+      formula: 'ROUND(HORAS_PRODUTIVAS(HORA SAÍDA ROTA 01, HORA CHEGADA ROTA 01), 2)',
       agregacao: 'sum',
       formato: 'numero',
-      unidade: 'km/viagem',
+      unidade: 'h',
+      categoria: 'Produtividade',
+      cor: '#f59e0b',
+      descricao: 'Total de horas produtivas na Rota 01 (HORA SAÍDA → HORA CHEGADA ROTA 01, com virada de dia)',
+      metaSugerida: null,
+      tipoServico: TipoServico.COLETA_CAMINHAO,
+      placeholders: [],
+    },
+    {
+      nome: 'Horas Produtivas Rota 02',
+      label: 'Horas Produtivas Rota 02',
+      formula: 'ROUND(HORAS_PRODUTIVAS(HORA SAÍDA ROTA 02, HORA CHEGADA ROTA 02), 2)',
+      agregacao: 'sum',
+      formato: 'numero',
+      unidade: 'h',
+      categoria: 'Produtividade',
+      cor: '#3b82f6',
+      descricao: 'Total de horas produtivas na Rota 02 (HORA SAÍDA → HORA CHEGADA ROTA 02, com virada de dia)',
+      metaSugerida: null,
+      tipoServico: TipoServico.COLETA_CAMINHAO,
+      placeholders: [],
+    },
+    {
+      nome: 'Horas Produtivas Rota 03',
+      label: 'Horas Produtivas Rota 03',
+      formula: 'ROUND(HORAS_PRODUTIVAS(HORA SAÍDA ROTA 03, HORA CHEGA ROTA 03), 2)',
+      agregacao: 'sum',
+      formato: 'numero',
+      unidade: 'h',
+      categoria: 'Produtividade',
+      cor: '#8b5cf6',
+      descricao: 'Total de horas produtivas na Rota 03 (HORA SAÍDA → HORA CHEGADA/CHEGA ROTA 03, com virada de dia)',
+      metaSugerida: null,
+      tipoServico: TipoServico.COLETA_CAMINHAO,
+      placeholders: [],
+    },
+    {
+      nome: 'Horas Produtivas Rota 04',
+      label: 'Horas Produtivas Rota 04',
+      formula: 'ROUND(HORAS_PRODUTIVAS(HORA SAÍDA ROTA 04, HORA CHEGADA ROTA 04), 2)',
+      agregacao: 'sum',
+      formato: 'numero',
+      unidade: 'h',
+      categoria: 'Produtividade',
+      cor: '#ec4899',
+      descricao: 'Total de horas produtivas na Rota 04 (HORA SAÍDA → HORA CHEGADA ROTA 04, com virada de dia)',
+      metaSugerida: null,
+      tipoServico: TipoServico.COLETA_CAMINHAO,
+      placeholders: [],
+    },
+    {
+      nome: 'Horas nas Rotas (total)',
+      label: 'Horas nas Rotas (total)',
+      formula: 'ROUND(HORAS_PRODUTIVAS(HORA SAÍDA ROTA 01, HORA CHEGADA ROTA 01) + HORAS_PRODUTIVAS(HORA SAÍDA ROTA 02, HORA CHEGADA ROTA 02) + HORAS_PRODUTIVAS(HORA SAÍDA ROTA 03, HORA CHEGA ROTA 03) + HORAS_PRODUTIVAS(HORA SAÍDA ROTA 04, HORA CHEGADA ROTA 04), 1)',
+      agregacao: 'sum',
+      formato: 'numero',
+      unidade: 'h',
       categoria: 'Produtividade',
       cor: '#0ea5e9',
-      descricao: 'Média de KM rodados por cada viagem individual (considerando múltiplas viagens por registro)',
+      descricao: 'Soma das horas produtivas nas rotas 01–04 (colunas de hora da planilha padrão)',
       metaSugerida: null,
       tipoServico: TipoServico.COLETA_CAMINHAO,
-      placeholders: [PH_KM, PH_VIAGENS],
-    },
-    {
-      nome: 'Peso por KM Rodado',
-      label: 'Peso/KM',
-      formula: 'DIVIDE(SUM(PESO_PLACEHOLDER), SUM(KM_PLACEHOLDER))',
-      agregacao: 'sum',
-      formato: 'numero',
-      unidade: 'kg/km',
-      categoria: 'Eficiência',
-      cor: '#f97316',
-      descricao: 'Quilogramas coletados por quilômetro rodado — eficiência de carga por deslocamento',
-      metaSugerida: null,
-      tipoServico: TipoServico.COLETA_CAMINHAO,
-      placeholders: [PH_PESO, PH_KM],
-    },
-    {
-      nome: 'Velocidade Média Operacional',
-      label: 'Vel. Média (km/h)',
-      formula: 'DIVIDE(SUM(KM_PLACEHOLDER), SUM(HORA_FORA_PLACEHOLDER))',
-      agregacao: 'sum',
-      formato: 'numero',
-      unidade: 'km/h',
-      categoria: 'Eficiência',
-      cor: '#3b82f6',
-      descricao: 'Velocidade média geral — KM total dividido pelas horas fora da unidade',
-      metaSugerida: null,
-      tipoServico: TipoServico.COLETA_CAMINHAO,
-      placeholders: [PH_KM, PH_HORA_FORA],
+      placeholders: [],
     },
   ];
 
@@ -660,36 +645,73 @@ export async function seedKpisUniversaisExtra(): Promise<void> {
     },
   ];
 
-  // ════════════════════════════════════════════════════════════════
-  // SALVAR (apenas os que não existem)
-  // ════════════════════════════════════════════════════════════════
-
-  const todosNovos = [
+  return [
     ...novosKpisColeta,
     ...novosKpisVarricao,
     ...novosKpisPoda,
     ...novosKpisRemocao,
     ...novosKpisGerais,
   ];
+}
 
-  let criados = 0;
-  for (const kpiData of todosNovos) {
-    const existente = await repo.findOne({
-      where: {
-        nome: kpiData.nome,
-        tipoServico: kpiData.tipoServico,
+export async function seedKpisUniversaisExtra(): Promise<void> {
+  const repo = AppDataSource.getRepository(KpiUniversal);
+  const todosNovos = buildKpisUniversaisExtraNovos();
+
+  const renomeacoes: Array<{ antigo: string; novo: string; patch?: Partial<KpiUniversal> }> = [
+    {
+      antigo: 'KM por Viagem Individual',
+      novo: 'Horas nas Rotas (total)',
+      patch: {
+        label: 'Horas nas Rotas (total)',
+        descricao: 'Soma das horas produtivas nas rotas 01–04 (colunas de hora da planilha padrão)',
       },
+    },
+    {
+      antigo: 'Média de Horas Fora por Viagem',
+      novo: 'Horas Produtivas por Viagem',
+      patch: {
+        label: 'Horas Produtivas por Viagem',
+        descricao: 'Média de horas produtivas (base) por viagem (CONTADOR DE VIAGENS ou rotas 01–04)',
+      },
+    },
+    { antigo: 'KM por Hora Fora', novo: 'KM por Hora Produtiva', patch: { label: 'KM por Hora Produtiva' } },
+    { antigo: 'Toneladas por Hora Fora', novo: 'Toneladas por Hora Produtiva', patch: { label: 'Ton. por Hora Produtiva' } },
+    {
+      antigo: 'Variação entre Peso 1 e Peso 5',
+      novo: 'Variação entre Peso 1 e Peso 4',
+      patch: {
+        label: 'Variação Peso1→Peso4',
+        descricao: 'Diferença média entre PESO 1 e PESO 4 (última pesagem na planilha padrão)',
+      },
+    },
+  ];
+
+  for (const { antigo, novo, patch } of renomeacoes) {
+    await renomearKpiSistema(repo, antigo, novo, TipoServico.COLETA_CAMINHAO, patch);
+  }
+
+  for (const nomeRemovido of KPIS_UNIVERSAIS_REMOVIDOS_COLETA) {
+    const obsoletos = await repo.find({
+      where: { nome: nomeRemovido, tipoServico: TipoServico.COLETA_CAMINHAO },
     });
-    if (!existente) {
-      const kpi = new KpiUniversal();
-      Object.assign(kpi, kpiData);
-      kpi.isPersonalizado = false;
-      await repo.save(kpi);
-      criados++;
+    for (const obs of obsoletos) {
+      await repo.remove(obs);
     }
   }
 
-  console.log(`[seedKpisUniversaisExtra] ✅ ${criados} novos KPIs criados com sucesso!`);
+  let criados = 0;
+  let atualizados = 0;
+  for (const kpiData of todosNovos) {
+    if (KPIS_UNIVERSAIS_REMOVIDOS_COLETA.includes(kpiData.nome as typeof KPIS_UNIVERSAIS_REMOVIDOS_COLETA[number])) {
+      continue;
+    }
+    const resultado = await upsertKpiSistema(repo, kpiData);
+    if (resultado === 'created') criados++;
+    if (resultado === 'updated') atualizados++;
+  }
+
+  console.log(`[seedKpisUniversaisExtra] ✅ ${criados} novos, ${atualizados} atualizados.`);
 }
 
 // Executar diretamente (apenas quando chamado como script)

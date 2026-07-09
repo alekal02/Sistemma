@@ -1,3 +1,9 @@
+import { contarViagensValidadas, sumarizarViagensPorRota } from './viagensPorRotaService';
+import { contarColetoresUnicos, calcularMediaTonPorColetorViagem } from './coletoresUnicosService';
+import { contarMotoristasUnicos, contarPlacasUnicas, contarDistritosUnicos } from './contadoresAtivosKpiService';
+import { colunaEhPlaca, normalizarPlaca } from '../utils/normalizarPlaca';
+import { resolverValorUnitarioPorTipo } from '../config/pesoMaximoCaminhao';
+
 /**
  * FormulaEngine — Motor de Formulas para KPIs
  */
@@ -122,7 +128,16 @@ function extrairFuncoesAgregadas(expressao: string): FuncaoExtraida[] {
 function aplicarAgregacao(funcao: Agregacao, coluna: string, dados: Record<string, any>[]): number {
   if (funcao === 'COUNT' && coluna === '*') return dados.length;
   if (funcao === 'COUNT DISTINCT') {
-    const valores = new Set(dados.map(d => encontrarValorColuna(d, coluna)).filter(v => v !== null && v !== undefined));
+    const valores = new Set(
+      dados
+        .map((d) => {
+          const v = encontrarValorColuna(d, coluna);
+          if (v === null || v === undefined || v === '') return null;
+          if (colunaEhPlaca(coluna)) return normalizarPlaca(String(v)) || null;
+          return v;
+        })
+        .filter((v) => v !== null && v !== undefined && v !== ''),
+    );
     return valores.size;
   }
   const valores = dados.map(d => { const v = encontrarValorColuna(d, coluna); if (v === null || v === undefined) return NaN; const n = parseNumeroBr(v); return isNaN(n) ? NaN : n; }).filter(n => !isNaN(n));
@@ -152,17 +167,71 @@ export function normalizarChave(chave: string): string {
   return chave.trim().toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[\s_\-\(\)\[\]\/\\,\.;:]+/g, '').replace(/[^A-Z0-9]/g, '');
 }
 
+/**
+ * ⭐ Mapa de sinônimos para fallback automático de colunas
+ * Quando uma coluna não é encontrada nos dados, tenta estas alternativas.
+ */
+const COLUNA_SINONIMOS: Record<string, string[]> = {
+  'MOTORISTA': ['MOTORISTA', 'OPERADOR', 'NOME', 'COLETOR', 'FUNCIONARIO', 'FUNCIONÁRIO', 'EQUIPE', 'PLACA', 'MOT'],
+  'DISTRITO': ['DISTRITO', 'BAIRRO', 'LOCAL', 'SETOR', 'ROTA', 'DESTINO', 'REGIAO', 'REGIÃO'],
+  'REGIONAL': ['REGIONAL', 'REGIAO', 'REGIÃO', 'ZONA', 'DISTRITO', 'BAIRRO'],
+  'PLACA': ['PLACA', 'CAMINHAO', 'CAMINHÃO', 'VEICULO', 'VEÍCULO', 'COLETOR', 'COLETORA', 'EQUIPAMENTO'],
+  'TIPO CAMINHAO': ['TIPO CAMINHAO', 'TIPO_CAMINHAO', 'CAMINHAO', 'CAMINHÃO', 'TIPO DE CAMINHÃO', 'TIPO DE CAMINHAO', 'TIPODECAMINHAO', 'TIPO VEICULO', 'TIPO'],
+  'PESO TOTAL': ['PESO TOTAL', 'PESO', 'PESOTOTAL', 'PESO_TOTAL', 'PESO_BRUTO', 'KG', 'PESO COLETADO', 'PESO (KG)'],
+  // Não usar 'KM' genérico — confunde hodômetro (KM SAIDA BASE) com distância percorrida
+  'KM TOTAL': ['KM TOTAL', 'KMTOTAL', 'KM_TOTAL', 'QUILOMETRO', 'DISTANCIA', 'KM RODADO', 'KILOMETRO'],
+  'TURNO': ['TURNO', 'PERIODO', 'TURNO BASE', 'TURNO_BASE'],
+};
+
 export function encontrarValorColuna(dado: Record<string, any>, nomeColuna: string): any {
   if (!dado || !nomeColuna) return undefined;
+  
+  // Nível 0: match exato
   if (dado[nomeColuna] !== undefined && dado[nomeColuna] !== null) return dado[nomeColuna];
+  
   const chaveNorm = normalizarChave(nomeColuna);
+  
+  // Nível 1: normalização
   for (const [k, v] of Object.entries(dado)) { if (v !== null && v !== undefined && normalizarChave(k) === chaveNorm) return v; }
+  
+  // Nível 2: sem espaços
   const semEspaco = chaveNorm.replace(/\s+/g, '');
   for (const [k, v] of Object.entries(dado)) { if (v !== null && v !== undefined && normalizarChave(k).replace(/\s+/g, '') === semEspaco) return v; }
+  
+  // Nível 3: contains
   for (const [k, v] of Object.entries(dado)) { if (v !== null && v !== undefined) { const chaveReal = normalizarChave(k).replace(/\s+/g, ''); if (chaveReal.includes(semEspaco) || semEspaco.includes(chaveReal)) return v; } }
+  
+  // Nível 4: tokens comuns
   const tokensBuscados = semEspaco.split(/\s+/).filter(t => t.length > 2);
   for (const [k, v] of Object.entries(dado)) { if (v !== null && v !== undefined) { const chaveReal = normalizarChave(k).replace(/\s+/g, ''); const tokensReal = chaveReal.split(/\s+/).filter(t => t.length > 2); const tokensComuns = tokensBuscados.filter(t => tokensReal.includes(t)); if (tokensComuns.length >= Math.min(tokensBuscados.length, tokensReal.length)) return v; } }
+  
+  // Nível 5: dados brutos (d.dados)
   if (dado.dados && typeof dado.dados === 'object' && !Array.isArray(dado.dados)) return encontrarValorColuna(dado.dados, nomeColuna);
+  
+  // ⭐ Nível 6: fallback por sinônimos — tenta colunas alternativas conhecidas
+  const nomeUpper = nomeColuna.trim().toUpperCase();
+  const sinonimos = COLUNA_SINONIMOS[nomeUpper];
+  if (sinonimos && sinonimos.length > 0) {
+    // Tenta cada sinônimo (pulando o primeiro que é o próprio nome)
+    for (let i = 1; i < sinonimos.length; i++) {
+      const valor = encontrarValorColuna(dado, sinonimos[i]);
+      if (valor !== undefined && valor !== null && valor !== '') return valor;
+    }
+  }
+  
+  // Nível 7: busca em qualquer coluna que tenha valor não-nulo (último recurso para COUNT DISTINCT)
+  // Só retorna a primeira coluna com valor se todas as tentativas falharam
+  for (const [k, v] of Object.entries(dado)) {
+    if (v !== null && v !== undefined && v !== '' && typeof v === 'string' && v.length > 1 && !/^\d+$/.test(v)) {
+      // Para COUNT DISTINCT, qualquer coluna de texto serve como fallback genérico
+      // Mas não queremos pegar colunas como "PESO TOTAL" que são numéricas
+      const chaveReal = normalizarChave(k);
+      if (!chaveReal.includes('PESO') && !chaveReal.includes('KM') && !chaveReal.includes('HORA') && !chaveReal.includes('DATA')) {
+        return v;
+      }
+    }
+  }
+  
   return undefined;
 }
 
@@ -218,19 +287,24 @@ function extrairConteudoEntreParenteses(expr: string, inicioAbre: number): { con
   return { conteudo: expr.substring(inicioAbre + 1, fecha), fecha };
 }
 
-function calcularFaturamentoEstimado(colunaPeso: string, colunaTipo: string, dados: Record<string, any>[], valoresFixos: Record<string, number>): number {
+function calcularFaturamentoEstimado(
+  colunaPeso: string,
+  colunaTipo: string,
+  dados: Record<string, any>[],
+  valoresFixos: Record<string, number>,
+): number {
   if (!dados || dados.length === 0) return 0;
-  const valores: Record<string, number> = { TRUCK: valoresFixos['VALOR_TRUCK'] ?? valoresFixos['VALOR_TONELADA'] ?? 0, TOCO: valoresFixos['VALOR_TOCO'] ?? valoresFixos['VALOR_TONELADA'] ?? 0, MINI: valoresFixos['VALOR_MINI'] ?? valoresFixos['VALOR_TONELADA'] ?? 0 };
-  if (Object.values(valores).every(v => v === 0)) return 0;
+  const temValor = ['VALOR_MINI', 'VALOR_TRUCK', 'VALOR_TOCO', 'VALOR_BASCULANTE', 'VALOR_TONELADA']
+    .some((k) => (valoresFixos[k] ?? 0) > 0);
+  if (!temValor) return 0;
+
   let total = 0;
   for (const d of dados) {
     const peso = parseNumeroBr(encontrarValorColuna(d, colunaPeso));
     if (isNaN(peso) || peso <= 0) continue;
-    const tipoRaw = String(encontrarValorColuna(d, colunaTipo) || '').toUpperCase().trim();
+    const tipoRaw = String(encontrarValorColuna(d, colunaTipo) || '');
     const toneladas = peso / 1000;
-    let valorUnitario = 0;
-    const tipoMatch = Object.entries(valores).find(([key]) => tipoRaw.includes(key) || key.includes(tipoRaw));
-    if (tipoMatch) { valorUnitario = tipoMatch[1]; } else { valorUnitario = valoresFixos['VALOR_TONELADA'] ?? 0; }
+    const valorUnitario = resolverValorUnitarioPorTipo(tipoRaw, valoresFixos);
     total += toneladas * valorUnitario;
   }
   return total;
@@ -300,6 +374,73 @@ export function calcularExpressao(expressao: string, contexto: ContextoCalculo):
       if (debug) log['FATURAMENTO_EST'] = v; fatRegex.lastIndex = 0;
     }
   }
+  // ⭐ VIAGENS_VALIDADAS() / VIAGENS_REALIZADAS() — viagens em linhas validadas no dashboard
+  const viagensValidadasRegex = /VIAGENS_(?:VALIDADAS|REALIZADAS)\s*\(\s*\)/gi;
+  let viagensValidadasMatch;
+  while ((viagensValidadasMatch = viagensValidadasRegex.exec(expr)) !== null) {
+    const totalValidadas = contarViagensValidadas(dados);
+    expr = expr.substring(0, viagensValidadasMatch.index) + String(totalValidadas) + expr.substring(viagensValidadasMatch.index + viagensValidadasMatch[0].length);
+    if (debug) log['VIAGENS_VALIDADAS'] = totalValidadas;
+    viagensValidadasRegex.lastIndex = 0;
+  }
+
+  // ⭐ VIAGENS_POR_ROTA() — soma CONTADOR DE VIAGENS (até 4 por linha/rota)
+  const viagensRotaRegex = /VIAGENS_POR_ROTA\s*\(\s*\)/gi;
+  let viagensRotaMatch;
+  while ((viagensRotaMatch = viagensRotaRegex.exec(expr)) !== null) {
+    const totalViagens = sumarizarViagensPorRota(dados);
+    expr = expr.substring(0, viagensRotaMatch.index) + String(totalViagens) + expr.substring(viagensRotaMatch.index + viagensRotaMatch[0].length);
+    if (debug) log['VIAGENS_POR_ROTA'] = totalViagens;
+    viagensRotaRegex.lastIndex = 0;
+  }
+
+  // ⭐ COLETORES_UNICOS() — nomes distintos em COLETOR 01–04 (mesma pessoa em várias viagens conta 1x)
+  const coletoresUnicosRegex = /COLETORES_UNICOS\s*\(\s*\)/gi;
+  let coletoresUnicosMatch;
+  while ((coletoresUnicosMatch = coletoresUnicosRegex.exec(expr)) !== null) {
+    const total = contarColetoresUnicos(dados);
+    expr = expr.substring(0, coletoresUnicosMatch.index) + String(total) + expr.substring(coletoresUnicosMatch.index + coletoresUnicosMatch[0].length);
+    if (debug) log['COLETORES_UNICOS'] = total;
+    coletoresUnicosRegex.lastIndex = 0;
+  }
+
+  const motoristasUnicosRegex = /MOTORISTAS_UNICOS\s*\(\s*\)/gi;
+  let motoristasUnicosMatch;
+  while ((motoristasUnicosMatch = motoristasUnicosRegex.exec(expr)) !== null) {
+    const total = contarMotoristasUnicos(dados);
+    expr = expr.substring(0, motoristasUnicosMatch.index) + String(total) + expr.substring(motoristasUnicosMatch.index + motoristasUnicosMatch[0].length);
+    if (debug) log['MOTORISTAS_UNICOS'] = total;
+    motoristasUnicosRegex.lastIndex = 0;
+  }
+
+  const placasUnicasRegex = /PLACAS_UNICAS\s*\(\s*\)/gi;
+  let placasUnicasMatch;
+  while ((placasUnicasMatch = placasUnicasRegex.exec(expr)) !== null) {
+    const total = contarPlacasUnicas(dados);
+    expr = expr.substring(0, placasUnicasMatch.index) + String(total) + expr.substring(placasUnicasMatch.index + placasUnicasMatch[0].length);
+    if (debug) log['PLACAS_UNICAS'] = total;
+    placasUnicasRegex.lastIndex = 0;
+  }
+
+  const distritosUnicosRegex = /DISTRITOS_UNICOS\s*\(\s*\)/gi;
+  let distritosUnicosMatch;
+  while ((distritosUnicosMatch = distritosUnicosRegex.exec(expr)) !== null) {
+    const total = contarDistritosUnicos(dados);
+    expr = expr.substring(0, distritosUnicosMatch.index) + String(total) + expr.substring(distritosUnicosMatch.index + distritosUnicosMatch[0].length);
+    if (debug) log['DISTRITOS_UNICOS'] = total;
+    distritosUnicosRegex.lastIndex = 0;
+  }
+
+  // ⭐ MEDIA_TON_POR_COLETOR() — média ton/coletor por viagem (PESO TOTAL ÷ Nº DE COLETORES)
+  const mediaTonColetorRegex = /MEDIA_TON_POR_COLETOR\s*\(\s*\)/gi;
+  let mediaTonColetorMatch;
+  while ((mediaTonColetorMatch = mediaTonColetorRegex.exec(expr)) !== null) {
+    const media = calcularMediaTonPorColetorViagem(dados);
+    expr = expr.substring(0, mediaTonColetorMatch.index) + String(media) + expr.substring(mediaTonColetorMatch.index + mediaTonColetorMatch[0].length);
+    if (debug) log['MEDIA_TON_POR_COLETOR'] = media;
+    mediaTonColetorRegex.lastIndex = 0;
+  }
+
   // ⭐ HORAS_PRODUTIVAS(colSaida, colChegada) — calcula soma de horas por registro, corrigindo virada de dia
   //    Quando chegada < saida (formato decimal Excel), significa que virou o dia: (chegada + 1 - saida) * 24
   //    Útil para viagens que terminam no dia seguinte (ex: saída 22:00, chegada 02:00)
@@ -499,14 +640,14 @@ export const MODELO_EXECUTIVO_KPIS: GrupoModeloExecutivo[] = [
     indicadores: [
       {
         nome: 'Faturamento Total',
-        formula: 'SUM(PESO TOTAL) / 1000 * VALOR_TRUCK',
+        formula: 'FATURAMENTO_EST(PESO TOTAL, TIPO CAMINHAO)',
         grupo: 'financeiro',
         formato: 'moeda',
         label: 'Faturamento Total',
-        descricao: 'Receita total estimada com base no peso transportado e valor por tonelada',
+        descricao: 'Receita total estimada: soma de (PESO em toneladas × valor por tipo de caminhão) — detecta automaticamente TRUCK, TOCO, MINI conforme configurado no contrato',
         unidade: R_REAIS,
         cor: '#059669',
-        colunasUsadas: ['PESO TOTAL'],
+        colunasUsadas: ['PESO TOTAL', 'TIPO CAMINHAO'],
       },
       {
         nome: 'Faturamento Total (fallback)',
@@ -543,7 +684,7 @@ export const MODELO_EXECUTIVO_KPIS: GrupoModeloExecutivo[] = [
       },
       {
         nome: 'Ticket Medio',
-        formula: 'FATURAMENTO_EST(PESO TOTAL, TIPO CAMINHAO) / COUNT(*)',
+        formula: 'FATURAMENTO_EST(PESO TOTAL, TIPO CAMINHAO) / VIAGENS_POR_ROTA()',
         grupo: 'financeiro',
         formato: 'moeda',
         label: 'Ticket Medio',
@@ -582,11 +723,11 @@ export const MODELO_EXECUTIVO_KPIS: GrupoModeloExecutivo[] = [
       },
       {
         nome: 'Viagens',
-        formula: 'COUNT(*)',
+        formula: 'VIAGENS_POR_ROTA()',
         grupo: 'operacional',
         formato: 'numero',
         label: 'Viagens',
-        descricao: 'Numero total de viagens realizadas',
+        descricao: 'Quantidade de viagens: CONTADOR DE VIAGENS da planilha; se vazio, conta rotas 01–04',
         unidade: 'un',
         cor: '#14b8a6',
         colunasUsadas: [],

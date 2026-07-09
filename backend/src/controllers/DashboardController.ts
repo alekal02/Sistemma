@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { pdfController } from './PdfController';
 import { Between, Repository } from 'typeorm';
 import { startOfDay, endOfDay, subDays } from 'date-fns';
 import AppDataSource from '../database/data-source';
@@ -153,48 +154,11 @@ export class DashboardController {
   }
 
   /**
-   * POST /api/dashboard/generate-pdf
-   * Gera um PDF a partir de HTML usando Puppeteer
-   * Body: { html: string, filename?: string }
+   * POST /api/dashboard/generate-pdf (legado — margem full para dashboards)
    */
   async generatePdf(req: Request, res: Response): Promise<void> {
-    try {
-      const { html, filename = 'documento' } = req.body;
-
-      if (!html || typeof html !== 'string') {
-        res.status(400).json({ error: 'HTML é obrigatório' });
-        return;
-      }
-
-      // Iniciar Puppeteer
-      const puppeteer = require('puppeteer');
-      const browser = await puppeteer.launch({
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
-      });
-
-      const page = await browser.newPage();
-      await page.setContent(html, { waitUntil: 'networkidle0' });
-
-      // Gerar PDF
-      const pdfBuffer = await page.pdf({
-        format: 'A4',
-        margin: { top: '0mm', bottom: '0mm', left: '0mm', right: '0mm' },
-        printBackground: true,
-        preferCSSPageSize: true,
-      });
-
-      await browser.close();
-
-      // Retornar PDF
-      const safeName = filename.replace(/[^a-zA-Z0-9_-]/g, '_');
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', `attachment; filename="${safeName}.pdf"`);
-      res.send(pdfBuffer);
-    } catch (error: any) {
-      console.error('Erro ao gerar PDF:', error?.message || error);
-      res.status(500).json({ error: 'Erro ao gerar PDF: ' + (error?.message || '') });
-    }
+    if (!req.body.margin) req.body.margin = 'full';
+    return pdfController.generate(req, res);
   }
 
   /**

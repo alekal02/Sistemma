@@ -17,13 +17,105 @@
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
 }
 
+/* ═══ Cabeçalho ═══ */
+.gfb-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.gfb-header-left {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.gfb-header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-shrink: 0;
+}
+
+.gfb-section-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.62rem;
+  font-weight: 700;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.gfb-section-label-dim {
+  margin-bottom: 0.35rem;
+}
+
+.gfb-periodo-resumo {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #1e293b;
+  white-space: nowrap;
+}
+
+.gfb-periodo-resumo-label {
+  font-weight: 500;
+  color: #64748b;
+}
+
+.gfb-stat-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.25rem 0.55rem;
+  font-size: 0.68rem;
+  font-weight: 500;
+  color: #64748b;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 20px;
+  white-space: nowrap;
+}
+
+.gfb-stat-badge strong {
+  color: #1e293b;
+  font-weight: 700;
+}
+
+.gfb-stat-badge.filtrado {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+  color: #166534;
+}
+
+.gfb-stat-badge.filtrado strong {
+  color: #15803d;
+}
+
 /* ═══ LINHA 1: Período ═══ */
 .gfb-top-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 0.5rem;
-  margin-bottom: 0.65rem;
+  margin-bottom: 0.55rem;
+}
+
+.gfb-periodo-scroll {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+
+.gfb-periodo-scroll::-webkit-scrollbar {
+  display: none;
 }
 
 .gfb-periodo-group {
@@ -149,15 +241,13 @@
 
 /* ═══ Date Picker ═══ */
 .gfb-datepicker {
-  display: flex;
-  align-items: flex-end;
-  gap: 0.5rem;
-  padding: 0.6rem 0.75rem;
+  padding: 0.65rem 0.75rem;
   margin-bottom: 0.5rem;
-  background: #f8fafc;
-  border-radius: 8px;
-  border: 1px solid #e2e8f0;
+  background: #fff;
+  border-radius: 10px;
+  border: 1.5px solid #e2e8f0;
   animation: gfb-slide-down 0.2s ease;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
 }
 
 @keyframes gfb-slide-down {
@@ -165,91 +255,273 @@
   to { opacity: 1; transform: translateY(0); }
 }
 
+/* Presets rápidos */
+.gfb-datepicker-presets {
+  display: flex;
+  gap: 0.25rem;
+  margin-bottom: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.gfb-dp-preset {
+  padding: 0.25rem 0.6rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: #475569;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.gfb-dp-preset:hover {
+  background: #22c55e;
+  color: #fff;
+  border-color: #22c55e;
+}
+
+/* Linha principal: De → até + OK */
+.gfb-datepicker-fields {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.35rem;
+}
+
+.gfb-datepicker-sep {
+  font-size: 0.72rem;
+  color: #94a3b8;
+  font-weight: 600;
+  padding-bottom: 0.4rem;
+  line-height: 1;
+}
+
 .gfb-date-field {
   display: flex;
   flex-direction: column;
   gap: 0.15rem;
+  flex: 1;
+  min-width: 0;
 }
 
 .gfb-date-field label {
-  font-size: 0.6rem;
+  font-size: 0.58rem;
   font-weight: 700;
   color: #64748b;
   text-transform: uppercase;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.03em;
 }
 
+.gfb-date-input-group {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.gfb-date-icon {
+  position: absolute;
+  right: 8px;
+  font-size: 0.85rem;
+  pointer-events: none;
+  opacity: 0.5;
+}
+
+.gfb-date-field input[type="date"].gfb-date-input,
 .gfb-date-field input[type="date"] {
-  padding: 0.35rem 0.5rem;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  font-size: 0.78rem;
+  width: 100%;
+  padding: 0.4rem 0.5rem;
+  border: 1.5px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  font-weight: 600;
   color: #1e293b;
   background: #fff;
   outline: none;
-  transition: border-color 0.2s;
+  transition: all 0.2s;
+  min-height: 36px;
+  cursor: pointer;
 }
 
+.gfb-date-field input[type="date"].gfb-date-input:hover,
+.gfb-date-field input[type="date"]:hover {
+  border-color: #1a73e8;
+  background: #fafafa;
+}
+
+.gfb-date-field input[type="date"].gfb-date-input:focus,
 .gfb-date-field input[type="date"]:focus {
-  border-color: #22c55e;
-  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.08);
+  border-color: #1a73e8;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
 }
 
+.gfb-date-field input[type="date"]::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  padding: 4px;
+  opacity: 0.4;
+  transition: opacity 0.15s;
+  position: relative;
+  z-index: 1;
+}
+
+.gfb-date-field input[type="date"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 0.8;
+}
+
+/* Botão OK */
 .gfb-date-apply {
-  padding: 0.35rem 0.85rem;
-  font-size: 0.72rem;
+  padding: 0.4rem 0.7rem;
+  font-size: 0.8rem;
   font-weight: 700;
   color: #fff;
-  background: #22c55e;
+  background: #1a73e8;
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
-  transition: background 0.2s;
+  transition: all 0.2s;
   white-space: nowrap;
-  height: 32px;
+  min-height: 36px;
+  min-width: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
 .gfb-date-apply:hover {
-  background: #16a34a;
+  background: #4f46e5;
+  transform: translateY(-1px);
 }
 
-/* ═══ LINHA 2: Busca + Tags ═══ */
+.gfb-date-apply:active {
+  transform: translateY(0);
+}
+
+/* ═══ Dimensões ═══ */
+.gfb-filter-section {
+  padding-top: 0.45rem;
+  border-top: 1px solid #f1f5f9;
+}
+
 .gfb-filter-row {
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
+  gap: 0.45rem;
 }
 
-/* ── Botão de Busca ── */
+/* ── Busca inline ── */
 .gfb-search-wrapper {
   position: relative;
 }
 
-.gfb-search-btn {
-  display: inline-flex;
+.gfb-filter-input-wrap {
+  display: flex;
   align-items: center;
   gap: 0.35rem;
-  padding: 0.35rem 0.75rem;
+  padding: 0.35rem 0.65rem;
   font-size: 0.78rem;
-  font-weight: 600;
   color: #64748b;
   background: #f8fafc;
   border: 1px solid #e2e8f0;
   border-radius: 8px;
-  cursor: pointer;
+  cursor: text;
   transition: all 0.2s ease;
-  min-width: 140px;
+  min-width: 0;
 }
 
-.gfb-search-btn:hover {
+.gfb-filter-input-wrap:hover {
   background: #f1f5f9;
-  border-color: #22c55e;
-  color: #1e293b;
+  border-color: #cbd5e1;
 }
 
-.gfb-search-btn:focus-within {
+.gfb-filter-input-wrap.open,
+.gfb-filter-input-wrap:focus-within {
   border-color: #22c55e;
   box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.08);
+  background: #fff;
+}
+
+.gfb-filter-input-icon {
+  color: #94a3b8;
+  flex-shrink: 0;
+}
+
+.gfb-filter-input {
+  flex: 1;
+  border: none;
+  background: none;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: #1e293b;
+  outline: none;
+  min-width: 0;
+}
+
+.gfb-filter-input::placeholder {
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+.gfb-filter-input:read-only {
+  cursor: pointer;
+}
+
+/* ── Atalhos de dimensão ── */
+.gfb-quick-dims {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.gfb-quick-dim {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: #64748b;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 20px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.gfb-quick-dim:hover {
+  background: #f8fafc;
+  border-color: #22c55e;
+  color: #334155;
+}
+
+.gfb-quick-dim.ativo {
+  background: #f0fdf4;
+  border-color: #86efac;
+  color: #15803d;
+}
+
+.gfb-quick-dim-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 0.25rem;
+  font-size: 0.58rem;
+  font-weight: 700;
+  color: #fff;
+  background: #22c55e;
+  border-radius: 10px;
+}
+
+.gfb-quick-dim-more {
+  color: #22c55e;
+  border-style: dashed;
+}
+
+.gfb-tags-row {
+  margin-top: 0.35rem;
 }
 
 .gfb-chevron {
@@ -768,6 +1040,17 @@
     border-radius: 10px;
   }
 
+  .gfb-header-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.4rem;
+  }
+
+  .gfb-header-right {
+    width: 100%;
+    justify-content: space-between;
+  }
+
   .gfb-top-row {
     flex-direction: column;
     align-items: stretch;
@@ -812,12 +1095,33 @@
   }
 
   .gfb-datepicker {
-    flex-direction: column;
-    align-items: stretch;
+    padding: 0.5rem 0.6rem;
   }
 
+  .gfb-datepicker-fields {
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+
+  .gfb-datepicker-presets {
+    justify-content: center;
+  }
+
+  .gfb-datepicker-sep {
+    display: none;
+  }
+
+  .gfb-date-field input[type="date"].gfb-date-input,
   .gfb-date-field input[type="date"] {
     width: 100%;
+    min-height: 40px;
+    font-size: 0.9rem;
+  }
+
+  .gfb-date-apply {
+    min-height: 40px;
+    width: 100%;
+    font-size: 0.85rem;
   }
 }
 
@@ -831,8 +1135,11 @@
     padding: 0.15rem 0.4rem;
   }
 
-  .gfb-search-btn {
+  .gfb-filter-input-wrap {
     font-size: 0.72rem;
-    min-width: 120px;
+  }
+
+  .gfb-periodo-resumo {
+    font-size: 0.72rem;
   }
 }

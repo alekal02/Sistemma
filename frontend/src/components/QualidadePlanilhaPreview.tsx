@@ -122,6 +122,11 @@ export default function QualidadePlanilhaPreview({ dados, carregando }: Qualidad
 
   if (!dados || !dados.sucesso) return null;
 
+  // Preview de roçada (e outros fluxos) não traz o shape de qualidade de coleta
+  if (!Array.isArray(dados.problemas) || typeof dados.pontuacaoQualidade !== 'number') {
+    return null;
+  }
+
   const nivel = getNivelQualidade(dados.pontuacaoQualidade);
   const temProblemasGraves = dados.problemas.some(p => p.gravidade === 'crítico' || p.gravidade === 'alto');
   const totalProblemas = dados.problemas.length;

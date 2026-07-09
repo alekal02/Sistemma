@@ -4,10 +4,12 @@ FROM node:22-alpine AS builder
 # ARGS para variáveis de ambiente do Vite
 ARG VITE_API_URL=/api
 ARG VITE_APP_NAME=Sistemma
+ARG VITE_APP_VERSION=dev
 ARG VITE_ENV=production
 
 ENV VITE_API_URL=${VITE_API_URL}
 ENV VITE_APP_NAME=${VITE_APP_NAME}
+ENV VITE_APP_VERSION=${VITE_APP_VERSION}
 ENV VITE_ENV=${VITE_ENV}
 
 WORKDIR /app
@@ -23,6 +25,7 @@ COPY tsconfig.json tsconfig.app.json tsconfig.node.json ./
 COPY vite.config.ts ./
 COPY index.html ./
 COPY public/ ./public/
+COPY scripts/ ./scripts/
 COPY src/ ./src/
 COPY eslint.config.js ./
 

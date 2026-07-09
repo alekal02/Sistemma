@@ -10,6 +10,8 @@ import { useToast } from '../contexts/ToastContext';
 import { useBreadcrumbs } from '../contexts/BreadcrumbContext';
 import SkeletonLoader from '../components/SkeletonLoader';
 import type { KpiConfig, GraficoConfig, ColunaDetectada } from '../components/KpiEditor/KpiEditorTypes';
+import servicoService from '../services/servicoService';
+import { isAxiosError } from 'axios';
 import '../styles/ContratoDetalhe.css';
 
 const CORES = ['#059669', '#22c55e', '#f59e0b', '#a855f7', '#ef4444', '#14b8a6', '#3b82f6', '#ec4899', '#84cc16', '#06b6d4'];
@@ -41,18 +43,13 @@ export default function ConfiguracaoServico() {
     if (!contractId || !servicoId) return;
     setCarregando(true);
     try {
-      const res = await fetch('/api/contracts/' + contractId + '/servicos/' + servicoId + '/padrao', {
-        headers: { Authorization: 'Bearer ' + token },
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setServicoNome(data.servico?.nome || 'Servico');
-        const cols: ColunaDetectada[] = data.servico?.padraoPlanilha?.colunas || [];
-        setColunas(cols);
-        const cfg = data.servico?.configDashboard;
-        if (cfg?.kpis?.length) setKpis(JSON.parse(JSON.stringify(cfg.kpis)));
-        if (cfg?.graficos?.length) setGraficos(JSON.parse(JSON.stringify(cfg.graficos)));
-      }
+      const data = await servicoService.getPadrao(contractId, servicoId);
+      setServicoNome(data.servico?.nome || 'Servico');
+      const cols: ColunaDetectada[] = data.servico?.padraoPlanilha?.colunas || [];
+      setColunas(cols);
+      const cfg = data.servico?.configDashboard;
+      if (cfg?.kpis?.length) setKpis(JSON.parse(JSON.stringify(cfg.kpis)));
+      if (cfg?.graficos?.length) setGraficos(JSON.parse(JSON.stringify(cfg.graficos)));
     } catch {
       adicionarToast('Erro ao carregar dados', 'error');
     } finally {
@@ -65,15 +62,9 @@ export default function ConfiguracaoServico() {
   const salvarConfig = useCallback(async (novosKpis: KpiConfig[], novosGraficos: GraficoConfig[]) => {
     setAutoSave('saving');
     try {
-      await fetch('/api/contracts/' + contractId + '/servicos/' + servicoId + '/config-dashboard', {
-        method: 'PUT',
-        headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          configDashboard: {
-            kpis: novosKpis.filter(k => k.ativo),
-            graficos: novosGraficos.filter(g => g.ativo),
-          },
-        }),
+      await servicoService.saveConfigDashboard(contractId, servicoId, {
+        kpis: novosKpis.filter(k => k.ativo),
+        graficos: novosGraficos.filter(g => g.ativo),
       });
       setAutoSave('saved');
       setTimeout(() => setAutoSave('idle'), 2000);
@@ -84,20 +75,14 @@ export default function ConfiguracaoServico() {
 
   const aplicarModeloExecutivo = async (substituir: boolean) => {
     try {
-      const res = await fetch('/api/contracts/' + contractId + '/servicos/' + servicoId + '/aplicar-modelo-executivo', {
-        method: 'POST',
-        headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ substituir }),
-      });
-      if (res.ok) {
-        adicionarToast('Modelo Executivo aplicado!', 'success');
-        carregarDados();
-      } else {
-        const err = await res.text();
-        adicionarToast('Erro: ' + (JSON.parse(err).error || err), 'error');
-      }
-    } catch {
-      adicionarToast('Erro ao aplicar modelo executivo', 'error');
+      await servicoService.aplicarModeloExecutivo(contractId, servicoId, substituir);
+      adicionarToast('Modelo Executivo aplicado!', 'success');
+      carregarDados();
+    } catch (err) {
+      const msg = isAxiosError(err)
+        ? (err.response?.data as { error?: string })?.error || 'Erro ao aplicar modelo'
+        : 'Erro ao aplicar modelo';
+      adicionarToast('Erro: ' + msg, 'error');
     }
   };
 

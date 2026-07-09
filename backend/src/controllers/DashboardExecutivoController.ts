@@ -5,7 +5,9 @@
 
    GET /api/dashboard/executivo
    Query params:
-     - periodo: 'hoje' | 'semana' | 'mes' | '30d' | '90d' | 'personalizado'
+     - periodo: 'ciclo' | 'hoje' | 'semana' | 'mes' | '30d' | '90d' | 'personalizado'
+     - mesReferencia: number (1-12) — ciclo do contrato
+     - anoReferencia: number — ciclo do contrato
      - dataInicio: string (ISO) — usado quando periodo = 'personalizado'
      - dataFim: string (ISO)
      - contractId: string (opcional — filtra por contrato)
@@ -28,11 +30,42 @@ import { Caminhao } from '../entities/Caminhao';
 import {
   encontrarValorColuna,
 } from '../services/FormulaEngine';
+import { aplicarFiltroViagensValidasDashboard } from '../services/validacaoViagemService';
 import { gerarHtmlRelatorioExecutivo, PdfExecutivoParams } from '../services/PdfRelatorioExecutivoService';
 import { invalidarPdfCache, getPdfCache, getPdfCacheDuracao } from '../services/PdfCacheManager';
 import { dashboardCache } from '../services/DashboardCacheManager';
-import puppeteer from 'puppeteer';
+import { calcularIndicadoresExecutivoUnificado } from '../services/executivoIndicadoresService';
+import {
+  contarRotasValidadas,
+  contarViagensPorRotaRegistro,
+  sumarizarViagensPorRota,
+} from '../services/viagensPorRotaService';
+import { resolverValorUnitarioPorTipo, normalizarTipoCaminhaoPeso } from '../config/pesoMaximoCaminhao';
+import {
+  calcularCicloMensalContrato,
+  inferirMesReferenciaAtual,
+  deslocarMesReferencia,
+  normalizarDiaInicioCiclo,
+} from '../utils/periodoCicloContrato';
+import { diagnosticarDashboards } from '../services/diagnosticoDashboardService';
+import { TIPOS_SERVICO_META } from '../enums/TipoServico';
 import crypto from 'crypto';
+
+function sanitizarNomePdf(parte: string, maxLen = 50): string {
+  return (parte || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\w.-]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '')
+    .slice(0, maxLen);
+}
+
+function labelTipoServicoPdf(tipo: string): string {
+  const meta = TIPOS_SERVICO_META[tipo];
+  if (!meta?.label) return tipo.replace(/_/g, ' ');
+  return meta.label.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '').trim();
+}
 
 const PDF_CACHE_DURACAO = getPdfCacheDuracao();
 const pdfCache = getPdfCache();
@@ -171,11 +204,28 @@ function formatarValor(valor: number, formato: string): string {
   return valor.toLocaleString('pt-BR', { maximumFractionDigits: 2 });
 }
 
-function calcVariacao(atual: number, anterior: number): { valor: number; tipo: 'aumento' | 'reducao' | 'estavel' } {
-  if (anterior === 0) return { valor: atual > 0 ? 100 : 0, tipo: atual > 0 ? 'aumento' : 'estavel' };
+type TipoVariacaoExecutivo = 'aumento' | 'reducao' | 'estavel' | 'sem_base';
+
+function calcVariacao(
+  atual: number,
+  anterior: number,
+  opts?: { temBase?: boolean },
+): { valor: number; tipo: TipoVariacaoExecutivo } {
+  if (opts?.temBase === false) {
+    return { valor: 0, tipo: 'sem_base' };
+  }
+  if (anterior === 0) {
+    if (Math.abs(atual) < 1e-9) return { valor: 0, tipo: 'estavel' };
+    return { valor: 0, tipo: 'sem_base' };
+  }
   const pct = ((atual - anterior) / Math.abs(anterior)) * 100;
   if (Math.abs(pct) < 0.5) return { valor: 0, tipo: 'estavel' };
   return { valor: Math.round(pct * 100) / 100, tipo: pct > 0 ? 'aumento' : 'reducao' };
+}
+
+function formatarIntervaloCiclo(inicio: Date, fim: Date): string {
+  const fmt = (d: Date) => d.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' });
+  return `${fmt(inicio)} – ${fmt(fim)}`;
 }
 
 function gerarMiniTendenciaHtml(valores: number[]): string {
@@ -274,6 +324,64 @@ interface PeriodoCalculado {
   label: string;
 }
 
+function parseIsoDate(iso: string): Date {
+  return new Date(`${iso}T12:00:00`);
+}
+
+function calcularPeriodoCiclo(
+  diaInicioCiclo: number,
+  mesReferencia?: number,
+  anoReferencia?: number,
+): PeriodoCalculado {
+  const dia = normalizarDiaInicioCiclo(diaInicioCiclo);
+  let mes: number;
+  let ano: number;
+  if (
+    mesReferencia != null &&
+    anoReferencia != null &&
+    mesReferencia >= 1 &&
+    mesReferencia <= 12 &&
+    anoReferencia >= 2000
+  ) {
+    mes = mesReferencia;
+    ano = anoReferencia;
+  } else {
+    ({ mes, ano } = inferirMesReferenciaAtual(dia));
+  }
+
+  const cicloAtual = calcularCicloMensalContrato(ano, mes, dia);
+  const { mes: mesAnt, ano: anoAnt } = deslocarMesReferencia(mes, ano, -1);
+  const cicloAnterior = calcularCicloMensalContrato(anoAnt, mesAnt, dia);
+
+  return {
+    inicio: startOfDay(parseIsoDate(cicloAtual.dataInicio)),
+    fim: endOfDay(parseIsoDate(cicloAtual.dataFim)),
+    inicioAnterior: startOfDay(parseIsoDate(cicloAnterior.dataInicio)),
+    fimAnterior: endOfDay(parseIsoDate(cicloAnterior.dataFim)),
+    label: `Ciclo: ${cicloAtual.label}`,
+  };
+}
+
+async function calcularPeriodoExecutivo(
+  contractRepo: Repository<Contract>,
+  periodo: string,
+  dataInicio?: string,
+  dataFim?: string,
+  contractId?: string,
+  mesReferencia?: number,
+  anoReferencia?: number,
+): Promise<PeriodoCalculado> {
+  if (periodo === 'ciclo') {
+    let diaInicio = 1;
+    if (contractId) {
+      const contract = await contractRepo.findOne({ where: { id: contractId } });
+      diaInicio = contract?.diaInicioCiclo ?? 1;
+    }
+    return calcularPeriodoCiclo(diaInicio, mesReferencia, anoReferencia);
+  }
+  return calcularPeriodo(periodo, dataInicio, dataFim);
+}
+
 function calcularPeriodo(
   periodo: string,
   dataInicio?: string,
@@ -364,29 +472,11 @@ function obterValorUnitario(
   valoresFixos: Record<string, number>,
   temValorFaturamento: boolean
 ): number {
-  // Se não tem valores de faturamento configurados, usar estimativa
   if (!temValorFaturamento) return VALOR_ESTIMADO_TON;
 
-  const mapTipoValor: Record<string, string> = {
-    'TRUCK': 'VALOR_TRUCK', 'TOCO': 'VALOR_TOCO', 'MINI': 'VALOR_MINI',
-  };
+  const valor = resolverValorUnitarioPorTipo(tipoRaw, valoresFixos, 0);
+  if (valor > 0) return valor;
 
-  const tipoKey = Object.keys(mapTipoValor).find(k =>
-    tipoRaw.includes(k) || k.includes(tipoRaw)
-  );
-
-  const valorTonelada = valoresFixos['VALOR_TONELADA'] || 0;
-
-  // Se tem tipo específico configurado, usar seu valor
-  if (tipoKey) {
-    const valorEspecifico = valoresFixos[mapTipoValor[tipoKey]] || 0;
-    if (valorEspecifico > 0) return valorEspecifico;
-  }
-
-  // Fallback para valorTonelada se estiver configurado
-  if (valorTonelada > 0) return valorTonelada;
-
-  // Último fallback: R$ 80/ton
   return VALOR_ESTIMADO_TON;
 }
 
@@ -421,79 +511,150 @@ export class DashboardExecutivoController {
   async executivo(req: Request, res: Response): Promise<void> {
     try {
       const {
-        periodo = 'mes',
+        periodo = 'ciclo',
         dataInicio,
         dataFim,
         contractId,
         servicoId,
+        mesReferencia: mesReferenciaRaw,
+        anoReferencia: anoReferenciaRaw,
       } = req.query as Record<string, string | undefined>;
 
+      const mesReferencia = mesReferenciaRaw != null ? parseInt(String(mesReferenciaRaw), 10) : undefined;
+      const anoReferencia = anoReferenciaRaw != null ? parseInt(String(anoReferenciaRaw), 10) : undefined;
+      const modoCiclo = periodo === 'ciclo';
+
       // ═══ VERIFICAR CACHE ═══
-      const paramsCache = { periodo: periodo!, dataInicio, dataFim, contractId, servicoId };
-      const cacheHit = dashboardCache.obter(paramsCache);
+      const paramsCache = {
+        periodo: periodo!,
+        dataInicio,
+        dataFim,
+        contractId,
+        servicoId,
+        mesReferencia,
+        anoReferencia,
+      };
+      const ignorarCache = req.query.refresh === '1' || req.query.nocache === '1';
+      const cacheHit = ignorarCache ? null : dashboardCache.obter(paramsCache);
       if (cacheHit) {
-        res.json(cacheHit);
+        const cacheInfo = dashboardCache.info(paramsCache);
+        const payload = cacheHit as Record<string, unknown>;
+        const meta = (payload.metadados || {}) as Record<string, unknown>;
+        res.json({
+          ...payload,
+          metadados: {
+            ...meta,
+            cacheHit: true,
+            cacheIdadeSegundos: cacheInfo.idadeSegundos,
+            cacheValidoAte: cacheInfo.validoAte,
+          },
+        });
         return;
       }
 
       // 1. Calcular períodos
-      const periodoAtual = calcularPeriodo(periodo!, dataInicio, dataFim);
+      const periodoAtual = await calcularPeriodoExecutivo(
+        this.contractRepo,
+        periodo!,
+        dataInicio,
+        dataFim,
+        contractId,
+        mesReferencia,
+        anoReferencia,
+      );
 
-      // 2. Carregar dados de coleta (ColetaData) do período atual e anterior
-      const [dadosAtuais, dadosAnteriores] = await Promise.all([
-        this.carregarDadosColeta(periodoAtual.inicio, periodoAtual.fim, contractId, servicoId),
-        this.carregarDadosColeta(periodoAtual.inicioAnterior, periodoAtual.fimAnterior, contractId, servicoId),
-      ]);
+      // 2. Indicadores unificados — mesma fonte do dashboard operacional (planilhas + KPIs universais)
+      const indicadores = await calcularIndicadoresExecutivoUnificado({
+        contractId,
+        servicoId,
+        inicio: periodoAtual.inicio,
+        fim: periodoAtual.fim,
+        inicioAnterior: periodoAtual.inicioAnterior,
+        fimAnterior: periodoAtual.fimAnterior,
+        modoCiclo,
+        mesReferenciaCiclo: mesReferencia,
+        anoReferenciaCiclo: anoReferencia,
+      });
 
-      // 3. Carregar contratos/serviços e valores
+      const dadosAtuais = indicadores.dadosAtuais;
+      const dadosAnteriores = indicadores.dadosAnteriores;
+      const valoresFixos = indicadores.valoresFixos;
+      const temValorFaturamento = indicadores.temValor;
+      const temValor = temValorFaturamento;
+      const kpisCalculados = indicadores.kpisCalculados;
+
+      // 3. Carregar contratos para listagens
       const contracts = contractId
         ? [await this.contractRepo.findOne({ where: { id: contractId } })]
         : await this.contractRepo.find();
-
       const contractsValidos = contracts.filter(Boolean) as Contract[];
 
-      const valoresFixos: Record<string, number> = {};
-      for (const c of contractsValidos) {
-        if (c.valorTonelada) valoresFixos['VALOR_TONELADA'] = Number(c.valorTonelada);
-        if (c.valorMini) valoresFixos['VALOR_MINI'] = Number(c.valorMini);
-        if (c.valorTruck) valoresFixos['VALOR_TRUCK'] = Number(c.valorTruck);
-        if (c.valorToco) valoresFixos['VALOR_TOCO'] = Number(c.valorToco);
-      }
-
-      // ═══ FLAGS: faturamento (caminhões) ═══
-      const CHAVES_FATURAMENTO = ['VALOR_TONELADA', 'VALOR_MINI', 'VALOR_TRUCK', 'VALOR_TOCO'];
-      const temValorFaturamento = CHAVES_FATURAMENTO.some(k => (valoresFixos[k] || 0) > 0);
-      const temValor = temValorFaturamento;
-
-      // 4. Carregar abastecimentos do período para custo (usando QueryBuilder)
-      const abastecimentosAtuais = await this.abastecimentoRepo.createQueryBuilder('a')
+      // 4. Abastecimentos do período (filtrados por contrato quando aplicável)
+      const qbAbastAtual = this.abastecimentoRepo.createQueryBuilder('a')
         .select(['a.id', 'a.placa', 'a.litragem', 'a.valor', 'a.dataAbastecimento'])
         .where('a.dataAbastecimento BETWEEN :inicio AND :fim', {
           inicio: periodoAtual.inicio,
           fim: periodoAtual.fim,
-        })
-        .getMany();
-      const abastecimentosAnteriores = await this.abastecimentoRepo.createQueryBuilder('a')
+        });
+      if (contractId) qbAbastAtual.andWhere('a.contract_id = :contractId', { contractId });
+      const abastecimentosAtuais = await qbAbastAtual.getMany();
+
+      const qbAbastAnterior = this.abastecimentoRepo.createQueryBuilder('a')
         .select(['a.id', 'a.placa', 'a.litragem', 'a.valor', 'a.dataAbastecimento'])
         .where('a.dataAbastecimento BETWEEN :inicio AND :fim', {
           inicio: periodoAtual.inicioAnterior,
           fim: periodoAtual.fimAnterior,
-        })
-        .getMany();
+        });
+      if (contractId) qbAbastAnterior.andWhere('a.contract_id = :contractId', { contractId });
+      const abastecimentosAnteriores = await qbAbastAnterior.getMany();
 
-      // 5. Carregar caminhões cadastrados
+      // 5. Caminhões cadastrados
       const todosCaminhoes = await this.caminhaoRepo.find();
       const totalCaminhoesCadastrados = todosCaminhoes.length;
 
-      // 6. Calcular indicadores
+      // 6. Painéis financeiro/operacional a partir das métricas unificadas
+      const custoAtual = abastecimentosAtuais.reduce((s, a) => s + Number(a.valor), 0);
+      const custoAnterior = abastecimentosAnteriores.reduce((s, a) => s + Number(a.valor), 0);
+      const mAtual = indicadores.metricasAtual;
+      const mAnterior = indicadores.metricasAnterior;
 
-      // ─── Indicadores Financeiros ───
-      const finAtual = this.calcularFinanceiros(dadosAtuais, valoresFixos, temValor, abastecimentosAtuais);
-      const finAnterior = this.calcularFinanceiros(dadosAnteriores, valoresFixos, temValor, abastecimentosAnteriores);
+      const finAtual = {
+        faturamento: mAtual.faturamento,
+        custo: Math.round(custoAtual * 100) / 100,
+        margem: mAtual.faturamento > 0
+          ? Math.round(((mAtual.faturamento - custoAtual) / mAtual.faturamento) * 10000) / 100
+          : 0,
+        ticketMedio: mAtual.viagens > 0
+          ? Math.round((mAtual.faturamento / mAtual.viagens) * 100) / 100
+          : 0,
+      };
+      const finAnterior = {
+        faturamento: mAnterior.faturamento,
+        custo: Math.round(custoAnterior * 100) / 100,
+        margem: mAnterior.faturamento > 0
+          ? Math.round(((mAnterior.faturamento - custoAnterior) / mAnterior.faturamento) * 10000) / 100
+          : 0,
+        ticketMedio: mAnterior.viagens > 0
+          ? Math.round((mAnterior.faturamento / mAnterior.viagens) * 100) / 100
+          : 0,
+      };
 
-      // ─── Indicadores Operacionais ───
-      const opAtual = this.calcularOperacionais(dadosAtuais, totalCaminhoesCadastrados);
-      const opAnterior = this.calcularOperacionais(dadosAnteriores, totalCaminhoesCadastrados);
+      const opAtual = {
+        viagens: mAtual.viagens,
+        tonelagem: mAtual.pesoTotalTon,
+        kmTotal: mAtual.kmTotal,
+        coletoresAtivos: mAtual.qtdColetores,
+        horasProdutivas: mAtual.horasProdutivas,
+        eficiencia: mAtual.tonKm,
+      };
+      const opAnterior = {
+        viagens: mAnterior.viagens,
+        tonelagem: mAnterior.pesoTotalTon,
+        kmTotal: mAnterior.kmTotal,
+        coletoresAtivos: mAnterior.qtdColetores,
+        horasProdutivas: mAnterior.horasProdutivas,
+        eficiencia: mAnterior.tonKm,
+      };
 
       // ─── KPI: Receita por Hora Produtiva (Faturamento ÷ Horas Produtivas) ───
       const receitaHoraAtual = opAtual.horasProdutivas > 0
@@ -503,14 +664,21 @@ export class DashboardExecutivoController {
         ? Math.round((finAnterior.faturamento / opAnterior.horasProdutivas) * 100) / 100
         : 0;
 
+      const temBasePlanilha = indicadores.totalRegistrosAnterior > 0;
+      const temBaseAbastecimento = abastecimentosAnteriores.length > 0;
+      const basePlanilha = { temBase: temBasePlanilha };
+      const baseAbastecimento = { temBase: temBaseAbastecimento };
+
       // ─── Tendências Financeiras (últimos 7 dias) a partir dos dados carregados ───
       const tendenciaFinanceira = this.calcularTendenciaFinanceira(dadosAtuais, valoresFixos, temValor, abastecimentosAtuais);
 
-      // ─── Tendência de Faturamento (até 30 dias do período selecionado) ⚡ OTIMIZADO ───
+      // ─── Tendência de Faturamento (até 30 dias do período selecionado) ───
       const inicioTendencia = subDays(periodoAtual.fim, Math.min(differenceInDays(periodoAtual.fim, periodoAtual.inicio) + 1, 30) - 1);
-      
-      // Carrega dados para a tendência baseada no período
-      const dadosTendenciaPeriodo = await this.carregarDadosColeta(inicioTendencia, periodoAtual.fim, contractId, servicoId);
+      const dadosTendenciaPeriodo = dadosAtuais.filter(d => {
+        if (!d.dataSaida) return false;
+        const data = d.dataSaida instanceof Date ? d.dataSaida : new Date(d.dataSaida);
+        return !isNaN(data.getTime()) && data >= inicioTendencia && data <= periodoAtual.fim;
+      });
       
       const tendenciaFaturamento30d = this.calcularTendencia30d(dadosTendenciaPeriodo, valoresFixos, temValor);
 
@@ -525,10 +693,10 @@ export class DashboardExecutivoController {
       const totalMotoristas = new Set(prodPorMotorista.map(m => m.motorista)).size;
 
       // ─── KM Médio por Viagem ───
-      const kmMedioViagem = this.calcularKmMedioViagem(dadosAtuais, dadosAnteriores);
+      const kmMedioViagem = this.calcularKmMedioViagem(dadosAtuais, dadosAnteriores, temBasePlanilha);
 
       // ─── Horas Produtivas Médias ───
-      const horasMedias = this.calcularHorasMedias(dadosAtuais, dadosAnteriores);
+      const horasMedias = this.calcularHorasMedias(dadosAtuais, dadosAnteriores, temBasePlanilha);
 
       // ─── Utilização da Frota ───
       const utilizacaoFrota = this.calcularUtilizacaoFrota(dadosAtuais, totalCaminhoesCadastrados);
@@ -560,6 +728,27 @@ export class DashboardExecutivoController {
 
       // 7. Montar resposta final e armazenar em cache
       const custoTotalPeriodo = tendenciaFinanceira.custoDiario.reduce((s, v) => s + v, 0);
+      const rotasAtual = contarRotasValidadas(dadosAtuais);
+      const rotasAnterior = contarRotasValidadas(dadosAnteriores);
+      const resumoCiclo = {
+        rotas: rotasAtual,
+        viagens: opAtual.viagens,
+        toneladas: opAtual.tonelagem,
+        km: opAtual.kmTotal,
+        horasProdutivas: opAtual.horasProdutivas,
+        coletoresAtivos: opAtual.coletoresAtivos,
+        faturamento: finAtual.faturamento,
+        receitaTon: opAtual.tonelagem > 0
+          ? Math.round((finAtual.faturamento / opAtual.tonelagem) * 100) / 100
+          : 0,
+        receitaKm: opAtual.kmTotal > 0
+          ? Math.round((finAtual.faturamento / opAtual.kmTotal) * 100) / 100
+          : 0,
+        ticketMedio: finAtual.ticketMedio,
+        tonPorViagem: opAtual.viagens > 0
+          ? Math.round((opAtual.tonelagem / opAtual.viagens) * 1000) / 1000
+          : 0,
+      };
       const resposta = {
         periodo: {
           label: periodoAtual.label,
@@ -567,11 +756,20 @@ export class DashboardExecutivoController {
           fim: periodoAtual.fim.toISOString(),
           inicioAnterior: periodoAtual.inicioAnterior.toISOString(),
           fimAnterior: periodoAtual.fimAnterior.toISOString(),
+          comparacaoAnterior: {
+            label: formatarIntervaloCiclo(periodoAtual.inicioAnterior, periodoAtual.fimAnterior),
+            registrosPlanilha: indicadores.totalRegistrosAnterior,
+            abastecimentos: abastecimentosAnteriores.length,
+            temBasePlanilha,
+            temBaseAbastecimento,
+          },
         },
         filtros: {
           periodo,
           contractId: contractId || null,
           servicoId: servicoId || null,
+          mesReferencia: mesReferencia ?? null,
+          anoReferencia: anoReferencia ?? null,
           contratosDisponiveis,
           servicosDisponiveis,
         },
@@ -581,25 +779,25 @@ export class DashboardExecutivoController {
           faturamento: {
             valor: finAtual.faturamento,
             formatado: formatarValor(finAtual.faturamento, 'moeda'),
-            variacao: calcVariacao(finAtual.faturamento, finAnterior.faturamento),
+            variacao: calcVariacao(finAtual.faturamento, finAnterior.faturamento, basePlanilha),
             minitendenciaSvg: gerarMiniTendenciaHtml(tendenciaFinanceira.faturamentoDiario),
           },
           custoOperacional: {
             valor: finAtual.custo,
             formatado: formatarValor(finAtual.custo, 'moeda'),
-            variacao: calcVariacao(finAtual.custo, finAnterior.custo),
+            variacao: calcVariacao(finAtual.custo, finAnterior.custo, baseAbastecimento),
             minitendenciaSvg: gerarMiniTendenciaHtml(tendenciaFinanceira.custoDiario),
           },
           margemBruta: {
             valor: finAtual.margem,
             formatado: formatarValor(finAtual.margem, 'porcentagem'),
-            variacao: calcVariacao(finAtual.margem, finAnterior.margem),
+            variacao: calcVariacao(finAtual.margem, finAnterior.margem, basePlanilha),
             minitendenciaSvg: '',
           },
           ticketMedio: {
             valor: finAtual.ticketMedio,
             formatado: formatarValor(finAtual.ticketMedio, 'moeda'),
-            variacao: calcVariacao(finAtual.ticketMedio, finAnterior.ticketMedio),
+            variacao: calcVariacao(finAtual.ticketMedio, finAnterior.ticketMedio, basePlanilha),
             minitendenciaSvg: '',
           },
           // ═══ KPI: Receita por Hora Produtiva (Faturamento ÷ Horas Produtivas) ═══
@@ -608,7 +806,7 @@ export class DashboardExecutivoController {
             formatado: receitaHoraAtual > 0
               ? 'R$ ' + receitaHoraAtual.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '/h'
               : 'R$ 0,00/h',
-            variacao: calcVariacao(receitaHoraAtual, receitaHoraAnterior),
+            variacao: calcVariacao(receitaHoraAtual, receitaHoraAnterior, basePlanilha),
             minitendenciaSvg: (() => {
               const vals = tendenciaFinanceira.horasDiario.map((h, i) => {
                 const fat = tendenciaFinanceira.faturamentoDiario[i] || 0;
@@ -626,32 +824,32 @@ export class DashboardExecutivoController {
           tonelagem: {
             valor: opAtual.tonelagem,
             formatado: opAtual.tonelagem.toLocaleString('pt-BR', { maximumFractionDigits: 2 }) + ' t',
-            variacao: calcVariacao(opAtual.tonelagem, opAnterior.tonelagem),
+            variacao: calcVariacao(opAtual.tonelagem, opAnterior.tonelagem, basePlanilha),
           },
           kmRodados: {
             valor: opAtual.kmTotal,
             formatado: opAtual.kmTotal.toLocaleString('pt-BR', { maximumFractionDigits: 0 }) + ' km',
-            variacao: calcVariacao(opAtual.kmTotal, opAnterior.kmTotal),
+            variacao: calcVariacao(opAtual.kmTotal, opAnterior.kmTotal, basePlanilha),
           },
           viagens: {
             valor: opAtual.viagens,
             formatado: opAtual.viagens.toLocaleString('pt-BR'),
-            variacao: calcVariacao(opAtual.viagens, opAnterior.viagens),
+            variacao: calcVariacao(opAtual.viagens, opAnterior.viagens, basePlanilha),
           },
           coletoresAtivos: {
             valor: opAtual.coletoresAtivos,
             formatado: String(opAtual.coletoresAtivos),
-            variacao: calcVariacao(opAtual.coletoresAtivos, opAnterior.coletoresAtivos),
+            variacao: calcVariacao(opAtual.coletoresAtivos, opAnterior.coletoresAtivos, basePlanilha),
           },
           horasProdutivas: {
             valor: opAtual.horasProdutivas,
             formatado: opAtual.horasProdutivas.toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + 'h',
-            variacao: calcVariacao(opAtual.horasProdutivas, opAnterior.horasProdutivas),
+            variacao: calcVariacao(opAtual.horasProdutivas, opAnterior.horasProdutivas, basePlanilha),
           },
           eficiencia: {
             valor: opAtual.eficiencia,
             formatado: opAtual.eficiencia.toLocaleString('pt-BR', { maximumFractionDigits: 3 }),
-            variacao: calcVariacao(opAtual.eficiencia, opAnterior.eficiencia),
+            variacao: calcVariacao(opAtual.eficiencia, opAnterior.eficiencia, basePlanilha),
           },
         },
 
@@ -700,18 +898,32 @@ export class DashboardExecutivoController {
           // ═══════════════════════════════════════════
 
           // 📊 Gráfico 4: Evolução Diária de Receita (até 30 dias do período)
-          receitaDiaria: tendenciaFaturamento30d.length > 0
-            ? tendenciaFaturamento30d.map(t => ({
-                label: t.label,
-                valor: t.valor,
-              }))
-            : tendenciaFinanceira.faturamentoDiario.map((v, i) => {
-                const dataStr = tendenciaFinanceira.dias[i] || '';
-                return {
-                  label: dataStr ? formatDateSafe(dataStr, 'dd/MM') : '',
-                  valor: v,
-                };
-              }),
+          receitaDiaria: (() => {
+            const serie = tendenciaFaturamento30d.length > 0
+              ? tendenciaFaturamento30d
+              : tendenciaFinanceira.faturamentoDiario.map((v, i) => {
+                  const dataStr = tendenciaFinanceira.dias[i] || '';
+                  return {
+                    data: dataStr,
+                    label: dataStr ? formatDateSafe(dataStr, 'dd/MM') : '',
+                    valor: v,
+                  };
+                });
+            const kmPorData = new Map<string, number>();
+            const horasPorData = new Map<string, number>();
+            tendenciaFinanceira.dias.forEach((dataStr, i) => {
+              if (!dataStr) return;
+              kmPorData.set(dataStr, tendenciaFinanceira.kmDiario[i] || 0);
+              horasPorData.set(dataStr, tendenciaFinanceira.horasDiario[i] || 0);
+            });
+            return serie.map(t => ({
+              label: t.label,
+              valor: t.valor,
+              data: t.data || '',
+              km: kmPorData.get(t.data || '') ?? 0,
+              horas: horasPorData.get(t.data || '') ?? 0,
+            }));
+          })(),
 
           // 📊 Gráfico 5: Ranking de Receita por Motorista Top 10
           rankingMotoristas: (() => {
@@ -787,13 +999,23 @@ export class DashboardExecutivoController {
           totalMotoristas,
         },
 
+        // ─── KPIs universais calculados (mesmo pipeline do dashboard operacional) ───
+        kpisCalculados,
+
+        resumoCiclo,
+
         // ─── Metadados ───
         metadados: {
-          totalRegistrosAtual: dadosAtuais.length,
-          totalRegistrosAnterior: dadosAnteriores.length,
+          totalRegistrosAtual: indicadores.totalRegistrosAtual,
+          totalRegistrosAnterior: indicadores.totalRegistrosAnterior,
+          totalRotasAtual: rotasAtual,
+          totalRotasAnterior: rotasAnterior,
+          totalViagensAtual: opAtual.viagens,
+          totalViagensAnterior: opAnterior.viagens,
           totalAbastecimentosAtual: abastecimentosAtuais.length,
           totalAbastecimentosAnterior: abastecimentosAnteriores.length,
           dataGeracao: new Date().toISOString(),
+          fonteDados: 'planilha',
         },
       };
 
@@ -807,6 +1029,53 @@ export class DashboardExecutivoController {
         detalhe: error?.message || '',
       });
     }
+  }
+
+  /**
+   * Calcula e grava no cache (warmup / pós-upload) sem passar pelo HTTP.
+   */
+  async calcularECachear(params: {
+    periodo: string;
+    dataInicio?: string;
+    dataFim?: string;
+    contractId?: string;
+    servicoId?: string;
+    mesReferencia?: number;
+    anoReferencia?: number;
+  }): Promise<boolean> {
+    if (dashboardCache.obter(params)) return true;
+
+    return new Promise((resolve) => {
+      let statusCode = 200;
+      const fakeRes = {
+        status(code: number) {
+          statusCode = code;
+          return this;
+        },
+        json(data: unknown) {
+          if (statusCode === 200 && data) {
+            resolve(true);
+          } else {
+            resolve(false);
+          }
+        },
+      };
+
+      const fakeReq = {
+        query: {
+          periodo: params.periodo,
+          ...(params.dataInicio ? { dataInicio: params.dataInicio } : {}),
+          ...(params.dataFim ? { dataFim: params.dataFim } : {}),
+          ...(params.contractId ? { contractId: params.contractId } : {}),
+          ...(params.servicoId ? { servicoId: params.servicoId } : {}),
+          ...(params.mesReferencia != null ? { mesReferencia: String(params.mesReferencia) } : {}),
+          ...(params.anoReferencia != null ? { anoReferencia: String(params.anoReferencia) } : {}),
+          refresh: '0',
+        },
+      };
+
+      void this.executivo(fakeReq as any, fakeRes as any).catch(() => resolve(false));
+    });
   }
 
   /* ═══════════════════════════════════════════
@@ -838,6 +1107,7 @@ export class DashboardExecutivoController {
 
     // Filtro de data — sempre aplicado
     qb.andWhere('c.dataSaida BETWEEN :inicio AND :fim', { inicio, fim });
+    aplicarFiltroViagensValidasDashboard(qb, 'c');
 
     // ⚡ SELECT apenas as colunas necessárias (evita carregar dados pesados)
     const dados = await qb
@@ -882,10 +1152,6 @@ export class DashboardExecutivoController {
     const colPeso = detectarColuna(dadosNorm, ['PESO TOTAL', 'PESO', 'PESOTOTAL', 'PESO_TOTAL', 'pesoTotal']);
     const colTipo = detectarColuna(dadosNorm, ['TIPO CAMINHAO', 'TIPO_CAMINHAO', 'tipoCaminhao', 'CAMINHAO', 'CAMINHÃO']);
 
-    const mapTipoValor: Record<string, string> = {
-      'TRUCK': 'VALOR_TRUCK', 'TOCO': 'VALOR_TOCO', 'MINI': 'VALOR_MINI',
-    };
-
     // Faturamento — usa valor real ou estimado (R$ 80/ton)
     let faturamento = 0;
     const valorTonUsado = temValorFaturamento ? (valoresFixos['VALOR_TONELADA'] || 0) : VALOR_ESTIMADO_TON;
@@ -915,7 +1181,8 @@ export class DashboardExecutivoController {
     const margem = faturamento > 0 ? ((faturamento - custo) / faturamento) * 100 : 0;
 
     // Ticket médio por viagem
-    const ticketMedio = dados.length > 0 ? faturamento / dados.length : 0;
+    const totalViagens = sumarizarViagensPorRota(dadosNorm);
+    const ticketMedio = totalViagens > 0 ? faturamento / totalViagens : 0;
 
     return {
       faturamento: Math.round(faturamento * 100) / 100,
@@ -943,7 +1210,7 @@ export class DashboardExecutivoController {
       };
     }
 
-    const viagens = dados.length;
+    const viagens = sumarizarViagensPorRota(dados);
 
     // Tonelagem total
     let pesoTotalKg = 0;
@@ -1180,10 +1447,6 @@ export class DashboardExecutivoController {
     const colPeso = detectarColuna(dadosNorm, ['PESO TOTAL', 'PESO', 'PESOTOTAL', 'PESO_TOTAL', 'pesoTotal']);
     const colTipo = detectarColuna(dadosNorm, ['TIPO CAMINHAO', 'TIPO_CAMINHAO', 'tipoCaminhao', 'CAMINHAO', 'CAMINHÃO']);
 
-    const mapTipoValor: Record<string, string> = {
-      'TRUCK': 'VALOR_TRUCK', 'TOCO': 'VALOR_TOCO', 'MINI': 'VALOR_MINI',
-    };
-
     for (const obj of dadosNorm) {
       const dataValida = parseDateSafe(obj.dataSaida);
       if (dataValida) {
@@ -1305,7 +1568,7 @@ export class DashboardExecutivoController {
 
       const pesoKg = Number(encontrarValorColuna(obj, colPeso)) || 0;
       entry.tonelagem += pesoKg / 1000;
-      entry.viagens += 1;
+      entry.viagens += contarViagensPorRotaRegistro(obj);
       entry.km += Number(encontrarValorColuna(obj, colKm)) || 0;
 
       const dataValidaProd = parseDateSafe(obj.dataSaida);
@@ -1375,7 +1638,7 @@ export class DashboardExecutivoController {
 
       const pesoKg = Number(encontrarValorColuna(obj, colPeso)) || 0;
       entry.tonelagem += pesoKg / 1000;
-      entry.viagens += 1;
+      entry.viagens += contarViagensPorRotaRegistro(obj);
       entry.kmTotal += Number(encontrarValorColuna(obj, colKm)) || 0;
 
       // ═══ HORAS PRODUTIVAS — usando helper centralizado extrairHorasProdutivas ═══
@@ -1406,18 +1669,20 @@ export class DashboardExecutivoController {
    */
   private calcularKmMedioViagem(
     dadosAtuais: ColetaData[],
-    dadosAnteriores: ColetaData[]
+    dadosAnteriores: ColetaData[],
+    temBasePlanilha: boolean,
   ): { atual: number; anterior: number; variacao: { valor: number; tipo: string } } {
     const calc = (dados: ColetaData[]) => {
-      if (dados.length === 0) return 0;
+      const totalViagens = sumarizarViagensPorRota(dados);
+      if (totalViagens <= 0) return 0;
       const totalKm = dados.reduce((s, d) => s + (Number(d.kmTotal) || 0), 0);
-      return dados.length > 0 ? totalKm / dados.length : 0;
+      return totalKm / totalViagens;
     };
 
     const atual = Math.round(calc(dadosAtuais) * 100) / 100;
     const anterior = Math.round(calc(dadosAnteriores) * 100) / 100;
 
-    return { atual, anterior, variacao: calcVariacao(atual, anterior) };
+    return { atual, anterior, variacao: calcVariacao(atual, anterior, { temBase: temBasePlanilha }) };
   }
 
   /**
@@ -1425,10 +1690,12 @@ export class DashboardExecutivoController {
    */
   private calcularHorasMedias(
     dadosAtuais: ColetaData[],
-    dadosAnteriores: ColetaData[]
+    dadosAnteriores: ColetaData[],
+    temBasePlanilha: boolean,
   ): { atual: number; anterior: number; variacao: { valor: number; tipo: string } } {
     const calc = (dados: ColetaData[]) => {
-      if (dados.length === 0) return 0;
+      const totalViagens = sumarizarViagensPorRota(dados);
+      if (totalViagens <= 0) return 0;
       let totalHoras = 0;
       for (const d of dados) {
         // Construir objeto combinado para usar o helper
@@ -1443,13 +1710,13 @@ export class DashboardExecutivoController {
         }
         totalHoras += extrairHorasProdutivas(objCombinado);
       }
-      return dados.length > 0 ? totalHoras / dados.length : 0;
+      return totalHoras / totalViagens;
     };
 
     const atual = Math.round(calc(dadosAtuais) * 100) / 100;
     const anterior = Math.round(calc(dadosAnteriores) * 100) / 100;
 
-    return { atual, anterior, variacao: calcVariacao(atual, anterior) };
+    return { atual, anterior, variacao: calcVariacao(atual, anterior, { temBase: temBasePlanilha }) };
   }
 
   /**
@@ -1645,7 +1912,7 @@ export class DashboardExecutivoController {
       if (peso <= 0) continue;
 
       const entry = porRegional.get(chaveRegional)!;
-      entry.viagens += 1;
+      entry.viagens += contarViagensPorRotaRegistro(d);
       const toneladas = peso / 1000;
       const tipoRaw = String(encontrarValorColuna(d, colTipo) || '').toUpperCase().trim();
       const valorUnitario = obterValorUnitario(tipoRaw, valoresFixos, temValorFaturamento);
@@ -1700,7 +1967,7 @@ export class DashboardExecutivoController {
       const peso = Number(encontrarValorColuna(d, colPeso)) || 0;
       if (peso <= 0) continue;
 
-      entry.viagens += 1;
+      entry.viagens += contarViagensPorRotaRegistro(d);
       const toneladas = peso / 1000;
       const tipoRaw = String(encontrarValorColuna(d, colTipo) || '').toUpperCase().trim();
       const valorUnitario = obterValorUnitario(tipoRaw, valoresFixos, temValorFaturamento);
@@ -1748,7 +2015,7 @@ export class DashboardExecutivoController {
       if (peso <= 0) continue;
 
       const entry = porTurno.get(turno)!;
-      entry.viagens += 1;
+      entry.viagens += contarViagensPorRotaRegistro(d);
       const toneladas = peso / 1000;
       entry.tonelagem += toneladas;
       const tipoRaw = String(encontrarValorColuna(d, colTipo) || '').toUpperCase().trim();
@@ -1816,7 +2083,7 @@ export class DashboardExecutivoController {
       if (peso <= 0) continue;
 
       const entry = porDia.get(diaSemana)!;
-      entry.viagens += 1;
+      entry.viagens += contarViagensPorRotaRegistro(obj);
       const toneladas = peso / 1000;
       entry.tonelagem += toneladas;
       const tipoRaw = String(encontrarValorColuna(obj, colTipo) || '').toUpperCase().trim();
@@ -1943,24 +2210,44 @@ export class DashboardExecutivoController {
   }
 
   /* ═══════════════════════════════════════════
+     DIAGNÓSTICO DE DADOS (executivo + operação + receita)
+     GET /api/dashboard/diagnostico
+     ═══════════════════════════════════════════ */
+  async diagnostico(req: Request, res: Response): Promise<void> {
+    try {
+      const { contractId, servicoId } = req.query as Record<string, string | undefined>;
+      const resultado = await diagnosticarDashboards({ contractId, servicoId });
+      res.json(resultado);
+    } catch (error: any) {
+      console.error('Erro no diagnóstico de dashboard:', error);
+      res.status(500).json({ error: error?.message || 'Erro ao diagnosticar dashboards' });
+    }
+  }
+
+  /* ═══════════════════════════════════════════
      GERAÇÃO DE PDF EXECUTIVO
      POST /api/dashboard/executivo/pdf
      ═══════════════════════════════════════════ */
   async gerarPdf(req: Request, res: Response): Promise<void> {
     try {
       const {
-        periodo = 'mes',
+        periodo = 'ciclo',
         dataInicio,
         dataFim,
         contractId,
         servicoId,
         servicoNome: servicoNomeParam,
+        mesReferencia: mesReferenciaBody,
+        anoReferencia: anoReferenciaBody,
         secoes = ['financeira', 'operacional', 'graficos', 'customizados'],
       } = req.body as Record<string, any>;
 
+      const mesReferencia = mesReferenciaBody != null ? parseInt(String(mesReferenciaBody), 10) : undefined;
+      const anoReferencia = anoReferenciaBody != null ? parseInt(String(anoReferenciaBody), 10) : undefined;
+
       // Gerar chave de cache
       const cacheKey = crypto.createHash('md5').update(
-        JSON.stringify({ periodo, dataInicio, dataFim, contractId, servicoId, secoes })
+        JSON.stringify({ periodo, dataInicio, dataFim, contractId, servicoId, mesReferencia, anoReferencia, secoes })
       ).digest('hex');
 
       // Verificar cache
@@ -1973,7 +2260,15 @@ export class DashboardExecutivoController {
       }
 
       // 1. Calcular períodos
-      const periodoAtual = calcularPeriodo(periodo, dataInicio, dataFim);
+      const periodoAtual = await calcularPeriodoExecutivo(
+        this.contractRepo,
+        periodo,
+        dataInicio,
+        dataFim,
+        contractId,
+        mesReferencia,
+        anoReferencia,
+      );
 
       // 2. Carregar dados
       const [dadosAtuais, dadosAnteriores] = await Promise.all([
@@ -1984,6 +2279,7 @@ export class DashboardExecutivoController {
       // 3. Carregar contratos e serviços
       let contratoNome = 'Contrato';
       let servicoNome = servicoNomeParam || 'Serviço';
+      let servicoTipo = 'geral';
       let corPrimaria = '#22c55e';
 
       if (contractId) {
@@ -1996,6 +2292,7 @@ export class DashboardExecutivoController {
           const servico = await this.servicoRepo.findOne({ where: { id: servicoId } });
           if (servico) {
             servicoNome = servico.nome || servicoNome;
+            servicoTipo = servico.tipo || 'geral';
           }
         }
       }
@@ -2011,8 +2308,9 @@ export class DashboardExecutivoController {
         if (c.valorMini) valoresFixos['VALOR_MINI'] = Number(c.valorMini);
         if (c.valorTruck) valoresFixos['VALOR_TRUCK'] = Number(c.valorTruck);
         if (c.valorToco) valoresFixos['VALOR_TOCO'] = Number(c.valorToco);
+        if (c.valorBasculante) valoresFixos['VALOR_BASCULANTE'] = Number(c.valorBasculante);
       }
-      const CHAVES_FATURAMENTO = ['VALOR_TONELADA', 'VALOR_MINI', 'VALOR_TRUCK', 'VALOR_TOCO'];
+      const CHAVES_FATURAMENTO = ['VALOR_TONELADA', 'VALOR_MINI', 'VALOR_TRUCK', 'VALOR_TOCO', 'VALOR_BASCULANTE'];
       const temValorFaturamentoPdf = CHAVES_FATURAMENTO.some(k => (valoresFixos[k] || 0) > 0);
       const temValor = temValorFaturamentoPdf; // mantido para compatibilidade
 
@@ -2097,7 +2395,7 @@ export class DashboardExecutivoController {
         const chave = format(dataRegistro, 'yyyy-MM-dd'); // chave única com ano
         const label = format(dataRegistro, 'dd/MM/yy');   // label com ano abreviado
         if (!fatPorDia[chave]) fatPorDia[chave] = { viagens: 0, peso: 0, faturamento: 0, dataReal: label };
-        fatPorDia[chave].viagens += 1;
+        fatPorDia[chave].viagens += contarViagensPorRotaRegistro(d);
         const peso = Number(encontrarValorColuna(d, colPeso)) || 0;
         fatPorDia[chave].peso += peso / 1000;
         // Usa obterValorUnitario para faturamento (com fallback R$ 80/ton)
@@ -2146,7 +2444,7 @@ export class DashboardExecutivoController {
             faturamento: 0,
           };
         }
-        fatTipoDetalhado[tipoRaw].viagens += 1;
+        fatTipoDetalhado[tipoRaw].viagens += contarViagensPorRotaRegistro(d);
         fatTipoDetalhado[tipoRaw].pesoTotal += peso / 1000;
         fatTipoDetalhado[tipoRaw].faturamento += (peso / 1000) * fatTipoDetalhado[tipoRaw].valorUnitario;
       }
@@ -2285,6 +2583,7 @@ export class DashboardExecutivoController {
         'MINI': '#3b82f6',
         'TRUCK': '#22c55e',
         'TOCO': '#f59e0b',
+        'BASCULANTE': '#ef4444',
         'OUTROS': '#94a3b8',
       };
 
@@ -2298,12 +2597,7 @@ export class DashboardExecutivoController {
           let maxCount = 0;
           if (tipoCounts) {
             for (const [tipo, count] of tipoCounts) {
-              const tipoNorm = tipo.toUpperCase().trim();
-              // Mapear para tipo canônico
-              let tipoCanonico = 'OUTROS';
-              if (tipoNorm.includes('MINI')) tipoCanonico = 'MINI';
-              else if (tipoNorm.includes('TRUCK')) tipoCanonico = 'TRUCK';
-              else if (tipoNorm.includes('TOCO')) tipoCanonico = 'TOCO';
+              const tipoCanonico = normalizarTipoCaminhaoPeso(tipo) || 'OUTROS';
 
               if (count > maxCount) {
                 maxCount = count;
@@ -2607,33 +2901,23 @@ export class DashboardExecutivoController {
       // 9. Gerar HTML
       const html = gerarHtmlRelatorioExecutivo(pdfParams);
 
-      // 10. Converter para PDF com Puppeteer
-      const browser = await puppeteer.launch({
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox'],
-      });
-      const page = await browser.newPage();
-      // ═══ VIEWPORT AMPLO: Chart.js precisa de espaço para calcular eixos X e Y ═══
-      // Sem setViewport, o Puppeteer usa 800x600 — os gráficos não têm espaço
-      // para renderizar as labels dos eixos, que ficam cortadas/invisíveis.
-      await page.setViewport({ width: 1200, height: 900 });
-      await page.setContent(html, { waitUntil: 'load', timeout: 60000 });
-      // ═══ TEMPO SUFICIENTE para Chart.js renderizar todos os eixos e labels ═══
-      // Com ~10 gráficos, 3s era insuficiente. 8s garante que cada chart
-      // calcule escalas, ticks e renderize completamente.
-      await new Promise(r => setTimeout(r, 8000));
-      const pdfBuffer = await page.pdf({
-        format: 'A4',
-        printBackground: true,
+      // 10. Converter para PDF (browser reutilizado + espera Chart.js)
+      const { htmlToPdf } = await import('../services/PdfGeneratorService');
+      const pdf = await htmlToPdf(html, {
         margin: { top: '0mm', right: '0mm', bottom: '0mm', left: '0mm' },
+        waitMs: 6000,
+        useCache: true,
       });
-      await browser.close();
-      const pdf = Buffer.from(pdfBuffer);
 
-      // 11. Nome do arquivo
-      const periodoStr = format(periodoAtual.inicio, 'MMMyyyy').toLowerCase();
-      const dataStr = format(new Date(), 'yyyy_MM_dd');
-      const nomeArquivo = `${contratoNome.toLowerCase().replace(/\s+/g, '_')}_${servicoNome.toLowerCase().replace(/\s+/g, '_')}_${periodoStr}_${dataStr}`;
+      // 11. Nome do arquivo: Contrato_TipoServico_Executivo_Data
+      const dataStr = format(new Date(), 'dd-MM-yyyy');
+      const tipoLabel = labelTipoServicoPdf(servicoTipo);
+      const nomeArquivo = [
+        sanitizarNomePdf(contratoNome),
+        sanitizarNomePdf(tipoLabel),
+        'Executivo',
+        dataStr,
+      ].join('_');
 
       // 12. Armazenar em cache
       pdfCache.set(cacheKey, { buffer: pdf, timestamp: Date.now(), filename: nomeArquivo });

@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { FiDownload, FiSearch, FiChevronLeft, FiChevronRight, FiCheck, FiX } from 'react-icons/fi';
 import ConfirmModal from './ConfirmModal';
+import coletaService from '../services/coletaService';
+import servicoService from '../services/servicoService';
 
 interface ColunaDetectada {
   nome: string;
@@ -56,8 +58,8 @@ export default function DataTable({ servicoId, contractId, token, adicionarToast
   useEffect(() => {
     (async () => {
       try {
-        const r = await fetch('/api/coleta/uploads?servico_id=' + servicoId, { headers: { Authorization: 'Bearer ' + token } });
-        if (r.ok) setPlanilhas((await r.json()).map((p: any) => ({ id: p.id, nome: p.nomeArquivo || 'Sem nome' })));
+        const uploads = await coletaService.listarUploadsServico(servicoId);
+        setPlanilhas((uploads || []).map((p: any) => ({ id: p.id, nome: p.nomeArquivo || 'Sem nome' })));
       } catch {}
     })();
   }, [servicoId, token]);
@@ -65,15 +67,14 @@ export default function DataTable({ servicoId, contractId, token, adicionarToast
   const carregar = useCallback(async (p: number) => {
     setCarregando(true);
     try {
-      let url = '/api/contracts/' + contractId + '/servicos/' + servicoId + '/dados?page=' + p + '&limit=' + limit;
-      if (filtroPlanilha) url += '&uploadId=' + filtroPlanilha;
-      const r = await fetch(url, { headers: { Authorization: 'Bearer ' + token } });
-      if (r.ok) {
-        const d = await r.json();
-        setDados(d.dados || []);
-        setTotalPaginas(d.totalPaginas || 1);
-        setTotalRegistros(d.total || d.dados?.length || 0);
-      }
+      const d = await servicoService.getDadosPaginados(contractId, servicoId, {
+        page: p,
+        limit,
+        uploadId: filtroPlanilha || undefined,
+      });
+      setDados(d.dados || []);
+      setTotalPaginas(d.totalPaginas || 1);
+      setTotalRegistros(d.total || d.dados?.length || 0);
     } catch { adicionarToast('Erro ao carregar dados', 'error'); }
     finally { setCarregando(false); }
   }, [servicoId, contractId, token, filtroPlanilha, limit, adicionarToast]);
@@ -154,19 +155,11 @@ export default function DataTable({ servicoId, contractId, token, adicionarToast
   const salvarEdicao = async () => {
     if (!editandoId) return;
     try {
-      const r = await fetch('/api/coleta/dados/' + editandoId, {
-        method: 'PUT',
-        headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
-        body: JSON.stringify(editandoDados),
-      });
-      if (r.ok) {
-        adicionarToast('Registro atualizado!', 'success');
-        setEditandoId(null);
-        setEditandoDados({});
-        carregar(pagina);
-      } else {
-        adicionarToast('Erro ao atualizar', 'error');
-      }
+      await coletaService.atualizarDado(editandoId, editandoDados);
+      adicionarToast('Registro atualizado!', 'success');
+      setEditandoId(null);
+      setEditandoDados({});
+      carregar(pagina);
     } catch { adicionarToast('Erro ao atualizar', 'error'); }
   };
 
@@ -180,14 +173,10 @@ export default function DataTable({ servicoId, contractId, token, adicionarToast
     if (!confirmExcluir) return;
     setExcluindo(true);
     try {
-      const r = await fetch('/api/coleta/dados/' + confirmExcluir.id, { method: 'DELETE', headers: { Authorization: 'Bearer ' + token } });
-      if (r.ok) {
-        adicionarToast('Registro excluído!', 'success');
-        setConfirmExcluir(null);
-        carregar(pagina);
-      } else {
-        adicionarToast('Erro ao excluir', 'error');
-      }
+      await coletaService.excluirDado(confirmExcluir.id);
+      adicionarToast('Registro excluído!', 'success');
+      setConfirmExcluir(null);
+      carregar(pagina);
     } catch { adicionarToast('Erro ao excluir', 'error'); }
     finally { setExcluindo(false); }
   };

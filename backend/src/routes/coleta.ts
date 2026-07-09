@@ -9,13 +9,13 @@ const controller = new ColetaController();
 // Configurar multer para memory storage
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB — alinhado com Express e nginx
   fileFilter: (_req: Request, file: Express.Multer.File, cb: FileFilterCallback) => {
     const ext = file.originalname.split('.').pop()?.toLowerCase();
-    if (ext === 'xlsx' || ext === 'xls') {
+    if (ext === 'xlsx' || ext === 'xls' || ext === 'xlsm') {
       cb(null, true);
     } else {
-      cb(new Error('Formato inválido. Apenas .xlsx e .xls são permitidos.'));
+      cb(new Error('Formato inválido. Apenas .xlsx, .xls ou .xlsm são permitidos.'));
     }
   },
 });
@@ -30,6 +30,8 @@ router.use((req, res, next) => {
 router.post('/upload', authenticate, upload.single('planilha'), (req, res) => controller.upload(req, res));
 router.post('/upload/preview', authenticate, upload.single('planilha'), (req, res) => controller.previewUpload(req, res));
 router.post('/upload/preview-data', authenticate, upload.single('planilha'), (req, res) => controller.previewUploadData(req, res));
+router.post('/upload/preview-rocada', authenticate, upload.single('planilha'), (req, res) => controller.previewRocada(req, res));
+router.post('/upload/conferencia-diaria', authenticate, upload.single('planilha'), (req, res) => controller.conferenciaDiaria(req, res));
 router.get('/dashboard', authenticate, (req, res) => controller.dashboard(req, res));
 router.get('/uploads', authenticate, (req, res) => controller.uploads(req, res));
 router.get('/dados', authenticate, (req, res) => controller.dados(req, res));

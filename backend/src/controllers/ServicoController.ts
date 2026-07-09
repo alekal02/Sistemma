@@ -1,11 +1,12 @@
-﻿import { Request, Response } from 'express';
+import { Request, Response } from 'express';
+import { In } from 'typeorm';
 import AppDataSource from '../database/data-source';
 import { Servico } from '../entities/Servico';
 import { Contract } from '../entities/Contract';
 import { PlanilhaUpload } from '../entities/PlanilhaUpload';
 import { KpiUniversal } from '../entities/KpiUniversal';
 import PlanilhaService from '../services/PlanilhaService';
-import { TipoServico, TIPOS_SERVICO_VALORES } from '../enums/TipoServico';
+import { TipoServico, TIPOS_SERVICO_VALORES, TIPOS_SERVICO_META } from '../enums/TipoServico';
 import {
   calcularKpiComFormula,
   calcularExpressao,
@@ -16,11 +17,140 @@ import {
 } from '../services/FormulaEngine';
 import AutoIndicatorService, { AnaliseAutoIndicadores, ColunaInfo } from '../services/AutoIndicatorService';
 import TipoServicoTemplateService from '../services/TipoServicoTemplateService';
+import {
+  buildConfigDashboardPadraoColeta,
+  RANKINGS_OPERACIONAIS_PADRAO_COLETA,
+} from '../config/dashboardPadraoColeta';
 import { gerarConfigGraficosPadrao, reResolverGraficos } from '../services/graficosPadrao';
-import { buildValoresFixosFaturamento } from '../services/configFaturamentoValores';
+import { buildValoresFixosFaturamento, syncContractTarifasFromConfig } from '../services/configFaturamentoValores';
+import {
+  resolverValorUnitarioPorTipo,
+  resolverLimitesDoContrato,
+  extrairOverridesLimites,
+} from '../config/pesoMaximoCaminhao';
 import { calcularHorasProdutivasTotal } from '../services/horasProdutivasService';
 import { isNomeColunaInvalido } from '../services/PadraoPlanilhaDetector';
 import ValidacaoViagemService from '../services/validacaoViagemService';
+import { verificarContagemViagens } from '../services/verificarContagemViagensService';
+import {
+  cicloEstaFechado,
+  fecharCicloServico,
+  listarCiclosFechados,
+} from '../services/cicloPlanilhaService';
+import {
+  gerarRelatorioSobrecargaPeso,
+  extrairLimitesDeConfig,
+} from '../services/relatorioSobrecargaPesoService';
+import type { LimitesPesoKg } from '../config/pesoMaximoCaminhao';
+import { contarViagensValidadas, sumarizarViagensPorRota, contarViagensPorRotaRegistro } from '../services/viagensPorRotaService';
+import { agregarRankingColetores, calcularMediaTonPorColetorViagem } from '../services/coletoresUnicosService';
+import {
+  detectarColunaRankingRotas,
+  labelColunaRankingRotas,
+  separarMelhoresPiores,
+} from '../services/rankingOperacionalService';
+import { deduplicarKpisLista, chaveComparacaoKpi, listarKpisAtivosParaCalculo } from '../services/kpiDeduplicacaoService';
+import { resolvePlaceholdersNaFormula } from '../services/PlaceholderResolver';
+import { obterDadosServicoComCache, invalidarCacheDadosServico } from '../services/servicoDadosCache';
+import {
+  getEndpointCache,
+  setEndpointCache,
+  invalidateEndpointCachePrefix,
+  invalidarCacheDashboardServico as invalidarCacheDashboardServicoImpl,
+  fingerprintLimitesContrato,
+} from '../services/comparacaoCache';
+import {
+  ENDPOINTS_PESADOS_CONCURRENCY,
+  KPIS_CONSOLIDADO_CONCURRENCY,
+  LIMITE_DADOS_MAX,
+} from '../config/limitesRecursos';
+import { parseDataPlanilha } from '../utils/formatarDataPlanilha';
+import { resolverFiltrosPeriodoQuery, type PeriodoCicloContrato } from '../utils/periodoCicloContrato';
+import {
+  agregarDadosGrafico,
+  agregarGraficosEmLote,
+  GraficoAgregacaoInput,
+} from '../services/graficoAgregacaoService';
+import {
+  analisarPesoColeta,
+  type AnalisePesoColeta,
+} from '../services/analisePesoColetaService';
+import {
+  getAgregacaoRocada,
+  getMetricasRocadaSql,
+  resolverKpiRocadaSql,
+} from '../services/rocadaAgregacaoService';
+import {
+  getMetricasColetaSql,
+  getRankingsColetaSql,
+  getAgregacaoColeta,
+  resolverKpiColetaSql,
+  metricaExecutivaDeColetaSql,
+  agregarGraficoColetaSql,
+} from '../services/coletaAgregacaoService';
+
+/** KPI "Viagens Realizadas" — viagens em rotas (linhas) validadas, não só contagem de linhas */
+function resolverExpressaoKpiViagensRealizadas(
+  kpi: { nome?: string; label?: string },
+  expressao: string,
+): string {
+  const label = (kpi.label || kpi.nome || '').trim();
+  const nome = (kpi.nome || '').trim();
+  const expr = expressao.trim();
+  const ehViagensRealizadas =
+    label === 'Viagens Realizadas' ||
+    nome === 'Viagens' ||
+    label.toLowerCase().includes('viagens realizadas');
+  if (ehViagensRealizadas && (expr === 'VIAGENS_POR_ROTA()' || expr === 'COUNT(*)')) {
+    return 'VIAGENS_VALIDADAS()';
+  }
+  return expressao;
+}
+
+/** KPI "Total de Viagens (Contador)" — VIAGENS_POR_ROTA() em vez de SUM bruto */
+function resolverExpressaoKpiContadorViagens(
+  kpi: { nome?: string; label?: string },
+  expressao: string,
+): string {
+  const label = (kpi.label || kpi.nome || '').trim();
+  const nome = (kpi.nome || '').trim();
+  const expr = expressao.trim();
+  const ehContador =
+    nome === 'Total Viagens Contador' ||
+    label === 'Total de Viagens (Contador)' ||
+    label.toLowerCase().includes('total de viagens (contador)');
+  if (!ehContador) return expressao;
+  if (/VIAGENS_POR_ROTA\s*\(\s*\)/i.test(expr)) return expr;
+  if (/SUM\s*\(\s*CONTADOR/i.test(expr)) return 'VIAGENS_POR_ROTA()';
+  return expressao;
+}
+
+/** KPI "Total Coletores na Equipe" — únicos, não soma de Nº DE COLETORES por viagem */
+function resolverExpressaoKpiColetoresEquipe(
+  kpi: { nome?: string; label?: string },
+  expressao: string,
+): string {
+  const label = (kpi.label || kpi.nome || '').trim();
+  const nome = (kpi.nome || '').trim();
+  const expr = expressao.trim();
+
+  const ehColetoresEquipe =
+    label === 'Total Coletores na Equipe' ||
+    nome === 'Total Coletores Equipe' ||
+    label.includes('Coletores na Equipe');
+
+  if (!ehColetoresEquipe) {
+    if (/SUM\s*\(\s*N[º°]?\s*DE\s*COLETORES\s*\)/i.test(expr)) {
+      return 'COLETORES_UNICOS()';
+    }
+    return expressao;
+  }
+
+  if (expr !== 'COLETORES_UNICOS()') {
+    return 'COLETORES_UNICOS()';
+  }
+  return expressao;
+}
 
 /**
  * Detecta qual coluna existe nos dados dentre uma lista de candidatos
@@ -144,6 +274,14 @@ function detectarColunaPeloNome(colunasNomes: string[], candidatos: string[]): s
 /**
  * Formata um valor numerico conforme o formato
  */
+function normalizarNomeKpi(nome: string): string {
+  return (nome || '')
+    .trim()
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
 function formatarValor(valor: number, formato: string): string {
   if (formato === 'moeda') {
     return valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -155,35 +293,34 @@ function formatarValor(valor: number, formato: string): string {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// ⚡ CACHE EM MEMÓRIA para evitar recálculos desnecessários
+// ⚡ CACHE EM MEMÓRIA (comparacaoCache) — evita recálculos
 // ═══════════════════════════════════════════════════════════════
-const cacheBackend = new Map<string, { data: any; timestamp: number }>();
-const CACHE_TTL_MS = 60_000; // 60 segundos
+const getCache = getEndpointCache;
+const setCache = setEndpointCache;
+const invalidateCache = invalidateEndpointCachePrefix;
 
-function getCache<T>(key: string): T | null {
-  const item = cacheBackend.get(key);
-  if (item && (Date.now() - item.timestamp) < CACHE_TTL_MS) {
-    return item.data as T;
-  }
-  cacheBackend.delete(key);
-  return null;
+/** Limpa caches de KPIs e gráficos após upload ou alteração de dados */
+export function invalidarCacheDashboardServico(servicoId: string): void {
+  invalidarCacheDashboardServicoImpl(servicoId);
 }
 
-function setCache(key: string, data: any): void {
-  cacheBackend.set(key, { data, timestamp: Date.now() });
-  // Limpeza de cache velho a cada 50 entradas
-  if (cacheBackend.size > 50) {
-    const agora = Date.now();
-    for (const [k, v] of cacheBackend) {
-      if (agora - v.timestamp > CACHE_TTL_MS) cacheBackend.delete(k);
+/** Executa promises em paralelo com limite de concorrência */
+async function mapComLimite<T, R>(
+  items: T[],
+  limite: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const results: R[] = new Array(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(limite, items.length) }, async () => {
+    while (cursor < items.length) {
+      const i = cursor++;
+      results[i] = await fn(items[i], i);
     }
-  }
-}
-
-function invalidateCache(prefix: string): void {
-  for (const key of cacheBackend.keys()) {
-    if (key.startsWith(prefix)) cacheBackend.delete(key);
-  }
+  });
+  await Promise.all(workers);
+  return results;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -203,7 +340,7 @@ function detectarTodasColunas(dados: Record<string, any>[], servicoId: string): 
     colPeso: ['PESO TOTAL', 'PESO', 'PESOTOTAL', 'PESO_TOTAL', 'pesoTotal'],
     colKm: ['KM TOTAL', 'KM', 'KMTOTAL', 'KM_TOTAL', 'kmTotal', 'QUILOMETRO', 'DISTANCIA'],
     colPlaca: ['PLACA', 'CAMINHAO', 'VEICULO', 'COLETOR', 'COLETORA', 'EQUIPAMENTO', 'placa'],
-    colTipo: ['CAMINHAO', 'TIPO CAMINHAO', 'TIPO_CAMINHAO', 'tipoCaminhao', 'CAMINHÃO', 'TIPO DE CAMINHAO', 'TIPO DE CAMINHÃO', 'TIPODECAMINHAO'],
+    colTipo: ['TIPO DE CAMINHÃO', 'TIPO DE CAMINHAO', 'TIPO CAMINHAO', 'TIPO_CAMINHAO', 'tipoCaminhao', 'TIPODECAMINHAO', 'CAMINHAO', 'CAMINHÃO'],
     colHora: ['HORA SAIDA', 'HORA', 'HORASAIDA', 'HORA_SAIDA', 'horaSaida', 'HR SAIDA BASE', 'HR_SAIDA_BASE', 'HRSAIDABASE', 'SAIDA BASE', 'HORA SÁIDA BASE', 'HORASAIDABASE', 'HORA SAIDA BASE'],
     colHoraChegada: ['HORA CHEGADA', 'HORACHEGADA', 'HORA_CHEGADA', 'horaChegada', 'HR CHEGA BASE', 'HR_CHEGA_BASE', 'HRCHEGABASE', 'CHEGADA BASE', 'HR CHEGADA BASE', 'HORA CHEGADA BASE', 'HORACHEGADABASE'],
     colNroColetores: ['Nº DE COLETORES', 'NDECOLETORES', 'NUMERO DE COLETORES', 'NÚMERO DE COLETORES', 'QTDE COLETORES', 'NRO COLETORES', 'QTD COLETORES'],
@@ -217,6 +354,127 @@ function detectarTodasColunas(dados: Record<string, any>[], servicoId: string): 
   
   colunasDetectadasCache.set(cacheKey, resultado);
   return resultado;
+}
+
+function normalizarChaveColuna(chave: string): string {
+  return chave.trim().toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, '');
+}
+
+function valorCorrespondeFiltro(valorDado: any, valorFiltro: string): boolean {
+  if (!valorFiltro?.trim()) return true;
+  const dadoNorm = String(valorDado ?? '').toUpperCase().trim()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const valores = valorFiltro.split(',')
+    .map(v => v.toUpperCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, ''))
+    .filter(Boolean);
+  if (valores.length === 0) return true;
+  return valores.some(v => dadoNorm === v || dadoNorm.includes(v));
+}
+
+interface MetricaExecutivaCalc {
+  viagens: number;
+  qtdColetores: number;
+  pesoTotalTon: number;
+  kmTotal: number;
+  horasProdutivas: number;
+  faturamento: number;
+  fatPorTipo: Record<string, number>;
+  tonKm: number;
+  prodColetor: number;
+  kmMedioViagem: number;
+  tonMediaColeta: number;
+  receitaKm: number;
+  receitaHora: number;
+  temValor: boolean;
+  colunasDetectadas: Record<string, string>;
+}
+
+function calcularMetricaExecutivaDeDados(
+  dadosNorm: Record<string, any>[],
+  valoresFixos: Record<string, number>,
+  servicoId: string,
+  cfgFat?: { ativo?: boolean; colunaQuantidade?: string; colunaTipoCaminhao?: string } | null,
+): MetricaExecutivaCalc {
+  const colunasDetectadas = detectarTodasColunas(dadosNorm, servicoId);
+  const colPeso = (cfgFat?.ativo && cfgFat?.colunaQuantidade)
+    ? cfgFat.colunaQuantidade
+    : colunasDetectadas.colPeso;
+  const colKm = colunasDetectadas.colKm;
+  const colPlaca = colunasDetectadas.colPlaca;
+  const colTipo = (cfgFat?.ativo && cfgFat?.colunaTipoCaminhao)
+    ? cfgFat.colunaTipoCaminhao
+    : colunasDetectadas.colTipo;
+  const colNroColetores = colunasDetectadas.colNroColetores;
+  const temValor = Object.keys(valoresFixos).length > 0;
+  const FALLBACK_VALOR_TONELADA = 80;
+
+  const viagens = contarViagensValidadas(dadosNorm);
+
+  const coletoresSet = new Set<string>();
+  for (const d of dadosNorm) {
+    const v = encontrarValorColuna(d, colPlaca);
+    if (v !== undefined && v !== null && v !== '') coletoresSet.add(String(v).trim());
+  }
+  const qtdColetores = coletoresSet.size;
+
+  let kmTotal = 0;
+  let pesoTotalKg = 0;
+  for (const d of dadosNorm) {
+    kmTotal += Number(encontrarValorColuna(d, colKm)) || 0;
+    pesoTotalKg += Number(encontrarValorColuna(d, colPeso)) || 0;
+  }
+  const pesoTotalTon = pesoTotalKg / 1000;
+  const horasProdutivas = calcularHorasProdutivasTotal(dadosNorm);
+
+  let faturamento = 0;
+  const fatPorTipo: Record<string, number> = {};
+  if (temValor && colPeso) {
+    for (const d of dadosNorm) {
+      const tipoRaw = colTipo ? String(encontrarValorColuna(d, colTipo) || '').toUpperCase().trim() : '';
+      if (/^\d+$/.test(tipoRaw)) continue;
+      const peso = Number(encontrarValorColuna(d, colPeso)) || 0;
+      if (peso <= 0) continue;
+      const toneladas = peso / 1000;
+      const valorUnitario = temValor
+        ? (resolverValorUnitarioPorTipo(tipoRaw, valoresFixos, FALLBACK_VALOR_TONELADA) || FALLBACK_VALOR_TONELADA)
+        : FALLBACK_VALOR_TONELADA;
+      const receita = toneladas * valorUnitario;
+      faturamento += receita;
+      if (tipoRaw.length > 0) fatPorTipo[tipoRaw] = (fatPorTipo[tipoRaw] || 0) + receita;
+    }
+    if (faturamento === 0) {
+      faturamento = pesoTotalKg / 1000 * (valoresFixos.VALOR_TONELADA || FALLBACK_VALOR_TONELADA);
+    }
+  } else if (colPeso) {
+    faturamento = pesoTotalKg / 1000 * FALLBACK_VALOR_TONELADA;
+  }
+
+  const tonKm = kmTotal > 0 ? Math.round((pesoTotalTon / kmTotal) * 10000) / 10000 : 0;
+  const prodColetor = calcularMediaTonPorColetorViagem(dadosNorm);
+  const kmMedioViagem = viagens > 0 ? Math.round((kmTotal / viagens) * 100) / 100 : 0;
+  const tonMediaColeta = viagens > 0 ? Math.round((pesoTotalTon / viagens) * 100) / 100 : 0;
+  const receitaKm = kmTotal > 0 ? Math.round((faturamento / kmTotal) * 100) / 100 : 0;
+  const receitaHora = horasProdutivas > 0
+    ? Math.round((faturamento / horasProdutivas) * 100) / 100
+    : 0;
+
+  return {
+    viagens,
+    qtdColetores,
+    pesoTotalTon: Math.round(pesoTotalTon * 100) / 100,
+    kmTotal: Math.round(kmTotal * 100) / 100,
+    horasProdutivas: Math.round(horasProdutivas * 100) / 100,
+    faturamento: Math.round(faturamento * 100) / 100,
+    fatPorTipo,
+    tonKm,
+    prodColetor,
+    kmMedioViagem,
+    tonMediaColeta,
+    receitaKm,
+    receitaHora,
+    temValor,
+    colunasDetectadas,
+  };
 }
 
 export class ServicoController {
@@ -304,29 +562,31 @@ export class ServicoController {
       servico.configDashboard = configDashboard || null;
       servico.configFaturamento = configFaturamento || null;
 
-      // ⭐ KPIS DO TEMPLATE COM BASE NO TIPO DE SERVICO
       const tipoFinal = servico.tipo || TipoServico.COLETA_CAMINHAO;
       const kpisTemplate = TipoServicoTemplateService.converterKpisParaConfig(tipoFinal);
-
-      // === GRAFICOS PADRAO: gera automaticamente com base no tipo de servico ===
       const colunasNomesGraf: string[] = servico.padraoPlanilha?.colunas
         ? servico.padraoPlanilha.colunas.map((c: any) => c.nome)
         : [];
       const graficosPadrao = gerarConfigGraficosPadrao(tipoFinal, colunasNomesGraf);
 
       if (!servico.configDashboard) {
-        servico.configDashboard = {
-          kpis: kpisTemplate,
-          graficos: graficosPadrao,
-          kpisTemplateAplicados: kpisTemplate.length > 0,
-          kpisTemplateTotal: kpisTemplate.length,
-          kpisTemplateTipo: tipoFinal,
-          kpisTemplateAplicadosEm: new Date().toISOString(),
-          graficosPadraoAplicados: true,
-          graficosPadraoTotal: graficosPadrao.length,
-          graficosPadraoTipo: tipoFinal,
-          graficosPadraoAplicadosEm: new Date().toISOString(),
-        };
+        // Coleta: dashboard completo do serviço modelo (KPIs + gráficos validados)
+        if (tipoFinal === TipoServico.COLETA_CAMINHAO) {
+          servico.configDashboard = buildConfigDashboardPadraoColeta();
+        } else {
+          servico.configDashboard = {
+            kpis: kpisTemplate,
+            graficos: graficosPadrao,
+            kpisTemplateAplicados: kpisTemplate.length > 0,
+            kpisTemplateTotal: kpisTemplate.length,
+            kpisTemplateTipo: tipoFinal,
+            kpisTemplateAplicadosEm: new Date().toISOString(),
+            graficosPadraoAplicados: true,
+            graficosPadraoTotal: graficosPadrao.length,
+            graficosPadraoTipo: tipoFinal,
+            graficosPadraoAplicadosEm: new Date().toISOString(),
+          };
+        }
       } else {
         // Adicionar KPIs do template (sem duplicar)
         const kpisExistentes: any[] = servico.configDashboard.kpis || [];
@@ -337,7 +597,10 @@ export class ServicoController {
           (k: any) => !labelsExistentes.has(k.label?.toLowerCase().trim())
         );
         if (kpisNovosDoTemplate.length > 0) {
-          servico.configDashboard.kpis = [...kpisExistentes, ...kpisNovosDoTemplate];
+          servico.configDashboard.kpis = deduplicarKpisLista(
+            [...kpisExistentes, ...kpisNovosDoTemplate],
+            { manterInativos: true },
+          ).kpis;
           servico.configDashboard.kpisTemplateAplicados = true;
           servico.configDashboard.kpisTemplateTotal = kpisTemplate.length;
           servico.configDashboard.kpisTemplateTipo = tipoFinal;
@@ -357,13 +620,31 @@ export class ServicoController {
         servico.configDashboard.graficosPadraoTipo = tipoFinal;
         servico.configDashboard.graficosPadraoAplicadosEm = new Date().toISOString();
       }
+
+      if (tipoFinal === TipoServico.COLETA_CAMINHAO) {
+        servico.configDashboard = {
+          ...(servico.configDashboard || {}),
+          rankingsOperacionais: servico.configDashboard?.rankingsOperacionais ?? {
+            ...RANKINGS_OPERACIONAIS_PADRAO_COLETA,
+          },
+        };
+      }
+
       servico.padraoPlanilha = padraoPlanilha || null;
+
+      if (syncContractTarifasFromConfig(contract, configFaturamento)) {
+        await this.contractRepo.save(contract);
+      }
 
       const novoServico = await this.repository.save(servico);
       return res.status(201).json(novoServico);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Erro ao criar serviço:', error);
-      return res.status(500).json({ error: 'Erro ao criar serviço' });
+      const detalhe = error?.message || String(error);
+      return res.status(500).json({
+        error: 'Erro ao criar serviço',
+        detalhe: process.env.NODE_ENV === 'production' ? undefined : detalhe,
+      });
     }
   }
 
@@ -416,20 +697,48 @@ export class ServicoController {
         return res.status(404).json({ error: 'Serviço não encontrado' });
       }
 
+      // Coleta sem dashboard configurado: aplica padrão automaticamente
+      if (servico.tipo === TipoServico.COLETA_CAMINHAO) {
+        const cfgAtual = servico.configDashboard || {};
+        const semKpis = !cfgAtual.kpis?.length;
+        const semGraficos = !cfgAtual.graficos?.length;
+        if (semKpis || semGraficos) {
+          const padrao = buildConfigDashboardPadraoColeta();
+          servico.configDashboard = {
+            ...cfgAtual,
+            kpis: semKpis ? padrao.kpis : cfgAtual.kpis,
+            graficos: semGraficos ? padrao.graficos : cfgAtual.graficos,
+            rankingsOperacionais: cfgAtual.rankingsOperacionais ?? padrao.rankingsOperacionais,
+            dashboardPadraoVersao: padrao.dashboardPadraoVersao,
+          };
+          await this.repository.save(servico);
+        }
+      }
+
       // Buscar contrato para obter valores dos caminhões
       const contract = await this.contractRepo.findOne({ where: { id: contractId } });
 
       // Buscar uploads vinculados a este serviço
-      const uploads = await this.uploadRepo.find({
-        where: { servico_id: id },
-        order: { criadoEm: 'DESC' },
-        take: 5,
-      });
+      const [uploads, totalUploads, statsUploads] = await Promise.all([
+        this.uploadRepo.find({
+          where: { servico_id: id },
+          order: { criadoEm: 'DESC' },
+          take: 20,
+        }),
+        this.uploadRepo.count({ where: { servico_id: id } }),
+        this.uploadRepo.createQueryBuilder('u')
+          .select('COALESCE(SUM(u.totalLinhas), 0)', 'totalLinhas')
+          .addSelect('COALESCE(SUM(u.linhasImportadas), 0)', 'totalImportados')
+          .where('u.servico_id = :id', { id })
+          .getRawOne(),
+      ]);
 
-      // Estatísticas básicas dos uploads
-      const totalUploads = uploads.length;
-      const totalLinhas = uploads.reduce((s, u) => s + u.totalLinhas, 0);
-      const totalImportados = uploads.reduce((s, u) => s + u.linhasImportadas, 0);
+      const totalLinhas = Number(statsUploads?.totalLinhas || 0);
+      const totalImportados = Number(statsUploads?.totalImportados || 0);
+      const [contagemRegistros, periodoDados] = await Promise.all([
+        PlanilhaService.getContagemRegistrosPorServico(id),
+        PlanilhaService.getPeriodoDadosPorServico(id),
+      ]);
 
                   // ⭐ Buscar KPIs Universais do mesmo tipo de servico
       const kpiUniversalRepo = AppDataSource.getRepository(KpiUniversal);
@@ -470,17 +779,21 @@ export class ServicoController {
           tipo: servico.tipo || 'coleta_caminhao',
           padraoPlanilha: padraoSanitizado,
           configDashboard: servico.configDashboard,
+          configFaturamento: servico.configFaturamento,
         },
+        periodoDados,
         uploads: {
           total: totalUploads,
           totalLinhas,
           totalImportados,
+          registrosValidos: contagemRegistros.validos,
+          registrosTotais: contagemRegistros.total,
           ultimos: uploads.map(u => ({
             id: u.id,
-            nome: u.nomeArquivo,
+            nomeArquivo: u.nomeArquivo,
+            totalLinhas: u.totalLinhas,
+            linhasImportadas: u.linhasImportadas,
             criadoEm: u.criadoEm,
-            linhas: u.totalLinhas,
-            importados: u.linhasImportadas,
           })),
         },
         tipoServico: servico.tipo || 'coleta_caminhao',
@@ -489,6 +802,7 @@ export class ServicoController {
           VALOR_MINI: contract.valorMini ? Number(contract.valorMini) : null,
           VALOR_TRUCK: contract.valorTruck ? Number(contract.valorTruck) : null,
           VALOR_TOCO: contract.valorToco ? Number(contract.valorToco) : null,
+          VALOR_BASCULANTE: contract.valorBasculante ? Number(contract.valorBasculante) : null,
         } : null,
         // ⭐ KPIs universais disponiveis para o tipo de servico
         kpisUniversaisDisponiveis,
@@ -546,20 +860,167 @@ export class ServicoController {
 
   /**
    * GET /api/contracts/:contractId/servicos/:id/dados-brutos
-   * Retorna dados brutos do serviço para cálculos de dashboard
+   * Retorna dados brutos do serviço (cache compartilhado + teto LIMITE_DADOS_MAX).
    */
   async listarDadosBrutos(req: Request, res: Response): Promise<any> {
     try {
       const id = req.params.id as string;
-      const limite = parseInt(req.query.limite as string) || 1000;
+      const limiteSolicitado = parseInt(req.query.limite as string, 10) || 1000;
+      const limite = Math.min(Math.max(limiteSolicitado, 1), LIMITE_DADOS_MAX);
       const incluirInconsistentes = req.query.incluirInconsistentes === '1' || req.query.todos === '1';
-      const dados = await PlanilhaService.getDadosBrutosPorServico(id, limite, {
-        apenasValidos: !incluirInconsistentes,
+      const apenasValidos = !incluirInconsistentes;
+      const contagem = await PlanilhaService.getContagemRegistrosPorServico(id);
+      const totalDisponivel = apenasValidos ? contagem.validos : contagem.total;
+
+      // Cache compartilhado só cobre viagens válidas (mesmo dataset de KPIs/gráficos).
+      // Pedidos com inconsistentes seguem consulta direta (uso raro / diagnóstico).
+      const dados = apenasValidos
+        ? await obterDadosServicoComCache(id, limite)
+        : await PlanilhaService.getDadosBrutosPorServico(id, limite, { apenasValidos: false });
+
+      return res.json({
+        dados,
+        total: dados.length,
+        totalDisponivel,
+        truncado: dados.length < totalDisponivel,
+        limite,
+        limiteMaximo: LIMITE_DADOS_MAX,
+        apenasValidos,
+        cache: apenasValidos,
       });
-      return res.json({ dados, total: dados.length, apenasValidos: !incluirInconsistentes });
     } catch (error) {
       console.error('Erro ao carregar dados brutos:', error);
       return res.status(500).json({ error: 'Erro ao carregar dados' });
+    }
+  }
+
+  /**
+   * GET /api/contracts/:contractId/servicos/:id/coleta/agregacao
+   * Resumo + rankings de coleta via SQL (escala 600k+ sem materializar linhas).
+   */
+  async getColetaAgregacao(req: Request, res: Response): Promise<any> {
+    try {
+      const id = req.params.id as string;
+      const contractId = req.params.contractId as string;
+      const servico = await this.repository.findOne({ where: { id }, select: ['id', 'tipo', 'configFaturamento'] as any });
+      if (!servico) return res.status(404).json({ error: 'Serviço não encontrado' });
+      const ehColeta = servico.tipo === TipoServico.COLETA_CAMINHAO || servico.tipo === 'coleta_caminhao';
+      if (!ehColeta) {
+        return res.status(400).json({ error: 'Agregação disponível apenas para serviços de coleta' });
+      }
+
+      const data = typeof req.query.data === 'string' ? req.query.data : undefined;
+      const dataInicio = typeof req.query.dataInicio === 'string' ? req.query.dataInicio : undefined;
+      const dataFim = typeof req.query.dataFim === 'string' ? req.query.dataFim : undefined;
+      const topN = req.query.topN ? parseInt(String(req.query.topN), 10) : undefined;
+
+      const cacheKey = ['coleta-agregacao', id, data || '', dataInicio || '', dataFim || '', String(topN || '')].join(':');
+      const cached = getCache<any>(cacheKey);
+      if (cached) return res.json(cached);
+
+      const contract = await this.contractRepo.findOne({ where: { id: contractId } });
+      const valoresFixos = buildValoresFixosFaturamento(
+        contract,
+        servico.configFaturamento?.ativo ? servico.configFaturamento : null,
+      );
+      const agregacao = await getAgregacaoColeta(id, { data, dataInicio, dataFim, topN, valoresFixos });
+      const response = { ...agregacao, tipoServico: servico.tipo, modo: 'coleta-sql' };
+      setCache(cacheKey, response);
+      return res.json(response);
+    } catch (error) {
+      console.error('Erro na agregação de coleta:', error);
+      return res.status(500).json({ error: 'Erro ao agregar dados de coleta' });
+    }
+  }
+
+  /**
+   * GET /api/contracts/:contractId/servicos/:id/rocada/agregacao
+   * Resumo + rankings de roçada via SQL (escala 500k+ sem materializar linhas).
+   * Query: data=YYYY-MM-DD | dataInicio=&dataFim= | topN=
+   */
+  async getRocadaAgregacao(req: Request, res: Response): Promise<any> {
+    try {
+      const id = req.params.id as string;
+      const servico = await this.repository.findOne({ where: { id }, select: ['id', 'tipo'] });
+      if (!servico) return res.status(404).json({ error: 'Serviço não encontrado' });
+      const ehRocada = servico.tipo === TipoServico.ROCADEIRA || servico.tipo === 'rocadeira';
+      if (!ehRocada) {
+        return res.status(400).json({ error: 'Agregação disponível apenas para serviços de roçada' });
+      }
+
+      const data = typeof req.query.data === 'string' ? req.query.data : undefined;
+      const dataInicio = typeof req.query.dataInicio === 'string' ? req.query.dataInicio : undefined;
+      const dataFim = typeof req.query.dataFim === 'string' ? req.query.dataFim : undefined;
+      const topN = req.query.topN ? parseInt(String(req.query.topN), 10) : undefined;
+
+      if (data && !/^\d{4}-\d{2}-\d{2}$/.test(data)) {
+        return res.status(400).json({ error: 'Data inválida. Use YYYY-MM-DD.' });
+      }
+      if (dataInicio && !/^\d{4}-\d{2}-\d{2}$/.test(dataInicio)) {
+        return res.status(400).json({ error: 'dataInicio inválida. Use YYYY-MM-DD.' });
+      }
+      if (dataFim && !/^\d{4}-\d{2}-\d{2}$/.test(dataFim)) {
+        return res.status(400).json({ error: 'dataFim inválida. Use YYYY-MM-DD.' });
+      }
+
+      const cacheKey = [
+        'rocada-agregacao', id,
+        data || '', dataInicio || '', dataFim || '', String(topN || ''),
+      ].join(':');
+      const cached = getCache<any>(cacheKey);
+      if (cached) return res.json(cached);
+
+      const agregacao = await getAgregacaoRocada(id, { data, dataInicio, dataFim, topN });
+      const response = { ...agregacao, tipoServico: servico.tipo };
+      setCache(cacheKey, response);
+      return res.json(response);
+    } catch (error) {
+      console.error('Erro na agregação de roçada:', error);
+      return res.status(500).json({ error: 'Erro ao agregar dados de roçada' });
+    }
+  }
+
+  /**
+   * GET /api/contracts/:contractId/servicos/:id/dados-dia/:data
+   * Registros upados em uma data (YYYY-MM-DD), consulta direta no banco.
+   */
+  async listarDadosDia(req: Request, res: Response): Promise<any> {
+    try {
+      const id = req.params.id as string;
+      const data = req.params.data as string;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) {
+        return res.status(400).json({ error: 'Data inválida. Use YYYY-MM-DD.' });
+      }
+      const incluirInconsistentes = req.query.incluirInconsistentes === '1' || req.query.todos === '1';      const servico = await this.repository.findOne({ where: { id }, select: ['id', 'tipo'] });
+      const ehRocada = servico?.tipo === TipoServico.ROCADEIRA || servico?.tipo === 'rocadeira';
+      const page = req.query.page ? Math.max(1, parseInt(String(req.query.page), 10) || 1) : undefined;
+      // Pagina por padrão (coleta e roçada) — evita payloads de dezenas de MB/dia.
+      const limitRaw = req.query.limit != null
+        ? parseInt(String(req.query.limit), 10)
+        : 100;
+      const limit = !Number.isNaN(limitRaw) && limitRaw > 0 ? limitRaw : 100;
+      // limit=0 ou all=1: comportamento legado (tudo) — uso raro / export
+      const semPaginacao = req.query.all === '1' || req.query.limit === '0';
+      const resultado = await PlanilhaService.getDadosBrutosPorDia(id, data, {
+        apenasValidos: !incluirInconsistentes,
+        pularValidacaoViagem: ehRocada,
+        page: semPaginacao ? undefined : (page || 1),
+        limit: semPaginacao ? undefined : limit,
+      });
+      return res.json({
+        data,
+        dados: resultado.dados,
+        total: resultado.total,
+        pagina: resultado.pagina,
+        totalPaginas: resultado.totalPaginas,
+        limit: resultado.limit,
+        apenasValidos: !incluirInconsistentes,
+        tipoServico: servico?.tipo || null,
+        truncado: resultado.total > resultado.dados.length,
+      });
+    } catch (error) {
+      console.error('Erro ao carregar dados do dia:', error);
+      return res.status(500).json({ error: 'Erro ao carregar dados do dia' });
     }
   }
 
@@ -967,7 +1428,7 @@ export class ServicoController {
       }
 
       // Carregar dados brutos (sem limite — fonte de verdade)
-      const dados = await PlanilhaService.getDadosBrutosPorServico(id, 999999);
+      const dados = await obterDadosServicoComCache(id, LIMITE_DADOS_MAX);
       if (!dados || dados.length === 0) {
         return res.json({
           valido: true,
@@ -1061,8 +1522,8 @@ export class ServicoController {
         .map(s => ({
           id: s.id,
           nome: s.nome,
-          kpis: (s.configDashboard?.kpis || []).filter((k: any) => k.ativo),
-          totalKpis: (s.configDashboard?.kpis || []).filter((k: any) => k.ativo).length,
+          kpis: (s.configDashboard?.kpis || []).filter((k: any) => k.ativo !== false),
+          totalKpis: (s.configDashboard?.kpis || []).filter((k: any) => k.ativo !== false).length,
         }))
         .filter(s => s.totalKpis > 0);
 
@@ -1133,24 +1594,315 @@ export class ServicoController {
       const kpisServico: any[] = (servico.configDashboard?.kpis || [])
         .filter((k: any) => k.ativo !== false)
         .map((k: any) => ({ ...k, _origem: 'servico' }));
-      const todosKpis = [...kpisContrato, ...kpisServico];
+      let todosKpis = listarKpisAtivosParaCalculo([...kpisContrato, ...kpisServico]);
+
+      if (todosKpis.length === 0 && servico.tipo === TipoServico.COLETA_CAMINHAO) {
+        todosKpis = (buildConfigDashboardPadraoColeta().kpis || []).filter((k: any) => k.ativo !== false);
+      }
+
+      // ⭐ Migração automática: KPIs de Faturamento que usam VALOR_TRUCK diretamente
+      //    agora usam FATURAMENTO_EST() que detecta o tipo de caminhão de cada viagem
+      //    e aplica o valor correto (TRUCK, TOCO ou MINI)
+      for (const kpi of todosKpis) {
+        const expr = kpi.expressao || '';
+        if (
+          /SUM\s*\(\s*PESO\s+TOTAL\s*\)\s*\/\s*1000\s*\*\s*VALOR_TRUCK/i.test(expr) ||
+          /SUM\s*\(\s*PESO\s*\)\s*\/\s*1000\s*\*\s*VALOR_TRUCK/i.test(expr)
+        ) {
+          kpi.expressao = 'FATURAMENTO_EST(PESO TOTAL, TIPO CAMINHAO)';
+        }
+      }
 
       // ═══════════════════════════════════════════════════════════
-      // 5. METRICAS EXECUTIVAS VIA SQL AGREGADO (banco de dados)
+      // 5a. ROÇADA — KPIs via SQL (sem materializar 20k–500k linhas)
       // ═══════════════════════════════════════════════════════════
-      const metricasAgregadas = await PlanilhaService.getMetricasAgregadasPorServico(id, {
-        dataInicio: req.query.dataInicio as string,
-        dataFim: req.query.dataFim as string,
-      });
+      const ehRocada = servico.tipo === TipoServico.ROCADEIRA || servico.tipo === 'rocadeira';
+      if (ehRocada) {
+        const metricasRocada = await getMetricasRocadaSql(id, {
+          dataInicio: req.query.dataInicio as string | undefined,
+          dataFim: req.query.dataFim as string | undefined,
+        });
 
-      const viagens = metricasAgregadas.viagens || 0;
-      const pesoTotalTon = metricasAgregadas.pesoTotalTon || 0;
-      const kmTotal = metricasAgregadas.kmTotal || 0;
-      const horasProdutivas = metricasAgregadas.horasProdutivas || 0;
-      const coletoresAtivos = metricasAgregadas.coletoresAtivos || 0;
+        if (metricasRocada.registros === 0) {
+          const periodoDados = await PlanilhaService.getPeriodoDadosPorServico(id);
+          const emptyResponse = {
+            kpis: todosKpis.map((k: any) => ({
+              id: k.id, nome: k.label || k.nome,
+              valor: null, formatado: '-',
+              formato: k.formato || 'numero', origem: k._origem,
+            })),
+            metrica_executiva: {
+              viagens: 0, qtdColetores: 0, pesoTotalTon: 0, kmTotal: 0,
+              horasProdutivas: 0, horasMediaRotas: 0, faturamento: 0, fatPorTipo: {},
+              tonKm: 0, prodColetor: 0, kmMedioViagem: 0, tonMediaColeta: 0,
+              receitaKm: 0, receitaHora: 0, temValor: false,
+              areaM2: 0, registros: 0,
+            },
+            periodoDados,
+            modo: 'rocada-sql',
+          };
+          setCache(cacheKey, emptyResponse);
+          return res.json(emptyResponse);
+        }
 
-      // Resposta vazia se nao houver dados
-      if (viagens === 0) {
+        const resultadosKpisRocada = todosKpis.map((kpi: any) => {
+          try {
+            let expressao = kpi.expressao || '';
+            const colunasServico = (servico.padraoPlanilha?.colunas || []).map((c: any) => c.nome);
+            const expressaoResolvida = resolvePlaceholdersNaFormula(expressao, { colunasServico });
+            if (expressaoResolvida !== expressao) expressao = expressaoResolvida;
+
+            const kpiValoresFixos = { ...valoresFixos };
+            if (kpi.valoresFixos && typeof kpi.valoresFixos === 'object') {
+              for (const [key, value] of Object.entries(kpi.valoresFixos)) {
+                if (value !== null && value !== undefined && Number(value) > 0) {
+                  kpiValoresFixos[key] = Number(value);
+                }
+              }
+            }
+
+            let valor = resolverKpiRocadaSql(expressao, metricasRocada, kpiValoresFixos);
+            if (valor === null) {
+              // Fallback por agregação simples / nome
+              const nome = String(kpi.label || kpi.nome || '').toLowerCase();
+              if (kpi.agregacao === 'count' || /registro|linha|contagem/i.test(nome)) {
+                valor = metricasRocada.registros;
+              } else if (/área|area|m²|m2/i.test(nome)) {
+                valor = metricasRocada.areaM2;
+              } else if (/equipe/i.test(nome)) {
+                valor = metricasRocada.equipes;
+              } else if (/operador/i.test(nome)) {
+                valor = metricasRocada.operadores;
+              } else if (/equipamento/i.test(nome)) {
+                valor = metricasRocada.equipamentos;
+              } else if (/bairro/i.test(nome)) {
+                valor = metricasRocada.bairros;
+              } else if (/faturamento|receita/i.test(nome) && Number(kpiValoresFixos.VALOR_M2 || 0) > 0) {
+                valor = metricasRocada.areaM2 * Number(kpiValoresFixos.VALOR_M2);
+              } else {
+                valor = 0;
+              }
+            }
+
+            return {
+              id: kpi.id,
+              nome: kpi.label || kpi.nome,
+              valor: Math.round(valor * 100) / 100,
+              formatado: formatarValor(valor, kpi.formato || 'numero'),
+              formato: kpi.formato || 'numero',
+              origem: kpi._origem,
+            };
+          } catch (err: any) {
+            return {
+              id: kpi.id, nome: kpi.label || kpi.nome,
+              valor: null, formatado: '-',
+              formato: kpi.formato || 'numero',
+              origem: kpi._origem,
+              erro: err.message,
+            };
+          }
+        });
+
+        const faturamentoRocada = Number(valoresFixos.VALOR_M2 || 0) > 0
+          ? metricasRocada.areaM2 * Number(valoresFixos.VALOR_M2)
+          : 0;
+
+        const responseRocada = {
+          kpis: resultadosKpisRocada,
+          metrica_executiva: {
+            viagens: metricasRocada.registros,
+            qtdColetores: metricasRocada.operadores,
+            pesoTotalTon: 0,
+            kmTotal: 0,
+            horasProdutivas: 0,
+            horasMediaRotas: 0,
+            faturamento: Math.round(faturamentoRocada * 100) / 100,
+            fatPorTipo: {},
+            tonKm: 0,
+            prodColetor: 0,
+            kmMedioViagem: 0,
+            tonMediaColeta: 0,
+            receitaKm: 0,
+            receitaHora: 0,
+            temValor: Number(valoresFixos.VALOR_M2 || 0) > 0,
+            areaM2: metricasRocada.areaM2,
+            registros: metricasRocada.registros,
+            equipes: metricasRocada.equipes,
+            operadores: metricasRocada.operadores,
+            equipamentos: metricasRocada.equipamentos,
+            bairros: metricasRocada.bairros,
+          },
+          modo: 'rocada-sql',
+        };
+        setCache(cacheKey, responseRocada);
+        return res.json(responseRocada);
+      }
+
+      // ═══════════════════════════════════════════════════════════
+      // 5b. COLETA — KPIs via SQL (sem materializar 20k–600k linhas)
+      //     Fallback in-memory só para fórmulas custom não reconhecidas.
+      // ═══════════════════════════════════════════════════════════
+      const ehColeta = servico.tipo === TipoServico.COLETA_CAMINHAO || servico.tipo === 'coleta_caminhao';
+      const temFiltroExtraColeta = !!(
+        req.query.placa || req.query.regional || req.query.tipoCaminhao || req.query.uploadId
+        || Object.keys(req.query).some((k) => k.startsWith('filtro_'))
+      );
+
+      if (ehColeta && !temFiltroExtraColeta) {
+        const metricasColeta = await getMetricasColetaSql(id, {
+          dataInicio: req.query.dataInicio as string | undefined,
+          dataFim: req.query.dataFim as string | undefined,
+        }, valoresFixos);
+
+        if (metricasColeta.registros === 0) {
+          const periodoDados = await PlanilhaService.getPeriodoDadosPorServico(id);
+          const emptyResponse = {
+            kpis: todosKpis.map((k: any) => ({
+              id: k.id, nome: k.label || k.nome,
+              valor: null, formatado: '-',
+              formato: k.formato || 'numero', origem: k._origem,
+            })),
+            metrica_executiva: {
+              ...metricaExecutivaDeColetaSql(metricasColeta, temValor),
+            },
+            periodoDados,
+            modo: 'coleta-sql',
+          };
+          setCache(cacheKey, emptyResponse);
+          return res.json(emptyResponse);
+        }
+
+        const colunasServico = (servico.padraoPlanilha?.colunas || []).map((c: any) => c.nome);
+        const naoResolvidos: any[] = [];
+        const resultadosKpisColeta = todosKpis.map((kpi: any) => {
+          try {
+            let expressao = resolverExpressaoKpiViagensRealizadas(kpi, kpi.expressao || '');
+            expressao = resolverExpressaoKpiContadorViagens(kpi, expressao);
+            expressao = resolverExpressaoKpiColetoresEquipe(kpi, expressao);
+            const expressaoResolvida = resolvePlaceholdersNaFormula(expressao, { colunasServico });
+            if (expressaoResolvida !== expressao) expressao = expressaoResolvida;
+
+            const kpiValoresFixos = { ...valoresFixos };
+            if (kpi.valoresFixos && typeof kpi.valoresFixos === 'object') {
+              for (const [key, value] of Object.entries(kpi.valoresFixos)) {
+                if (value !== null && value !== undefined && Number(value) > 0) {
+                  kpiValoresFixos[key] = Number(value);
+                }
+              }
+            }
+
+            let valor = resolverKpiColetaSql(expressao, metricasColeta, kpiValoresFixos);
+            if (valor === null) {
+              const nome = String(kpi.label || kpi.nome || '').toLowerCase();
+              if (/viagem|viagens/i.test(nome)) valor = metricasColeta.viagens;
+              else if (/peso|ton/i.test(nome) && !/km|hora|viagem/i.test(nome)) valor = metricasColeta.pesoTotalTon;
+              else if (/^km|quilometr/i.test(nome) && !/ton|receita/i.test(nome)) valor = metricasColeta.kmTotal;
+              else if (/motorista/i.test(nome)) valor = metricasColeta.motoristas;
+              else if (/placa|coletor|caminh/i.test(nome)) valor = metricasColeta.placas;
+              else if (/faturamento|receita/i.test(nome)) valor = metricasColeta.faturamento;
+              else if (/hora/i.test(nome)) valor = metricasColeta.horasProdutivas;
+              else {
+                naoResolvidos.push(kpi);
+                valor = 0;
+              }
+            }
+
+            return {
+              id: kpi.id,
+              nome: kpi.label || kpi.nome,
+              valor: Math.round(valor * 100) / 100,
+              formatado: formatarValor(valor, kpi.formato || 'numero'),
+              formato: kpi.formato || 'numero',
+              origem: kpi._origem,
+            };
+          } catch (err: any) {
+            return {
+              id: kpi.id, nome: kpi.label || kpi.nome,
+              valor: null, formatado: '-',
+              formato: kpi.formato || 'numero',
+              origem: kpi._origem,
+              erro: err.message,
+            };
+          }
+        });
+
+        // Fallback in-memory só para KPIs custom não reconhecidos
+        if (naoResolvidos.length > 0) {
+          try {
+            const dados = await obterDadosServicoComCache(id);
+            const dadosFiltrados = this.aplicarFiltros(dados || [], {
+              dataInicio: req.query.dataInicio as string | undefined,
+              dataFim: req.query.dataFim as string | undefined,
+            });
+            if (dadosFiltrados?.length) {
+              const dadosNorm = normalizarDados(dadosFiltrados);
+              const truncado = (dados?.length || 0) >= LIMITE_DADOS_MAX;
+              for (const kpi of naoResolvidos) {
+                const idx = resultadosKpisColeta.findIndex((r) => r.id === kpi.id);
+                if (idx < 0) continue;
+                try {
+                  let expressao = resolverExpressaoKpiViagensRealizadas(kpi, kpi.expressao || '');
+                  expressao = resolverExpressaoKpiContadorViagens(kpi, expressao);
+                  expressao = resolverExpressaoKpiColetoresEquipe(kpi, expressao);
+                  expressao = resolvePlaceholdersNaFormula(expressao, { colunasServico });
+                  const kpiValoresFixos = { ...valoresFixos };
+                  if (kpi.valoresFixos && typeof kpi.valoresFixos === 'object') {
+                    for (const [key, value] of Object.entries(kpi.valoresFixos)) {
+                      if (value !== null && value !== undefined && Number(value) > 0) {
+                        kpiValoresFixos[key] = Number(value);
+                      }
+                    }
+                  }
+                  const resultado = calcularExpressao(expressao, { dados: dadosNorm, valoresFixos: kpiValoresFixos });
+                  const valor = Math.round(resultado.valor * 100) / 100;
+                  resultadosKpisColeta[idx] = {
+                    ...resultadosKpisColeta[idx],
+                    valor,
+                    formatado: formatarValor(valor, kpi.formato || 'numero'),
+                    ...(truncado ? { aviso: 'calculado com amostra truncada' } : {}),
+                  };
+                } catch { /* mantém 0 */ }
+              }
+            }
+          } catch (e) {
+            console.warn('[kpi-valores] fallback in-memory falhou:', (e as any)?.message);
+          }
+        }
+
+        const responseColeta = {
+          kpis: resultadosKpisColeta,
+          metrica_executiva: metricaExecutivaDeColetaSql(metricasColeta, temValor),
+          modo: 'coleta-sql',
+        };
+        setCache(cacheKey, responseColeta);
+        return res.json(responseColeta);
+      }
+
+      // ═══════════════════════════════════════════════════════════
+      // 5. CARREGAR DADOS COMPLETOS + APLICAR FILTROS (fonte única)
+      // ═══════════════════════════════════════════════════════════
+      const filtros: any = {
+        dataInicio: req.query.dataInicio as string | undefined,
+        dataFim: req.query.dataFim as string | undefined,
+        placa: req.query.placa as string | undefined,
+        regional: req.query.regional as string | undefined,
+        tipoCaminhao: req.query.tipoCaminhao as string | undefined,
+        uploadId: req.query.uploadId ? parseInt(req.query.uploadId as string) : undefined,
+      };
+      const filtrosDinamicos: Record<string, string> = {};
+      for (const [key, value] of Object.entries(req.query)) {
+        if (key.startsWith('filtro_') && typeof value === 'string' && value.trim()) {
+          filtrosDinamicos[key.replace('filtro_', '')] = value.trim();
+        }
+      }
+      if (Object.keys(filtrosDinamicos).length > 0) filtros.filtrosDinamicos = filtrosDinamicos;
+
+      const dados = await obterDadosServicoComCache(id);
+      const dadosFiltrados = this.aplicarFiltros(dados || [], filtros);
+
+      if (!dadosFiltrados || dadosFiltrados.length === 0) {
+        const periodoDados = await PlanilhaService.getPeriodoDadosPorServico(id);
+        const temDadosForaPeriodo = (dados?.length ?? 0) > 0 && !!periodoDados;
         const emptyResponse = {
           kpis: todosKpis.map((k: any) => ({
             id: k.id, nome: k.label || k.nome,
@@ -1163,103 +1915,36 @@ export class ServicoController {
             tonKm: 0, prodColetor: 0, kmMedioViagem: 0, tonMediaColeta: 0,
             receitaKm: 0, receitaHora: 0, temValor: false,
           },
+          periodoDados,
+          avisoPeriodo: temDadosForaPeriodo
+            ? `Nenhum registro no período filtrado. Dados disponíveis: ${periodoDados!.dataInicio.split('-').reverse().join('/')} a ${periodoDados!.dataFim.split('-').reverse().join('/')}.`
+            : undefined,
         };
         setCache(cacheKey, emptyResponse);
         return res.json(emptyResponse);
       }
 
-      // ═══════════════════════════════════════════════════════════
-      // 6. CARREGAR DADOS apenas se houver KPIs com formula
-      // ═══════════════════════════════════════════════════════════
-      const kpisComFormula = todosKpis.filter((k: any) => k.expressao && k.expressao.trim());
-      const kpisComAgregacao = todosKpis.filter((k: any) => !k.expressao && k.agregacao);
-      const precisaDados = kpisComFormula.length > 0 || kpisComAgregacao.length > 0 || viagens > 0;
-
-      let dadosNorm: Record<string, any>[] = [];
-      let colunasDetectadas: Record<string, string> = {};
-
-      if (precisaDados) {
-        // Carrega no maximo 5000 registros para agregacoes em JS
-        const dados = await PlanilhaService.getDadosBrutosPorServico(id, 5000);
-
-        // Aplicar filtros
-        const filtros: any = {
-          dataInicio: req.query.dataInicio as string | undefined,
-          dataFim: req.query.dataFim as string | undefined,
-          placa: req.query.placa as string | undefined,
-          regional: req.query.regional as string | undefined,
-          tipoCaminhao: req.query.tipoCaminhao as string | undefined,
-          uploadId: req.query.uploadId ? parseInt(req.query.uploadId as string) : undefined,
-        };
-        const filtrosDinamicos: Record<string, string> = {};
-        for (const [key, value] of Object.entries(req.query)) {
-          if (key.startsWith('filtro_') && typeof value === 'string' && value.trim()) {
-            filtrosDinamicos[key.replace('filtro_', '')] = value.trim();
-          }
-        }
-        if (Object.keys(filtrosDinamicos).length > 0) filtros.filtrosDinamicos = filtrosDinamicos;
-
-        const dadosFiltrados = this.aplicarFiltros(dados || [], filtros);
-        dadosNorm = normalizarDados(dadosFiltrados);
-
-        // Detectar colunas UMA VEZ com cache
-        colunasDetectadas = detectarTodasColunas(dadosNorm, id);
-      }
+      const dadosNorm = normalizarDados(dadosFiltrados);
+      const metricas = calcularMetricaExecutivaDeDados(dadosNorm, valoresFixos, id, cfgFat);
+      const colunasDetectadas = metricas.colunasDetectadas;
+      const {
+        viagens, qtdColetores: coletoresAtivos, pesoTotalTon, kmTotal,
+        horasProdutivas: horasProdutivasFinal, faturamento, fatPorTipo,
+        tonKm, prodColetor, kmMedioViagem, tonMediaColeta, receitaKm, receitaHora,
+      } = metricas;
 
       const colunasServico = (servico.padraoPlanilha?.colunas || []).map((c: any) => c.nome);
 
       // ═══════════════════════════════════════════════════════════
-      // 7. RESOLVER PLACEHOLDERS
+      // 7. CALCULAR CADA KPI (placeholders via PlaceholderResolver)
       // ═══════════════════════════════════════════════════════════
-      const resolverPlaceholdersNaFormula = (formula: string): string => {
-        const PH_MAP: Record<string, string[]> = {
-          'PESO_PLACEHOLDER': ['PESO TOTAL', 'PESO', 'PESOTOTAL', 'PESO_TOTAL', 'PESO_BRUTO', 'PESO COLETADO', 'PESO (KG)', 'PESO COLETA'],
-          'KM_PLACEHOLDER': ['KM TOTAL', 'KM', 'KMTOTAL', 'KM_TOTAL', 'QUILOMETRO', 'DISTANCIA', 'KM RODADO'],
-          'PLACA_PLACEHOLDER': ['PLACA', 'CAMINHAO', 'VEICULO', 'COLETOR', 'COLETORA', 'EQUIPAMENTO'],
-          'TIPO_PLACEHOLDER': ['TIPO CAMINHAO', 'TIPO_CAMINHAO', 'CAMINHAO', 'TIPO DE CAMINHAO', 'TIPODECAMINHAO'],
-          'HORA_PLACEHOLDER': ['HORA SAIDA', 'HORA', 'HORASAIDA', 'HORA_SAIDA', 'HR SAIDA BASE'],
-          'HORA_CHEGADA_PLACEHOLDER': ['HORA CHEGADA', 'HORACHEGADA', 'HORA_CHEGADA', 'HR CHEGA BASE', 'HORA CHEGADA BASE'],
-          'VOLUME_PLACEHOLDER': ['VOLUME', 'VOLUME M3', 'VOLUME_M3', 'M3', 'METRO CUBICO'],
-          'FUNCIONARIO_PLACEHOLDER': ['FUNCIONARIO', 'NOME', 'OPERADOR', 'MOTORISTA'],
-          'AREA_PLACEHOLDER': ['AREA_ROCADA', 'AREA_CAPINADA', 'AREA', 'METRAGEM', 'M2'],
-          'BAIRRO_PLACEHOLDER': ['BAIRRO', 'LOCAL', 'REGIONAL', 'REGIAO', 'SETOR', 'ROTA', 'DESTINO'],
-          'ARVORES_PLACEHOLDER': ['ARVORES_PODADAS', 'QTDE ARVORES', 'ARVORES', 'N ARVORES'],
-          'COLETOR_PLACEHOLDER': ['COLETOR', 'MOTORISTA', 'FUNCIONARIO', 'NOME'],
-          'ROTA_PLACEHOLDER': ['ROTA', 'BAIRRO', 'REGIAO', 'SETOR', 'LOCAL', 'REGIONAL', 'DESTINO'],
-          'PESO_KG_PLACEHOLDER': ['PESO KG', 'PESO (KG)', 'PESO_KG', 'PESO EM KG'],
-          'DISTANCIA_KM_PLACEHOLDER': ['DISTANCIA KM', 'DISTANCIA (KM)', 'DIST_KM', 'DISTANCIA_KM'],
-          'TIPO_CAMINHAO_PLACEHOLDER': ['TIPO', 'TIPO CAMINHAO', 'TIPOCAMINHAO'],
-        };
-        const normalizar = (s: string) => s.trim().toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, '');
-        const colunasNorm = colunasServico.map((c: any) => ({ original: c, norm: normalizar(c) }));
-        let resultado = formula;
-        for (const [phNome, candidatas] of Object.entries(PH_MAP)) {
-          if (!resultado.includes(phNome)) continue;
-          let colunaReal = '';
-          for (const cand of candidatas) {
-            const candNorm = normalizar(cand);
-            for (const cn of colunasNorm) {
-              if (cn.norm === candNorm || cn.norm.includes(candNorm) || candNorm.includes(cn.norm)) {
-                colunaReal = cn.original; break;
-              }
-            }
-            if (colunaReal) break;
-          }
-          if (colunaReal) {
-            const regex = new RegExp(phNome.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
-            resultado = resultado.replace(regex, colunaReal);
-          }
-        }
-        return resultado;
-      };
-
-      // ═══════════════════════════════════════════════════════════
-      // 8. CALCULAR CADA KPI
-      // ═══════════════════════════════════════════════════════════
+      const cacheValoresFormula = new Map<string, number>();
       const resultadosKpis = todosKpis.map((kpi: any) => {
         try {
-          let expressao = kpi.expressao || '';
-          const expressaoResolvida = resolverPlaceholdersNaFormula(expressao);
+          let expressao = resolverExpressaoKpiViagensRealizadas(kpi, kpi.expressao || '');
+          expressao = resolverExpressaoKpiContadorViagens(kpi, expressao);
+          expressao = resolverExpressaoKpiColetoresEquipe(kpi, expressao);
+          const expressaoResolvida = resolvePlaceholdersNaFormula(expressao, { colunasServico });
           if (expressaoResolvida !== expressao) expressao = expressaoResolvida;
 
           let valor: number;
@@ -1273,8 +1958,14 @@ export class ServicoController {
                 }
               }
             }
-            const resultado = calcularExpressao(expressao, { dados: dadosNorm, valoresFixos: kpiValoresFixos });
-            valor = Math.round(resultado.valor * 100) / 100;
+            const cacheKey = `${expressao}::${JSON.stringify(kpiValoresFixos)}`;
+            if (cacheValoresFormula.has(cacheKey)) {
+              valor = cacheValoresFormula.get(cacheKey)!;
+            } else {
+              const resultado = calcularExpressao(expressao, { dados: dadosNorm, valoresFixos: kpiValoresFixos });
+              valor = Math.round(resultado.valor * 100) / 100;
+              cacheValoresFormula.set(cacheKey, valor);
+            }
           } else if (kpi.agregacao === 'count' && dadosNorm.length > 0) {
             const colNome = kpi.coluna2 || kpi.nome;
             if (!colNome) {
@@ -1332,60 +2023,14 @@ export class ServicoController {
       });
 
       // ═══════════════════════════════════════════════════════════
-      // 9. METRICAS EXECUTIVAS (derivadas das agregacoes SQL)
+      // 9. CONFIG RESUMO (métricas já calculadas dos dados filtrados)
       // ═══════════════════════════════════════════════════════════
-      const colPeso = (cfgFat?.ativo && cfgFat?.colunaQuantidade)
-        ? cfgFat.colunaQuantidade
-        : (colunasDetectadas.colPeso || '');
+      const colPeso = colunasDetectadas.colPeso || '';
       const colKm = colunasDetectadas.colKm || '';
       const colPlaca = colunasDetectadas.colPlaca || '';
-      const colTipo = (cfgFat?.ativo && cfgFat?.colunaTipoCaminhao)
-        ? cfgFat.colunaTipoCaminhao
-        : (colunasDetectadas.colTipo || '');
-
-      let faturamento = 0;
-      const fatPorTipo: Record<string, number> = {};
-      const FALLBACK_VALOR_TONELADA = 80;
-
-      if (temValor && dadosNorm.length > 0 && colPeso) {
-        for (const d of dadosNorm) {
-          const tipoRaw = colTipo ? String(encontrarValorColuna(d, colTipo) || '').toUpperCase().trim() : '';
-          if (/^\d+$/.test(tipoRaw)) continue;
-          const peso = Number(encontrarValorColuna(d, colPeso)) || 0;
-          if (peso <= 0) continue;
-          const toneladas = peso / 1000;
-          const mapTipoValor: Record<string, string> = { 'TRUCK': 'VALOR_TRUCK', 'TOCO': 'VALOR_TOCO', 'MINI': 'VALOR_MINI' };
-          const tipoKey = Object.keys(mapTipoValor).find(k => tipoRaw.includes(k) || k.includes(tipoRaw));
-          const valorUnitario = tipoKey
-            ? (valoresFixos[mapTipoValor[tipoKey]] ?? valoresFixos['VALOR_TONELADA'] ?? FALLBACK_VALOR_TONELADA)
-            : (valoresFixos['VALOR_TONELADA'] ?? FALLBACK_VALOR_TONELADA);
-          const receita = toneladas * valorUnitario;
-          faturamento += receita;
-          if (tipoRaw.length > 0) fatPorTipo[tipoRaw] = (fatPorTipo[tipoRaw] || 0) + receita;
-        }
-        if (faturamento === 0 && colPeso) {
-          const totalKg = dadosNorm.reduce((s: number, d: any) => s + (Number(encontrarValorColuna(d, colPeso)) || 0), 0);
-          faturamento = totalKg / 1000 * (valoresFixos['VALOR_TONELADA'] || FALLBACK_VALOR_TONELADA);
-        }
-      } else if (colPeso && dadosNorm.length > 0) {
-        const totalKg = dadosNorm.reduce((s: number, d: any) => s + (Number(encontrarValorColuna(d, colPeso)) || 0), 0);
-        faturamento = totalKg / 1000 * FALLBACK_VALOR_TONELADA;
-      }
-      faturamento = Math.round(faturamento * 100) / 100;
-
-      let horasProdutivasFinal = horasProdutivas;
-      if (dadosNorm.length > 0) {
-        const horasCalculadas = calcularHorasProdutivasTotal(dadosNorm);
-        if (horasCalculadas > 0) horasProdutivasFinal = horasCalculadas;
-      }
-
-      const tonKm = kmTotal > 0 ? Math.round((pesoTotalTon / kmTotal) * 10000) / 10000 : 0;
-      const prodColetor = coletoresAtivos > 0 ? Math.round((pesoTotalTon / coletoresAtivos) * 100) / 100 : 0;
-      const kmMedioViagem = viagens > 0 ? Math.round((kmTotal / viagens) * 100) / 100 : 0;
-      const tonMediaColeta = viagens > 0 ? Math.round((pesoTotalTon / viagens) * 100) / 100 : 0;
-      const receitaKm = kmTotal > 0 ? Math.round((faturamento / kmTotal) * 100) / 100 : 0;
-      const receitaHora = horasProdutivasFinal > 0
-        ? Math.round((faturamento / horasProdutivasFinal) * 100) / 100
+      const colNroColetores = colunasDetectadas.colNroColetores || '';
+      const divisorProdColetor = metricas.prodColetor > 0 && pesoTotalTon > 0
+        ? (colNroColetores ? dadosNorm.reduce((s, d) => s + (Number(encontrarValorColuna(d, colNroColetores)) || 0), 0) : coletoresAtivos)
         : 0;
 
       const configResumoBase = servico.configDashboard?.configResumo || contract?.configResumo || null;
@@ -1397,7 +2042,11 @@ export class ServicoController {
         horasProdutivas: { encontrada: horasProdutivasFinal > 0, colunaUsada: '', precisaColuna: ['HORA SAIDA BASE', 'HORA CHEGADA BASE', 'HORAS FORA UNIDADE'] },
         faturamento: { encontrada: colPeso !== '' && temValor, colunaUsada: colPeso, precisaColuna: ['PESO TOTAL'] },
         tonKm: { encontrada: colPeso !== '' && colKm !== '', colunaUsada: colPeso + '/' + colKm, precisaColuna: ['PESO TOTAL', 'KM TOTAL'] },
-        prodColetor: { encontrada: colPeso !== '', colunaUsada: colPeso, precisaColuna: ['PESO TOTAL'] },
+        prodColetor: {
+          encontrada: colPeso !== '' && divisorProdColetor > 0,
+          colunaUsada: colNroColetores !== '' ? colNroColetores : colPlaca,
+          precisaColuna: colNroColetores !== '' ? ['PESO TOTAL', 'Nº DE COLETORES'] : ['PESO TOTAL', 'PLACA'],
+        },
         kmMedioViagem: { encontrada: colKm !== '', colunaUsada: colKm, precisaColuna: ['KM TOTAL'] },
         tonMediaColeta: { encontrada: colPeso !== '', colunaUsada: colPeso, precisaColuna: ['PESO TOTAL'] },
         receitaKm: { encontrada: colPeso !== '' && colKm !== '' && temValor, colunaUsada: colPeso + '/' + colKm, precisaColuna: ['PESO TOTAL', 'KM TOTAL'] },
@@ -1443,6 +2092,715 @@ export class ServicoController {
   }
 
   /**
+   * Calcula KPIs de um serviço (reutilizado na comparação por tipo)
+   */
+  private async calcularKpisParaComparacao(
+    contractId: string,
+    servico: Servico,
+    contract: Contract | null,
+    query: Record<string, any>,
+    limiteKpis?: number,
+  ): Promise<{
+    id: string;
+    nome: string;
+    tipo: string;
+    totalRegistros: number;
+    periodo?: PeriodoCicloContrato;
+    kpis: Array<{ nome: string; chave: string; valor: number | null; formatado: string; formato: string }>;
+    analisePeso?: AnalisePesoColeta | null;
+  }> {
+    const cfgFat = servico.configFaturamento;
+    const valoresFixos = buildValoresFixosFaturamento(contract, cfgFat?.ativo ? cfgFat : null);
+
+    const kpisContrato: any[] = (contract?.kpisConfig || [])
+      .filter((k: any) => k.ativo !== false)
+      .map((k: any) => ({ ...k, _origem: 'contrato' }));
+    const kpisServico: any[] = (servico.configDashboard?.kpis || [])
+      .filter((k: any) => k.ativo !== false)
+      .map((k: any) => ({ ...k, _origem: 'servico' }));
+    let { kpis: todosKpis } = deduplicarKpisLista([...kpisContrato, ...kpisServico]);
+
+    if (todosKpis.length === 0 && servico.tipo === 'coleta_caminhao') {
+      const padrao = buildConfigDashboardPadraoColeta();
+      todosKpis = padrao.kpis || [];
+    }
+
+    // ⭐ Migração automática: KPIs de Faturamento que usam VALOR_TRUCK diretamente
+    for (const kpi of todosKpis) {
+      const expr = kpi.expressao || '';
+      if (
+        /SUM\s*\(\s*PESO\s+TOTAL\s*\)\s*\/\s*1000\s*\*\s*VALOR_TRUCK/i.test(expr) ||
+        /SUM\s*\(\s*PESO\s*\)\s*\/\s*1000\s*\*\s*VALOR_TRUCK/i.test(expr)
+      ) {
+        kpi.expressao = 'FATURAMENTO_EST(PESO TOTAL, TIPO CAMINHAO)';
+      }
+    }
+
+    if (limiteKpis && limiteKpis > 0 && todosKpis.length > limiteKpis) {
+      todosKpis = todosKpis.slice(0, limiteKpis);
+    }
+
+    const { filtros: periodoFiltros, periodo } = resolverFiltrosPeriodoQuery(
+      query,
+      contract?.diaInicioCiclo,
+      contractId,
+    );
+
+    const filtros: any = {
+      dataInicio: periodoFiltros.dataInicio,
+      dataFim: periodoFiltros.dataFim,
+      placa: query.placa as string | undefined,
+      regional: query.regional as string | undefined,
+      tipoCaminhao: query.tipoCaminhao as string | undefined,
+      uploadId: query.uploadId ? parseInt(query.uploadId as string) : undefined,
+    };
+    const filtrosDinamicos: Record<string, string> = {};
+    for (const [key, value] of Object.entries(query)) {
+      if (key.startsWith('filtro_') && typeof value === 'string' && value.trim()) {
+        filtrosDinamicos[key.replace('filtro_', '')] = value.trim();
+      }
+    }
+    if (Object.keys(filtrosDinamicos).length > 0) filtros.filtrosDinamicos = filtrosDinamicos;
+
+    const temFiltroExtra = !!(filtros.placa || filtros.regional || filtros.tipoCaminhao || filtros.uploadId
+      || (filtros.filtrosDinamicos && Object.keys(filtros.filtrosDinamicos).length));
+    const ehRocadaCmp = servico.tipo === TipoServico.ROCADEIRA || servico.tipo === 'rocadeira';
+    const ehColetaCmp = servico.tipo === TipoServico.COLETA_CAMINHAO || servico.tipo === 'coleta_caminhao';
+    const colunasServico = (servico.padraoPlanilha?.colunas || []).map((c: any) => c.nome);
+
+    // Caminho SQL rápido (sem filtros extras) — escala 600k+
+    if (!temFiltroExtra && (ehRocadaCmp || ehColetaCmp)) {
+      if (ehRocadaCmp) {
+        const metricasRocada = await getMetricasRocadaSql(servico.id, {
+          dataInicio: filtros.dataInicio,
+          dataFim: filtros.dataFim,
+        });
+        const kpis = todosKpis.map((kpi: any) => {
+          try {
+            let expressao = resolvePlaceholdersNaFormula(kpi.expressao || '', { colunasServico });
+            let valor = resolverKpiRocadaSql(expressao, metricasRocada, valoresFixos);
+            if (valor === null) valor = 0;
+            return {
+              nome: kpi.label || kpi.nome,
+              chave: chaveComparacaoKpi(kpi),
+              valor: Math.round(valor * 100) / 100,
+              formatado: formatarValor(valor, kpi.formato || 'numero'),
+              formato: kpi.formato || 'numero',
+            };
+          } catch {
+            return {
+              nome: kpi.label || kpi.nome,
+              chave: chaveComparacaoKpi(kpi),
+              valor: null,
+              formatado: '-',
+              formato: kpi.formato || 'numero',
+            };
+          }
+        });
+        return {
+          id: servico.id,
+          nome: servico.nome,
+          tipo: servico.tipo,
+          totalRegistros: metricasRocada.registros,
+          periodo,
+          analisePeso: null,
+          kpis,
+        };
+      }
+
+      const metricasColeta = await getMetricasColetaSql(servico.id, {
+        dataInicio: filtros.dataInicio,
+        dataFim: filtros.dataFim,
+      }, valoresFixos);
+      const kpis = todosKpis.map((kpi: any) => {
+        try {
+          let expressao = resolverExpressaoKpiViagensRealizadas(kpi, kpi.expressao || '');
+          expressao = resolverExpressaoKpiContadorViagens(kpi, expressao);
+          expressao = resolverExpressaoKpiColetoresEquipe(kpi, expressao);
+          expressao = resolvePlaceholdersNaFormula(expressao, { colunasServico });
+          let valor = resolverKpiColetaSql(expressao, metricasColeta, valoresFixos);
+          if (valor === null) {
+            const nome = String(kpi.label || kpi.nome || '').toLowerCase();
+            if (/viagem/i.test(nome)) valor = metricasColeta.viagens;
+            else if (/peso|ton/i.test(nome)) valor = metricasColeta.pesoTotalTon;
+            else if (/faturamento|receita/i.test(nome)) valor = metricasColeta.faturamento;
+            else valor = 0;
+          }
+          return {
+            nome: kpi.label || kpi.nome,
+            chave: chaveComparacaoKpi(kpi),
+            valor: Math.round(valor * 100) / 100,
+            formatado: formatarValor(valor, kpi.formato || 'numero'),
+            formato: kpi.formato || 'numero',
+          };
+        } catch {
+          return {
+            nome: kpi.label || kpi.nome,
+            chave: chaveComparacaoKpi(kpi),
+            valor: null,
+            formatado: '-',
+            formato: kpi.formato || 'numero',
+          };
+        }
+      });
+      return {
+        id: servico.id,
+        nome: servico.nome,
+        tipo: servico.tipo,
+        totalRegistros: metricasColeta.registros,
+        periodo,
+        analisePeso: null,
+        kpis,
+      };
+    }
+
+    const dados = await obterDadosServicoComCache(servico.id);
+    const dadosFiltrados = this.aplicarFiltros(dados || [], filtros);
+
+    if (!dadosFiltrados?.length) {
+      return {
+        id: servico.id,
+        nome: servico.nome,
+        tipo: servico.tipo,
+        totalRegistros: 0,
+        periodo,
+        analisePeso: null,
+        kpis: todosKpis.map((k: any) => ({
+          nome: k.label || k.nome,
+          chave: chaveComparacaoKpi(k),
+          valor: null,
+          formatado: '-',
+          formato: k.formato || 'numero',
+        })),
+      };
+    }
+
+    const dadosNorm = normalizarDados(dadosFiltrados);
+    const metricas = calcularMetricaExecutivaDeDados(dadosNorm, valoresFixos, servico.id, cfgFat);
+    const { viagens } = metricas;
+
+    const resultadosKpis = todosKpis.map((kpi: any) => {
+      try {
+        let expressao = resolverExpressaoKpiViagensRealizadas(kpi, kpi.expressao || '');
+        expressao = resolverExpressaoKpiContadorViagens(kpi, expressao);
+        expressao = resolverExpressaoKpiColetoresEquipe(kpi, expressao);
+        const expressaoResolvida = resolvePlaceholdersNaFormula(expressao, { colunasServico });
+        if (expressaoResolvida !== expressao) expressao = expressaoResolvida;
+
+        let valor: number;
+
+        if (expressao.trim() && dadosNorm.length > 0) {
+          const kpiValoresFixos = { ...valoresFixos };
+          if (kpi.valoresFixos && typeof kpi.valoresFixos === 'object') {
+            for (const [key, value] of Object.entries(kpi.valoresFixos)) {
+              if (value !== null && value !== undefined && Number(value) > 0) {
+                kpiValoresFixos[key] = Number(value);
+              }
+            }
+          }
+          const resultado = calcularExpressao(expressao, { dados: dadosNorm, valoresFixos: kpiValoresFixos });
+          valor = Math.round(resultado.valor * 100) / 100;
+        } else if (kpi.agregacao === 'count' && dadosNorm.length > 0) {
+          const colNome = kpi.coluna2 || kpi.nome;
+          if (!colNome) {
+            valor = viagens;
+          } else {
+            const unicos = new Set(
+              dadosNorm
+                .map((d: any) => encontrarValorColuna(d, colNome))
+                .filter((v: any) => v !== null && v !== undefined && v !== '')
+                .map((v: any) => String(v).trim()),
+            );
+            valor = unicos.size;
+          }
+        } else if (!expressao.trim() && dadosNorm.length > 0) {
+          const colNome = kpi.coluna2 || kpi.nome;
+          if (!colNome) {
+            valor = 0;
+          } else {
+            const vals = dadosNorm
+              .map((d: any) => Number(encontrarValorColuna(d, colNome)))
+              .filter((n: any) => !isNaN(n));
+            if (vals.length === 0) {
+              valor = 0;
+            } else {
+              switch (kpi.agregacao) {
+                case 'sum': valor = vals.reduce((a: number, b: number) => a + b, 0); break;
+                case 'avg': valor = vals.reduce((a: number, b: number) => a + b, 0) / vals.length; break;
+                case 'min': valor = Math.min(...vals); break;
+                case 'max': valor = Math.max(...vals); break;
+                default: valor = vals.reduce((a: number, b: number) => a + b, 0);
+              }
+            }
+          }
+        } else {
+          valor = 0;
+        }
+
+        return {
+          nome: kpi.label || kpi.nome,
+          chave: chaveComparacaoKpi(kpi),
+          valor: valor !== null ? Math.round(valor * 100) / 100 : null,
+          formatado: valor !== null ? formatarValor(valor, kpi.formato || 'numero') : '-',
+          formato: kpi.formato || 'numero',
+        };
+      } catch {
+        return {
+          nome: kpi.label || kpi.nome,
+          chave: chaveComparacaoKpi(kpi),
+          valor: null,
+          formatado: '-',
+          formato: kpi.formato || 'numero',
+        };
+      }
+    });
+
+    const limitesContrato = resolverLimitesDoContrato(contract?.configOperacional);
+    const analisePeso = servico.tipo === 'coleta_caminhao'
+      ? analisarPesoColeta(dadosNorm, servico.id, {
+          colunaTipoCaminhao: cfgFat?.colunaTipoCaminhao
+            || detectarTodasColunas(dadosNorm, servico.id).colTipo
+            || undefined,
+          limitesPeso: limitesContrato.peso,
+          limitesVolume: limitesContrato.volume,
+        })
+      : null;
+
+    return {
+      id: servico.id,
+      nome: servico.nome,
+      tipo: servico.tipo,
+      totalRegistros: dadosFiltrados.length,
+      periodo,
+      analisePeso,
+      kpis: resultadosKpis,
+    };
+  }
+
+  /**
+   * GET /api/contracts/:contractId/servicos/comparar-por-tipo?tipoServico=coleta_caminhao
+   * Compara KPIs entre serviços do mesmo tipo dentro de um contrato
+   */
+  async getCompararKpisPorTipo(req: Request, res: Response): Promise<any> {
+    try {
+      const contractId = req.params.contractId as string;
+      const tipoServico = req.query.tipoServico as string | undefined;
+
+      if (!tipoServico) {
+        return res.status(400).json({ error: 'tipoServico é obrigatório' });
+      }
+      if (!TIPOS_SERVICO_VALORES.includes(tipoServico)) {
+        return res.status(400).json({ error: 'Tipo de serviço inválido' });
+      }
+
+      const [contract, servicos] = await Promise.all([
+        this.contractRepo.findOne({ where: { id: contractId } }),
+        this.repository.find({
+          where: { contract_id: contractId, tipo: tipoServico },
+          order: { nome: 'ASC' },
+        }),
+      ]);
+
+      if (!contract) {
+        return res.status(404).json({ error: 'Contrato não encontrado' });
+      }
+
+      // Inclui volumeL/pesoMaximoKg na chave — senão CAIXA MÉDIA fica stale após salvar limites
+      const cacheKey = `comparar-tipo:${contractId}:${tipoServico}:${fingerprintLimitesContrato(contract.configOperacional)}:${JSON.stringify(req.query)}`;
+      const cached = getCache<any>(cacheKey);
+      if (cached) return res.json(cached);
+
+      const servicosComDados: Servico[] = [];
+      const contagens = await PlanilhaService.getContagemRegistrosPorServicos(servicos.map(s => s.id));
+      for (const s of servicos) {
+        const total = contagens.get(s.id)?.validos ?? contagens.get(s.id)?.total ?? 0;
+        if (total > 0) servicosComDados.push(s);
+      }
+
+      if (servicosComDados.length === 0) {
+        return res.json({
+          escopo: 'contrato',
+          contratoId: contract.id,
+          contratoNome: contract.numeroContrato,
+          tipoServico,
+          tipoServicoLabel: TIPOS_SERVICO_META[tipoServico]?.label || tipoServico,
+          servicos: [],
+          kpiLinhas: [],
+          insights: [],
+          resumo: { totalServicos: 0, totalContratos: 1, totalKpis: 0, kpisComVariacao: 0 },
+          mensagem: 'Nenhum serviço deste tipo com dados no contrato',
+        });
+      }
+
+      const resultados = await mapComLimite(
+        servicosComDados,
+        ENDPOINTS_PESADOS_CONCURRENCY,
+        async s => {
+          const r = await this.calcularKpisParaComparacao(contractId, s, contract, req.query as Record<string, any>);
+          return {
+            ...r,
+            contratoId: contract.id,
+            contratoNome: contract.numeroContrato || '-',
+          };
+        },
+      );
+
+      const matriz = this.montarMatrizComparacaoKpis(resultados, {
+        incluirAnalisePeso: tipoServico === 'coleta_caminhao',
+      });
+      const periodo = resultados[0]?.periodo;
+
+      const response = {
+        escopo: 'contrato',
+        contratoId: contract.id,
+        contratoNome: contract.numeroContrato,
+        diaInicioCiclo: contract.diaInicioCiclo ?? 1,
+        periodo,
+        tipoServico,
+        tipoServicoLabel: TIPOS_SERVICO_META[tipoServico]?.label || tipoServico,
+        ...matriz,
+      };
+
+      setCache(cacheKey, response);
+      return res.json(response);
+    } catch (error: any) {
+      console.error('Erro ao comparar KPIs por tipo:', error?.message || error);
+      return res.status(500).json({ error: 'Erro ao comparar KPIs por tipo de serviço' });
+    }
+  }
+
+  /**
+   * Monta matriz KPI × serviço com métricas analíticas (min, max, média, variação %)
+   */
+  private montarMatrizComparacaoKpis(
+    resultados: Array<{
+      id: string;
+      nome: string;
+      tipo: string;
+      contratoId: string;
+      contratoNome: string;
+      totalRegistros: number;
+      periodo?: PeriodoCicloContrato;
+      analisePeso?: AnalisePesoColeta | null;
+      kpis: Array<{ nome: string; chave: string; valor: number | null; formatado: string; formato: string }>;
+    }>,
+    opts?: { incluirAnalisePeso?: boolean },
+  ) {
+    const kpiOrdem: string[] = [];
+    const kpiMeta = new Map<string, { nome: string; formato: string }>();
+    const kpiPorServico = new Map<string, Map<string, { valor: number | null; formatado: string; formato: string }>>();
+
+    for (const resultado of resultados) {
+      const mapa = new Map<string, { valor: number | null; formatado: string; formato: string }>();
+      for (const kpi of resultado.kpis) {
+        const chave = kpi.chave || chaveComparacaoKpi({ nome: kpi.nome, label: kpi.nome });
+        const existente = mapa.get(chave);
+        // Preferir célula com valor numérico quando a mesma chave aparece 2x no serviço
+        if (
+          !existente ||
+          (existente.valor === null && kpi.valor !== null && kpi.valor !== undefined)
+        ) {
+          mapa.set(chave, { valor: kpi.valor, formatado: kpi.formatado, formato: kpi.formato });
+        }
+        if (!kpiMeta.has(chave)) {
+          kpiMeta.set(chave, { nome: kpi.nome, formato: kpi.formato });
+          kpiOrdem.push(chave);
+        } else if (kpi.valor !== null && kpi.valor !== undefined && !isNaN(kpi.valor)) {
+          const meta = kpiMeta.get(chave)!;
+          if (!meta.nome || meta.nome === '-') {
+            meta.nome = kpi.nome;
+          }
+        }
+      }
+      kpiPorServico.set(resultado.id, mapa);
+    }
+
+    const kpiLinhas = kpiOrdem.map(chave => {
+      const meta = kpiMeta.get(chave)!;
+      const valores: Record<string, { valor: number | null; formatado: string; formato: string }> = {};
+      const nums: Array<{ servicoId: string; valor: number }> = [];
+
+      for (const servico of resultados) {
+        const celula = kpiPorServico.get(servico.id)?.get(chave);
+        valores[servico.id] = celula || { valor: null, formatado: '-', formato: meta.formato };
+        if (celula?.valor !== null && celula?.valor !== undefined && !isNaN(celula.valor)) {
+          nums.push({ servicoId: servico.id, valor: celula.valor });
+        }
+      }
+
+      let analise: {
+        min: number | null;
+        max: number | null;
+        media: number | null;
+        amplitude: number | null;
+        amplitudePct: number | null;
+        melhorId: string | null;
+        piorId: string | null;
+        variacoes: Record<string, { pctVsMelhor: number | null; pctVsMedia: number | null }>;
+      } = {
+        min: null, max: null, media: null, amplitude: null, amplitudePct: null,
+        melhorId: null, piorId: null, variacoes: {},
+      };
+
+      if (nums.length >= 2) {
+        const valoresNum = nums.map(n => n.valor);
+        const min = Math.min(...valoresNum);
+        const max = Math.max(...valoresNum);
+        const media = valoresNum.reduce((a, b) => a + b, 0) / valoresNum.length;
+        const melhorId = nums.find(n => n.valor === max)?.servicoId || null;
+        const piorId = nums.find(n => n.valor === min)?.servicoId || null;
+        const amplitude = max - min;
+        const amplitudePct = media !== 0 ? Math.round((amplitude / Math.abs(media)) * 10000) / 100 : null;
+
+        const variacoes: Record<string, { pctVsMelhor: number | null; pctVsMedia: number | null }> = {};
+        for (const n of nums) {
+          variacoes[n.servicoId] = {
+            pctVsMelhor: max !== 0 ? Math.round(((n.valor - max) / Math.abs(max)) * 10000) / 100 : null,
+            pctVsMedia: media !== 0 ? Math.round(((n.valor - media) / Math.abs(media)) * 10000) / 100 : null,
+          };
+        }
+
+        analise = { min, max, media: Math.round(media * 100) / 100, amplitude, amplitudePct, melhorId, piorId, variacoes };
+      }
+
+      return { chave, nome: meta.nome, formato: meta.formato, valores, analise };
+    });
+
+    kpiLinhas.sort((a, b) => {
+      const aNums = Object.values(a.valores).filter(v => v.valor !== null && v.valor !== undefined).length;
+      const bNums = Object.values(b.valores).filter(v => v.valor !== null && v.valor !== undefined).length;
+      const aComp = aNums >= 2 ? 1 : 0;
+      const bComp = bNums >= 2 ? 1 : 0;
+      if (bComp !== aComp) return bComp - aComp;
+      const aAmp = a.analise?.amplitudePct ?? 0;
+      const bAmp = b.analise?.amplitudePct ?? 0;
+      if (bAmp !== aAmp) return bAmp - aAmp;
+      return a.nome.localeCompare(b.nome, 'pt-BR');
+    });
+
+    const incluirPeso = opts?.incluirAnalisePeso === true
+      && resultados.some(r => r.analisePeso);
+    const kpiLinhasOnly = kpiLinhas;
+
+    const insights = kpiLinhasOnly
+      .filter(l => !l.chave.startsWith('peso:') && l.analise.amplitudePct !== null && l.analise.amplitudePct > 0)
+      .sort((a, b) => (b.analise.amplitudePct || 0) - (a.analise.amplitudePct || 0))
+      .slice(0, 6)
+      .map(l => {
+        const melhor = resultados.find(r => r.id === l.analise.melhorId);
+        const pior = resultados.find(r => r.id === l.analise.piorId);
+        return {
+          kpi: l.nome,
+          amplitudePct: l.analise.amplitudePct,
+          melhorServico: melhor?.nome,
+          melhorContrato: melhor?.contratoNome,
+          piorServico: pior?.nome,
+          piorContrato: pior?.contratoNome,
+          melhorValor: l.analise.melhorId ? l.valores[l.analise.melhorId]?.formatado : '-',
+          piorValor: l.analise.piorId ? l.valores[l.analise.piorId]?.formatado : '-',
+        };
+      });
+
+    return {
+      servicos: resultados.map(r => ({
+        id: r.id,
+        nome: r.nome,
+        tipo: r.tipo,
+        contratoId: r.contratoId,
+        contratoNome: r.contratoNome,
+        totalRegistros: r.totalRegistros,
+        periodo: r.periodo,
+        analisePeso: r.analisePeso ?? null,
+      })),
+      kpiLinhas: kpiLinhasOnly,
+      insights,
+      resumo: {
+        totalServicos: resultados.length,
+        totalContratos: new Set(resultados.map(r => r.contratoId)).size,
+        totalKpis: kpiLinhasOnly.length,
+        kpisComVariacao: insights.length,
+        temAnalisePeso: incluirPeso,
+      },
+    };
+  }
+
+  /**
+   * GET /api/dashboard/servicos-por-tipo?tipoServico=coleta_caminhao
+   * Lista serviços de um tipo em todos os contratos (para seleção na comparação)
+   */
+  async listarServicosPorTipoGlobal(req: Request, res: Response): Promise<any> {
+    try {
+      const tipoServico = req.query.tipoServico as string | undefined;
+      if (!tipoServico) {
+        return res.status(400).json({ error: 'tipoServico é obrigatório' });
+      }
+
+      const servicos = await this.repository.find({
+        where: { tipo: tipoServico },
+        order: { nome: 'ASC' },
+      });
+
+      const contractIds = [...new Set(servicos.map(s => s.contract_id))];
+      const contracts = contractIds.length
+        ? await this.contractRepo.find({ where: { id: In(contractIds) } })
+        : [];
+      const contractMap = new Map(contracts.map(c => [c.id, c]));
+
+      const lista: any[] = [];
+      for (const s of servicos) {
+        const total = await PlanilhaService.getTotalRegistrosPorServico(s.id);
+        if (total === 0) continue;
+        const contract = contractMap.get(s.contract_id);
+        lista.push({
+          id: s.id,
+          nome: s.nome,
+          tipo: s.tipo,
+          contratoId: s.contract_id,
+          contratoNome: contract?.numeroContrato || '-',
+          totalRegistros: total,
+          temKpis: !!(s.configDashboard?.kpis?.length),
+        });
+      }
+
+      const tiposDisponiveis = [...new Set(
+        (await this.repository.find({ select: ['tipo'] }))
+          .map(s => s.tipo)
+          .filter(Boolean),
+      )].sort();
+
+      return res.json({
+        tipoServico,
+        tipoServicoLabel: TIPOS_SERVICO_META[tipoServico]?.label || tipoServico,
+        servicos: lista,
+        tiposDisponiveis: tiposDisponiveis.map(t => ({
+          tipo: t,
+          label: TIPOS_SERVICO_META[t]?.label || t,
+        })),
+      });
+    } catch (error: any) {
+      console.error('Erro ao listar servicos por tipo:', error?.message || error);
+      return res.status(500).json({ error: 'Erro ao listar serviços por tipo' });
+    }
+  }
+
+  /**
+   * GET /api/dashboard/comparar-por-tipo?tipoServico=coleta_caminhao&servicoIds=id1,id2
+   * Compara KPIs entre serviços do mesmo tipo — inclusive entre contratos diferentes
+   */
+  async getCompararKpisGlobal(req: Request, res: Response): Promise<any> {
+    try {
+      const tipoServico = req.query.tipoServico as string | undefined;
+      const servicoIdsParam = req.query.servicoIds as string | undefined;
+
+      if (!tipoServico) {
+        return res.status(400).json({ error: 'tipoServico é obrigatório' });
+      }
+      if (!TIPOS_SERVICO_VALORES.includes(tipoServico)) {
+        return res.status(400).json({ error: 'Tipo de serviço inválido' });
+      }
+
+      const servicoIds = servicoIdsParam
+        ? servicoIdsParam.split(',').map(s => s.trim()).filter(Boolean)
+        : [];
+
+      let servicos: Servico[];
+      if (servicoIds.length > 0) {
+        servicos = await this.repository.find({
+          where: { id: In(servicoIds), tipo: tipoServico },
+          order: { nome: 'ASC' },
+        });
+        if (servicos.length < 2) {
+          return res.status(400).json({ error: 'Selecione pelo menos 2 serviços do mesmo tipo para comparar' });
+        }
+      } else {
+        servicos = await this.repository.find({
+          where: { tipo: tipoServico },
+          order: { nome: 'ASC' },
+        });
+      }
+
+      const contractIds = [...new Set(servicos.map(s => s.contract_id))];
+      const contracts = contractIds.length
+        ? await this.contractRepo.find({ where: { id: In(contractIds) } })
+        : [];
+      const contractMap = new Map(contracts.map(c => [c.id, c]));
+
+      const limitesFp = contracts
+        .map(c => `${c.id}:${fingerprintLimitesContrato(c.configOperacional)}`)
+        .sort()
+        .join('|');
+      const cacheKey = `comparar-global:${tipoServico}:${servicoIds.join('|')}:${limitesFp}:${JSON.stringify(req.query)}`;
+      const cached = getCache<any>(cacheKey);
+      if (cached) return res.json(cached);
+
+      const servicosComDados: Servico[] = [];
+      const contagensGlobal = await PlanilhaService.getContagemRegistrosPorServicos(servicos.map(s => s.id));
+      for (const s of servicos) {
+        const total = contagensGlobal.get(s.id)?.validos ?? contagensGlobal.get(s.id)?.total ?? 0;
+        if (total > 0) servicosComDados.push(s);
+      }
+
+      if (servicosComDados.length < 2) {
+        return res.json({
+          escopo: 'global',
+          tipoServico,
+          tipoServicoLabel: TIPOS_SERVICO_META[tipoServico]?.label || tipoServico,
+          servicos: [],
+          kpiLinhas: [],
+          insights: [],
+          resumo: { totalServicos: 0, totalContratos: 0, totalKpis: 0, kpisComVariacao: 0 },
+          mensagem: 'Selecione pelo menos 2 serviços do mesmo tipo com dados importados',
+        });
+      }
+
+      const resultados = await mapComLimite(
+        servicosComDados,
+        ENDPOINTS_PESADOS_CONCURRENCY,
+        async s => {
+          const contract = contractMap.get(s.contract_id) || null;
+          const r = await this.calcularKpisParaComparacao(
+            s.contract_id,
+            s,
+            contract,
+            req.query as Record<string, any>,
+          );
+          return {
+            ...r,
+            contratoId: s.contract_id,
+            contratoNome: contract?.numeroContrato || '-',
+          };
+        },
+      );
+
+      const matriz = this.montarMatrizComparacaoKpis(resultados, {
+        incluirAnalisePeso: tipoServico === 'coleta_caminhao',
+      });
+      const periodosUnicos = new Map(
+        resultados
+          .filter(r => r.periodo)
+          .map(r => [`${r.periodo!.dataInicio}|${r.periodo!.dataFim}`, r.periodo!]),
+      );
+
+      const response = {
+        escopo: 'global',
+        tipoServico,
+        mesReferencia: req.query.mesReferencia ? parseInt(String(req.query.mesReferencia), 10) : undefined,
+        anoReferencia: req.query.anoReferencia ? parseInt(String(req.query.anoReferencia), 10) : undefined,
+        periodosDistintos: periodosUnicos.size > 1,
+        periodo: periodosUnicos.size === 1 ? [...periodosUnicos.values()][0] : undefined,
+        tipoServicoLabel: TIPOS_SERVICO_META[tipoServico]?.label || tipoServico,
+        ...matriz,
+      };
+
+      setCache(cacheKey, response);
+      return res.json(response);
+    } catch (error: any) {
+      console.error('Erro ao comparar KPIs global:', error?.message || error);
+      return res.status(500).json({ error: 'Erro ao comparar KPIs entre serviços' });
+    }
+  }
+
+  /**
    * GET /api/contracts/:contractId/servicos/:id/kpi-exec-metrics
    * Retorna metricas executivas (tonelagem, KM, horas, faturamento, receita/km, etc.)
    * Calculadas pelo backend usando FormulaEngine
@@ -1452,8 +2810,7 @@ export class ServicoController {
       const id = req.params.id as string;
       const contractId = req.params.contractId as string;
 
-      // Extrair filtros dos query params
-      const filtros = {
+      const filtros: any = {
         dataInicio: req.query.dataInicio as string | undefined,
         dataFim: req.query.dataFim as string | undefined,
         placa: req.query.placa as string | undefined,
@@ -1461,16 +2818,55 @@ export class ServicoController {
         tipoCaminhao: req.query.tipoCaminhao as string | undefined,
         uploadId: req.query.uploadId ? parseInt(req.query.uploadId as string) : undefined,
       };
+      const filtrosDinamicos: Record<string, string> = {};
+      for (const [key, value] of Object.entries(req.query)) {
+        if (key.startsWith('filtro_') && typeof value === 'string' && value.trim()) {
+          filtrosDinamicos[key.replace('filtro_', '')] = value.trim();
+        }
+      }
+      if (Object.keys(filtrosDinamicos).length > 0) filtros.filtrosDinamicos = filtrosDinamicos;
 
-      // Carregar dados brutos (sem limite — fonte de verdade)
-      const dados = await PlanilhaService.getDadosBrutosPorServico(id, 999999);
-
-      // Aplicar filtros
-      const dadosFiltrados = this.aplicarFiltros(dados || [], filtros);
       const [servicoEC, contract] = await Promise.all([
         this.repository.findOne({ where: { id } }),
         this.contractRepo.findOne({ where: { id: contractId } }),
       ]);
+
+      const cfgFat = servicoEC?.configFaturamento;
+      const valoresFixos = buildValoresFixosFaturamento(contract, cfgFat?.ativo ? cfgFat : null);
+      const temValor = Object.keys(valoresFixos).length > 0;
+      const temFiltroExtra = !!(filtros.placa || filtros.regional || filtros.tipoCaminhao || filtros.uploadId
+        || Object.keys(filtrosDinamicos).length);
+      const ehColeta = servicoEC?.tipo === TipoServico.COLETA_CAMINHAO || servicoEC?.tipo === 'coleta_caminhao';
+      const ehRocada = servicoEC?.tipo === TipoServico.ROCADEIRA || servicoEC?.tipo === 'rocadeira';
+
+      if (!temFiltroExtra && ehColeta) {
+        const m = await getMetricasColetaSql(id, {
+          dataInicio: filtros.dataInicio,
+          dataFim: filtros.dataFim,
+        }, valoresFixos);
+        return res.json({
+          ...metricaExecutivaDeColetaSql(m, temValor),
+          coletoresList: [],
+          modo: 'coleta-sql',
+        });
+      }
+      if (!temFiltroExtra && ehRocada) {
+        const m = await getMetricasRocadaSql(id, {
+          dataInicio: filtros.dataInicio,
+          dataFim: filtros.dataFim,
+        });
+        const fat = Number(valoresFixos.VALOR_M2 || 0) > 0 ? m.areaM2 * Number(valoresFixos.VALOR_M2) : 0;
+        return res.json({
+          viagens: m.registros, qtdColetores: m.operadores, pesoTotalTon: 0, kmTotal: 0,
+          horasProdutivas: 0, horasMediaRotas: 0, faturamento: Math.round(fat * 100) / 100,
+          fatPorTipo: {}, tonKm: 0, prodColetor: 0, kmMedioViagem: 0, tonMediaColeta: 0,
+          receitaKm: 0, receitaHora: 0, temValor: Number(valoresFixos.VALOR_M2 || 0) > 0,
+          coletoresList: [], areaM2: m.areaM2, modo: 'rocada-sql',
+        });
+      }
+
+      const dados = await obterDadosServicoComCache(id, LIMITE_DADOS_MAX);
+      const dadosFiltrados = this.aplicarFiltros(dados || [], filtros);
 
       if (!dadosFiltrados || dadosFiltrados.length === 0) {
         return res.json({
@@ -1481,123 +2877,35 @@ export class ServicoController {
         });
       }
 
-      // â­ Verificar configFaturamento do serviÃ§o (substitui valores do contrato quando ativo)
-      const cfgFat = servicoEC?.configFaturamento;
-      const cfgFatAtivo = cfgFat && cfgFat.ativo === true;
-
-      // Valores fixos: priorizar configFaturamento do serviÃ§o quando ativo
-      const valoresFixos: Record<string, number> = {};
-      Object.assign(valoresFixos, buildValoresFixosFaturamento(contract, cfgFatAtivo ? cfgFat : null));
-
-      const temValor = Object.keys(valoresFixos).length > 0;
-
-      // Normalizar dados (filtrados)
       const dadosNorm = normalizarDados(dadosFiltrados);
+      const metricas = calcularMetricaExecutivaDeDados(dadosNorm, valoresFixos, id, cfgFat);
 
-      // Detectar colunas dinamicamente
-      const colPeso = detectarColuna(dadosNorm, ['PESO TOTAL', 'PESO', 'PESOTOTAL', 'PESO_TOTAL', 'pesoTotal']);
-      const colKm = detectarColuna(dadosNorm, ['KM TOTAL', 'KM', 'KMTOTAL', 'KM_TOTAL', 'kmTotal', 'QUILOMETRO', 'DISTANCIA']);
-      const colPlaca = detectarColuna(dadosNorm, ['PLACA', 'CAMINHAO', 'VEICULO', 'COLETOR', 'COLETORA', 'EQUIPAMENTO', 'placa']);
-      const colTipo = detectarColuna(dadosNorm, ['CAMINHAO', 'TIPO CAMINHAO', 'TIPO_CAMINHAO', 'tipoCaminhao', 'CAMINHÃO', 'TIPO DE CAMINHAO', 'TIPO DE CAMINHÃO', 'TIPODECAMINHAO']);
-      const colNroColetores = detectarColuna(dadosNorm, ['Nº DE COLETORES', 'NDECOLETORES', 'NUMERO DE COLETORES', 'NÚMERO DE COLETORES', 'QTDE COLETORES', 'NRO COLETORES', 'QTD COLETORES']);
-
-      // Metricas basicas
-      const viagens = dadosNorm.length;
-
-      // Coletores unicos
-      const coletoresSet = new Set<string>();
-      for (const d of dadosNorm) {
-        const v = encontrarValorColuna(d, colPlaca);
-        if (v !== undefined && v !== null && v !== '') coletoresSet.add(String(v).trim());
-      }
-      const qtdColetores = coletoresSet.size;
-      const coletoresList = Array.from(coletoresSet).sort();
-
-      // KM total
-      let kmTotal = 0;
-      for (const d of dadosNorm) {
-        kmTotal += Number(encontrarValorColuna(d, colKm)) || 0;
-      }
-
-      // Peso total em kg
-      let pesoTotalKg = 0;
-      for (const d of dadosNorm) {
-        pesoTotalKg += Number(encontrarValorColuna(d, colPeso)) || 0;
-      }
-      const pesoTotalTon = pesoTotalKg / 1000;
-
-      const horasProdutivas = calcularHorasProdutivasTotal(dadosNorm);
-      // Faturamento estimado por tipo de caminhao
-      let faturamento = 0;
-      const fatPorTipo: Record<string, number> = {};
-      const mapTipoValor: Record<string, string> = {
-        'TRUCK': 'VALOR_TRUCK', 'TOCO': 'VALOR_TOCO', 'MINI': 'VALOR_MINI',
-      };
-      const FALLBACK_VALOR_TONELADA = 80;
-
-      if (temValor) {
-        for (const d of dadosNorm) {
-          const tipoRaw = String(encontrarValorColuna(d, colTipo) || '').toUpperCase().trim();
-          // Ignorar valores numericos (ex: IDs, linhas) que nao sao tipos de caminhao
-          if (/^\d+$/.test(tipoRaw)) continue;
-          const peso = Number(encontrarValorColuna(d, colPeso)) || 0;
-          if (peso <= 0) continue;
-
-          const toneladas = peso / 1000;
-          let valorUnitario = 0;
-
-          // Tenta match por tipo especifico
-          const tipoKey = Object.keys(mapTipoValor).find(k =>
-            tipoRaw.includes(k) || k.includes(tipoRaw)
-          );
-          if (tipoKey) {
-            valorUnitario = valoresFixos[mapTipoValor[tipoKey]] ?? valoresFixos['VALOR_TONELADA'] ?? FALLBACK_VALOR_TONELADA;
-          } else {
-            valorUnitario = valoresFixos['VALOR_TONELADA'] ?? FALLBACK_VALOR_TONELADA;
-          }
-
-          const receita = toneladas * valorUnitario;
-          faturamento += receita;
-          if (tipoRaw.length > 0) fatPorTipo[tipoRaw] = (fatPorTipo[tipoRaw] || 0) + receita;
-        }
-
-        // Fallback: se nao encontrou nenhum tipo, calcula tudo como VALOR_TONELADA
-        if (faturamento === 0) {
-          const totalKg = dadosNorm.reduce((s, d) => s + (Number(encontrarValorColuna(d, colPeso)) || 0), 0);
-          faturamento = totalKg / 1000 * (valoresFixos['VALOR_TONELADA'] || FALLBACK_VALOR_TONELADA);
-        }
-      } else if (colPeso !== '') {
-        const totalKg = dadosNorm.reduce((s, d) => s + (Number(encontrarValorColuna(d, colPeso)) || 0), 0);
-        faturamento = totalKg / 1000 * FALLBACK_VALOR_TONELADA;
-      }
-
-      const tonKm = kmTotal > 0 ? pesoTotalTon / kmTotal : 0;
-      let totalColetores = qtdColetores;
-      if (colNroColetores !== '') {
-        totalColetores = dadosNorm.reduce((s, d) => s + (Number(encontrarValorColuna(d, colNroColetores)) || 0), 0);
-      }
-      const prodColetor = totalColetores > 0 ? pesoTotalTon / totalColetores : 0;
-      const kmMedioViagem = viagens > 0 ? kmTotal / viagens : 0;
-      const tonMediaColeta = viagens > 0 ? pesoTotalTon / viagens : 0;
-      const receitaKm = kmTotal > 0 ? faturamento / kmTotal : 0;
-      const receitaHora = horasProdutivas > 0 ? faturamento / horasProdutivas : 0;
+      const colPlaca = metricas.colunasDetectadas.colPlaca;
+      const coletoresList = Array.from(new Set(
+        dadosNorm
+          .map(d => encontrarValorColuna(d, colPlaca))
+          .filter(v => v !== undefined && v !== null && v !== '')
+          .map(v => String(v).trim()),
+      )).sort();
 
       return res.json({
-        viagens,
-        qtdColetores,
-        pesoTotalTon: Math.round(pesoTotalTon * 100) / 100,
-        kmTotal: Math.round(kmTotal * 100) / 100,
-        horasProdutivas: Math.round(horasProdutivas * 100) / 100,
-        horasMediaRotas: viagens > 0 ? Math.round((horasProdutivas / viagens) * 100) / 100 : 0,
-        faturamento: Math.round(faturamento * 100) / 100,
-        fatPorTipo,
-        tonKm: Math.round(tonKm * 10000) / 10000,
-        prodColetor: Math.round(prodColetor * 100) / 100,
-        kmMedioViagem: Math.round(kmMedioViagem * 100) / 100,
-        tonMediaColeta: Math.round(tonMediaColeta * 100) / 100,
-        receitaKm: Math.round(receitaKm * 100) / 100,
-        receitaHora: Math.round(receitaHora * 100) / 100,
-        temValor,
+        viagens: metricas.viagens,
+        qtdColetores: metricas.qtdColetores,
+        pesoTotalTon: metricas.pesoTotalTon,
+        kmTotal: metricas.kmTotal,
+        horasProdutivas: metricas.horasProdutivas,
+        horasMediaRotas: metricas.viagens > 0
+          ? Math.round((metricas.horasProdutivas / metricas.viagens) * 100) / 100
+          : 0,
+        faturamento: metricas.faturamento,
+        fatPorTipo: metricas.fatPorTipo,
+        tonKm: metricas.tonKm,
+        prodColetor: metricas.prodColetor,
+        kmMedioViagem: metricas.kmMedioViagem,
+        tonMediaColeta: metricas.tonMediaColeta,
+        receitaKm: metricas.receitaKm,
+        receitaHora: metricas.receitaHora,
+        temValor: metricas.temValor,
         coletoresList,
       });
     } catch (error: any) {
@@ -1621,7 +2929,7 @@ export class ServicoController {
         return res.status(400).json({ error: 'Lista de KPIs e obrigatoria' });
       }
 
-      const dados = await PlanilhaService.getDadosBrutosPorServico(id, 999999);
+      const dados = await obterDadosServicoComCache(id, LIMITE_DADOS_MAX);
       const [contract, servico] = await Promise.all([
         this.contractRepo.findOne({ where: { id: contractId } }),
         this.repository.findOne({ where: { id } }),
@@ -1643,9 +2951,12 @@ export class ServicoController {
           // Merge valores fixos
           const todosValoresFixos = { ...valoresFixosContrato, ...(kpi.valoresFixos || {}) };
 
-          if (kpi.expressao && kpi.expressao.trim()) {
+          let expressaoKpi = resolverExpressaoKpiViagensRealizadas(kpi, kpi.expressao || '');
+          expressaoKpi = resolverExpressaoKpiContadorViagens(kpi, expressaoKpi);
+          expressaoKpi = resolverExpressaoKpiColetoresEquipe(kpi, expressaoKpi);
+          if (expressaoKpi && expressaoKpi.trim()) {
             // KPI com formula > usa FormulaEngine completo
-            const resultado = calcularExpressao(kpi.expressao, {
+            const resultado = calcularExpressao(expressaoKpi, {
               dados: dadosNorm,
               valoresFixos: todosValoresFixos,
               debug: debug,
@@ -1714,20 +3025,37 @@ export class ServicoController {
   }): Record<string, any>[] {
     let resultados = [...dados];
 
+    const obterDataLinha = (d: Record<string, any>): Date | null => {
+      const candidatosPrioritarios = ['dataSaida', 'DATA SAIDA', 'DATA_SAIDA', 'DATA SAÍDA', 'DATA'];
+      for (const nome of candidatosPrioritarios) {
+        const val = d[nome] ?? encontrarValorColuna(d, nome);
+        if (val !== null && val !== undefined && val !== '') {
+          const parsed = parseDataPlanilha(val);
+          if (parsed) return parsed;
+          const data = val instanceof Date ? val : new Date(val);
+          if (!isNaN(data.getTime())) return data;
+        }
+      }
+      for (const chave of Object.keys(d)) {
+        const chaveNorm = normalizarChaveColuna(chave);
+        if (chaveNorm.includes('DATA') || chaveNorm.includes('DIA')) {
+          const val = d[chave];
+          if (val) {
+            const parsed = parseDataPlanilha(val);
+            if (parsed) return parsed;
+            const data = val instanceof Date ? val : new Date(val);
+            if (!isNaN(data.getTime())) return data;
+          }
+        }
+      }
+      return null;
+    };
+
     if (filtros.dataInicio) {
       const inicio = new Date(filtros.dataInicio);
       resultados = resultados.filter(d => {
-        for (const chave of Object.keys(d)) {
-          const chaveNorm = chave.toUpperCase().replace(/\s+/g, '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-          if (chaveNorm.includes('DATA') || chaveNorm.includes('DIA')) {
-            const val = d[chave];
-            if (val) {
-              const data = val instanceof Date ? val : new Date(val);
-              if (!isNaN(data.getTime()) && data >= inicio) return true;
-            }
-          }
-        }
-        return true;
+        const data = obterDataLinha(d);
+        return data !== null && data >= inicio;
       });
     }
 
@@ -1735,86 +3063,63 @@ export class ServicoController {
       const fim = new Date(filtros.dataFim);
       fim.setHours(23, 59, 59, 999);
       resultados = resultados.filter(d => {
-        for (const chave of Object.keys(d)) {
-          const chaveNorm = chave.toUpperCase().replace(/\s+/g, '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-          if (chaveNorm.includes('DATA') || chaveNorm.includes('DIA')) {
-            const val = d[chave];
-            if (val) {
-              const data = val instanceof Date ? val : new Date(val);
-              if (!isNaN(data.getTime()) && data <= fim) return true;
-            }
-          }
-        }
-        return true;
+        const data = obterDataLinha(d);
+        return data !== null && data <= fim;
       });
     }
 
     if (filtros.placa) {
-      const placaFiltro = filtros.placa.toUpperCase().trim();
       resultados = resultados.filter(d => {
         for (const chave of Object.keys(d)) {
-          const chaveNorm = chave.toUpperCase().replace(/\s+/g, '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-          if (chaveNorm.includes('PLACA') || chaveNorm.includes('CAMINHAO') || chaveNorm.includes('VEICULO') || chaveNorm === 'PLACA') {
-            const val = String(d[chave] || '').toUpperCase().trim();
-            if (val.includes(placaFiltro)) return true;
+          const chaveNorm = normalizarChaveColuna(chave);
+          if (chaveNorm.includes('PLACA') || chaveNorm.includes('VEICULO')) {
+            if (valorCorrespondeFiltro(d[chave], filtros.placa!)) return true;
           }
         }
-        return true;
+        return false;
       });
     }
 
     if (filtros.regional) {
-      const regionalFiltro = filtros.regional.toUpperCase().trim();
       resultados = resultados.filter(d => {
         for (const chave of Object.keys(d)) {
-          const chaveNorm = chave.toUpperCase().replace(/\s+/g, '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+          const chaveNorm = normalizarChaveColuna(chave);
           if (chaveNorm.includes('REGIONAL') || chaveNorm.includes('REGIAO')) {
-            const val = String(d[chave] || '').toUpperCase().trim();
-            if (val.includes(regionalFiltro)) return true;
+            if (valorCorrespondeFiltro(d[chave], filtros.regional!)) return true;
           }
         }
-        return true;
+        return false;
       });
     }
 
     if (filtros.tipoCaminhao) {
-      const tipoFiltro = filtros.tipoCaminhao.toUpperCase().trim();
       resultados = resultados.filter(d => {
         for (const chave of Object.keys(d)) {
-          const chaveNorm = chave.toUpperCase().replace(/\s+/g, '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-          if (chaveNorm.includes('CAMINHAO') || chaveNorm.includes('TIPO') || chaveNorm.includes('CAMINHÃO')) {
-            const val = String(d[chave] || '').toUpperCase().trim();
-            if (val.includes(tipoFiltro)) return true;
+          const chaveNorm = normalizarChaveColuna(chave);
+          if (chaveNorm.includes('TIPO') && chaveNorm.includes('CAMINHAO')) {
+            if (valorCorrespondeFiltro(d[chave], filtros.tipoCaminhao!)) return true;
           }
         }
-        return true;
+        return false;
       });
     }
 
     if (filtros.filtrosDinamicos && Object.keys(filtros.filtrosDinamicos).length > 0) {
       for (const [nomeColuna, valorFiltro] of Object.entries(filtros.filtrosDinamicos)) {
         if (!valorFiltro) continue;
-
-        const valorNorm = valorFiltro.toUpperCase().trim();
         resultados = resultados.filter(d => {
           let valorDado: any = d[nomeColuna];
-          
           if (valorDado === undefined || valorDado === null) {
-            const nomeColunaNorm = nomeColuna.trim().toUpperCase()
-              .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, '');
+            const nomeColunaNorm = normalizarChaveColuna(nomeColuna);
             for (const [k, v] of Object.entries(d)) {
-              const kNorm = k.trim().toUpperCase()
-                .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, '');
-              if (kNorm === nomeColunaNorm) {
+              if (normalizarChaveColuna(k) === nomeColunaNorm) {
                 valorDado = v;
                 break;
               }
             }
           }
-
           if (valorDado === undefined || valorDado === null || valorDado === '') return false;
-          const dadoNorm = String(valorDado).toUpperCase().trim();
-          return dadoNorm === valorNorm || dadoNorm.includes(valorNorm);
+          return valorCorrespondeFiltro(valorDado, valorFiltro);
         });
       }
     }
@@ -1823,54 +3128,228 @@ export class ServicoController {
   }
 
   /**
+   * GET /api/dashboard/diagnostico-servicos
+   * Audita todos os serviços e explica por que o dashboard pode estar vazio.
+   */
+  async getDiagnosticoTodosServicos(_req: Request, res: Response): Promise<any> {
+    try {
+      const [contratos, todosServicos] = await Promise.all([
+        this.contractRepo.find({ order: { numeroContrato: 'ASC' } }),
+        this.repository.find({ order: { nome: 'ASC' } }),
+      ]);
+      const contractMap = new Map(contratos.map(c => [c.id, c]));
+      const servicos = todosServicos.filter(s => contractMap.has(s.contract_id));
+      const ids = servicos.map(s => s.id);
+
+      const [contagens, ultimosUploads, uploadsPorServico] = await Promise.all([
+        ids.length ? PlanilhaService.getContagemRegistrosPorServicos(ids) : Promise.resolve(new Map()),
+        ids.length ? PlanilhaService.getUltimosUploadsPorServicos(ids) : Promise.resolve(new Map()),
+        ids.length
+          ? this.uploadRepo.find({ where: { servico_id: In(ids) }, select: ['id', 'servico_id', 'nomeArquivo', 'linhasImportadas', 'criadoEm'] })
+          : Promise.resolve([]),
+      ]);
+
+      const uploadsMap = new Map<string, PlanilhaUpload[]>();
+      for (const u of uploadsPorServico) {
+        if (!u.servico_id) continue;
+        const lista = uploadsMap.get(u.servico_id) || [];
+        lista.push(u);
+        uploadsMap.set(u.servico_id, lista);
+      }
+
+      const itens = await mapComLimite(servicos, ENDPOINTS_PESADOS_CONCURRENCY, async (servico) => {
+        const contract = contractMap.get(servico.contract_id)!;
+        const cont = contagens.get(servico.id) || { total: 0, validos: 0 };
+        const nColunas = servico.padraoPlanilha?.colunas?.length ?? 0;
+        const kpisCfg = (servico.configDashboard?.kpis || []).filter((k: any) => k.ativo !== false);
+        const grafCfg = (servico.configDashboard?.graficos || []).filter((g: any) => g.ativo !== false);
+        const uploads = uploadsMap.get(servico.id) || [];
+        const motivos: string[] = [];
+        const acoes: string[] = [];
+
+        if (uploads.length === 0) {
+          motivos.push('Nenhum upload vinculado a este serviço (servico_id ausente no envio da planilha).');
+          acoes.push('Faça upload pela aba Dados do serviço, não pelo contrato genérico.');
+        }
+        if (cont.total === 0 && uploads.length > 0) {
+          motivos.push('Upload existe mas nenhum registro foi importado (planilha vazia ou erro na importação).');
+        }
+        if (cont.total > 0 && cont.validos === 0) {
+          motivos.push('Registros importados, mas nenhum passou na validação (data, KM Total e Peso Total obrigatórios).');
+          acoes.push('Revise o relatório de qualidade / inconsistências de viagens.');
+        }
+        if (nColunas === 0 && cont.total > 0) {
+          motivos.push('Dados no banco, mas padrão de colunas (padraoPlanilha) não foi salvo — Visão Geral pode ocultar o serviço.');
+          acoes.push('Abra o serviço uma vez ou reenvie a planilha pelo fluxo do serviço.');
+        }
+        if (kpisCfg.length === 0 && servico.tipo !== TipoServico.COLETA_CAMINHAO) {
+          motivos.push('Nenhum KPI ativo na configuração do dashboard.');
+          acoes.push('Aplique o Modelo Executivo ou configure indicadores.');
+        }
+
+        let viagensKpi: string | null = null;
+        let kpisComValor = 0;
+        if (cont.validos > 0) {
+          try {
+            const kpiResp = await this.calcularKpisParaComparacao(contract.id, servico, contract, {}, 20);
+            kpisComValor = kpiResp.kpis.filter(k => k.valor != null && k.valor > 0).length;
+            viagensKpi = kpiResp.kpis.find(k => /viagens/i.test(k.nome))?.formatado ?? null;
+            if (kpisComValor === 0) {
+              motivos.push('Dados válidos existem, mas fórmulas dos KPIs não retornaram valores (colunas não encontradas).');
+              acoes.push('Reaplique gráficos/KPIs padrão ou re-resolva placeholders na configuração.');
+            }
+          } catch {
+            motivos.push('Erro ao calcular KPIs para diagnóstico.');
+          }
+        }
+
+        const status = motivos.length === 0 && cont.validos > 0 && kpisComValor > 0
+          ? 'ok'
+          : cont.validos > 0 && kpisComValor > 0
+            ? 'alerta'
+            : cont.total > 0
+              ? 'parcial'
+              : 'vazio';
+
+        return {
+          contratoId: contract.id,
+          contratoNome: contract.numeroContrato,
+          servicoId: servico.id,
+          servicoNome: servico.nome,
+          tipo: servico.tipo,
+          status,
+          uploads: uploads.length,
+          colunasDetectadas: nColunas,
+          registrosTotal: cont.total,
+          registrosValidos: cont.validos,
+          kpisAtivos: kpisCfg.length,
+          graficosAtivos: grafCfg.length,
+          kpisComValor,
+          viagensKpi,
+          ultimoUpload: ultimosUploads.get(servico.id)?.toISOString() ?? null,
+          motivos,
+          acoes,
+        };
+      });
+
+      return res.json({
+        total: itens.length,
+        resumo: {
+          ok: itens.filter(i => i.status === 'ok').length,
+          alerta: itens.filter(i => i.status === 'alerta').length,
+          parcial: itens.filter(i => i.status === 'parcial').length,
+          vazio: itens.filter(i => i.status === 'vazio').length,
+        },
+        servicos: itens,
+      });
+    } catch (error: any) {
+      console.error('Erro no diagnostico-servicos:', error?.message || error);
+      return res.status(500).json({ error: 'Erro ao gerar diagnóstico dos dashboards' });
+    }
+  }
+
+  /**
    * GET /api/dashboard/kpis-consolidado
-   * ⚡ OTIMIZADO: usa agregações no banco (COUNT, SUM) em vez de carregar registros
+   * Calcula KPIs reais por serviço (mesma engine de kpi-valores / comparar por tipo)
    */
   async getKpisConsolidado(req: Request, res: Response): Promise<any> {
     try {
-      const contratos = await this.contractRepo.find({
-        order: { numeroContrato: 'ASC' },
+      const modo = (req.query.modo as string) || 'completo';
+      const cacheKey = `kpis-consolidado:${modo}:${JSON.stringify(req.query)}`;
+      const cached = getCache<any>(cacheKey);
+      if (cached) return res.json(cached);
+
+      const [contratos, todosServicos] = await Promise.all([
+        this.contractRepo.find({ order: { numeroContrato: 'ASC' } }),
+        this.repository.find({ order: { nome: 'ASC' } }),
+      ]);
+
+      const contractMap = new Map(contratos.map(c => [c.id, c]));
+      const servicosDoContrato = todosServicos.filter(s => contractMap.has(s.contract_id));
+      const todosIds = servicosDoContrato.map(s => s.id);
+      const [contagens, ultimosUploads] = todosIds.length > 0
+        ? await Promise.all([
+            PlanilhaService.getContagemRegistrosPorServicos(todosIds),
+            PlanilhaService.getUltimosUploadsPorServicos(todosIds),
+          ])
+        : [new Map<string, { total: number; validos: number }>(), new Map<string, Date>()];
+
+      // Inclui serviços com colunas detectadas OU com registros importados (evita sumir da Visão Geral)
+      const servicosElegiveis = servicosDoContrato.filter(s => {
+        const temColunas = (s.padraoPlanilha?.colunas?.length ?? 0) > 0;
+        const temRegistros = (contagens.get(s.id)?.total ?? 0) > 0;
+        return temColunas || temRegistros;
       });
 
-      const resultado: any[] = [];
-
-      for (const contract of contratos) {
-        const servicos = await this.repository.find({
-          where: { contract_id: contract.id },
-          order: { nome: 'ASC' },
-        });
-
-        for (const servico of servicos) {
-          const temPlanilha = servico.padraoPlanilha?.colunas?.length > 0;
-          if (!temPlanilha) continue;
-
-          const totalRegistros = await PlanilhaService.getTotalRegistrosPorServico(servico.id);
-          if (totalRegistros === 0) continue;
-
-          const uploads = await this.uploadRepo.find({
-            where: { servico_id: servico.id },
-            order: { criadoEm: 'DESC' },
-            take: 1,
-          });
-
-          const kpisBasicos = [
-            { nome: 'Registros', valor: totalRegistros, formatado: String(totalRegistros), formato: 'numero' },
-          ];
-
-          resultado.push({
-            id: servico.id,
-            servicoNome: servico.nome,
-            contratoId: contract.id,
-            contratoNome: contract.numeroContrato,
-            kpis: kpisBasicos,
-            totalRegistros,
-            ultimoUpload: uploads[0]?.criadoEm || null,
-            temConfigDashboard: !!servico.configDashboard?.kpis?.length,
-          });
-        }
+      if (servicosElegiveis.length === 0) {
+        const vazio = { servicos: [], modo };
+        setCache(cacheKey, vazio);
+        return res.json(vazio);
       }
 
-      return res.json({ servicos: resultado });
+      const servicosComDados = servicosElegiveis.filter(s => (contagens.get(s.id)?.validos ?? contagens.get(s.id)?.total ?? 0) > 0);
+
+      const montarItemBase = (servico: Servico) => {
+        const contract = contractMap.get(servico.contract_id)!;
+        const cont = contagens.get(servico.id) || { total: 0, validos: 0 };
+        const ultimo = ultimosUploads.get(servico.id);
+        return {
+          id: servico.id,
+          servicoNome: servico.nome,
+          tipoServico: servico.tipo || 'geral',
+          contratoId: contract.id,
+          contratoNome: contract.numeroContrato,
+          totalRegistros: cont.validos || cont.total,
+          ultimoUpload: ultimo ? ultimo.toISOString() : null,
+          temConfigDashboard: !!(
+            servico.configDashboard?.kpis?.length ||
+            servico.tipo === 'coleta_caminhao'
+          ),
+        };
+      };
+
+      if (modo === 'resumo') {
+        const resultado = servicosComDados.map(s => ({
+          ...montarItemBase(s),
+          kpis: [],
+        }));
+        const response = { servicos: resultado, modo: 'resumo' };
+        setCache(cacheKey, response);
+        return res.json(response);
+      }
+
+      const limiteKpis = parseInt(process.env.KPIS_CONSOLIDADO_LIMITE || '8', 10);
+      const concorrencia = KPIS_CONSOLIDADO_CONCURRENCY;
+
+      const resultados = await mapComLimite(servicosComDados, concorrencia, async servico => {
+        const contract = contractMap.get(servico.contract_id)!;
+        const base = montarItemBase(servico);
+        const kpiCalc = await this.calcularKpisParaComparacao(
+          contract.id,
+          servico,
+          contract,
+          req.query as Record<string, any>,
+          limiteKpis,
+        );
+        const kpis = kpiCalc.kpis.map(k => ({
+          id: k.chave,
+          nome: k.nome,
+          valor: k.valor,
+          formatado: k.formatado,
+          formato: k.formato,
+          origem: 'servico' as const,
+        }));
+        return {
+          ...base,
+          kpis,
+          totalRegistros: kpiCalc.totalRegistros || base.totalRegistros,
+          temConfigDashboard: !!(servico.configDashboard?.kpis?.length || kpis.length),
+        };
+      });
+
+      const response = { servicos: resultados, modo: 'completo' };
+      setCache(cacheKey, response);
+      return res.json(response);
     } catch (error: any) {
       console.error('Erro ao buscar kpis-consolidado:', error?.message || error);
       return res.status(500).json({ error: 'Erro ao carregar dados consolidados' });
@@ -1879,50 +3358,56 @@ export class ServicoController {
 
   /**
    * POST /api/contracts/:contractId/servicos/:id/grafico-agregado
-   * ⚡ Agrega dados para gráficos no backend (processa TODOS os registros, sem limite)
+   * ⚡ Agrega dados para um gráfico (usa cache compartilhado de dados)
    */
-    async getGraficoAgregado(req: Request, res: Response): Promise<any> {
+  async getGraficoAgregado(req: Request, res: Response): Promise<any> {
     try {
       const id = req.params.id as string;
       const { eixoX, eixoY, tipo = 'barra', filtros: filtrosBody, topN = 10 } = req.body;
 
       if (!eixoX) {
-        return res.status(400).json({ error: 'eixoX Ã© obrigatÃ³rio' });
+        return res.status(400).json({ error: 'eixoX é obrigatório' });
       }
 
-      const dados = await PlanilhaService.getDadosBrutosPorServico(id, 999999);
-      if (!dados || dados.length === 0) {
-        return res.json({ dados: [], total: 0, mensagem: 'Nenhum dado disponÃ­vel' });
+      const cacheKey = `grafico:${id}:${JSON.stringify({ eixoX, eixoY, tipo, topN, filtros: filtrosBody })}`;
+      const cached = getCache<any>(cacheKey);
+      if (cached) return res.json(cached);
+
+      if (tipo !== 'pizza' && !eixoY) {
+        return res.status(400).json({ error: 'eixoY é obrigatório para gráficos de barra/linha' });
       }
 
-      // Detectar se eixoX Ã© coluna de data
-      let eixoXEhData = false;
-      try {
-        const sv = await this.repository.findOne({ where: { id }, select: ['padraoPlanilha'] as any });
-        if (sv?.padraoPlanilha?.colunas) {
-          const cols: { nome: string; tipo: string }[] = sv.padraoPlanilha.colunas;
-          const norm = (s: string) => s.trim().toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, '');
-          const exNorm = norm(eixoX);
-          for (const c of cols) {
-            if (norm(c.nome) === exNorm && c.tipo === 'data') { eixoXEhData = true; break; }
-          }
-        }
-      } catch {}
-      if (!eixoXEhData) {
-        const colNorm = eixoX.trim().toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, '');
-        if (colNorm.includes('DATA') || colNorm.includes('DIA') || colNorm.includes('MES') || colNorm.includes('ANO')) eixoXEhData = true;
-      }
-
-      // Serial Excel -> data formatada
-      const serialParaData = (val: any): string => {
-        if (val === null || val === undefined || val === '') return 'N/A';
-        if (typeof val === 'string' && /^\d{4}-\d{2}-\d{2}/.test(val)) { const d = new Date(val); if (!isNaN(d.getTime())) return d.toLocaleDateString('pt-BR'); }
-        if (typeof val === 'string' && /^\d{2}\/\d{2}\/\d{4}/.test(val)) return val;
-        if (typeof val === 'number' && val > 40000 && val < 60000) { const d = new Date(Date.UTC(1899, 11, 30)); const dt = new Date(d.getTime() + val * 86400000); if (!isNaN(dt.getTime())) return dt.toLocaleDateString('pt-BR'); }
-        if (val instanceof Date && !isNaN(val.getTime())) return val.toLocaleDateString('pt-BR');
-        const d = new Date(val); if (!isNaN(d.getTime())) return d.toLocaleDateString('pt-BR');
-        return String(val);
+      const filtrosSql = {
+        dataInicio: (filtrosBody as any)?.dataInicio as string | undefined,
+        dataFim: (filtrosBody as any)?.dataFim as string | undefined,
       };
+      const temFiltroExtraGraf = !!(
+        (filtrosBody as any)?.placa
+        || (filtrosBody as any)?.regional
+        || (filtrosBody as any)?.tipoCaminhao
+        || (filtrosBody as any)?.filtrosDinamicos
+      );
+
+      if (!temFiltroExtraGraf) {
+        const sqlGraf = await agregarGraficoColetaSql(
+          id,
+          { eixoX, eixoY, tipo, topN },
+          filtrosSql,
+        );
+        if (sqlGraf) {
+          const response = { ...sqlGraf, modo: 'sql' };
+          setCache(cacheKey, response);
+          return res.json(response);
+        }
+      }
+
+      const servico = await this.repository.findOne({ where: { id }, select: ['padraoPlanilha'] as any });
+      const colunasPadrao: { nome: string; tipo: string }[] = servico?.padraoPlanilha?.colunas || [];
+
+      const dados = await obterDadosServicoComCache(id);
+      if (!dados.length) {
+        return res.json({ dados: [], total: 0, mensagem: 'Nenhum dado disponível' });
+      }
 
       let dadosFiltrados = dados;
       if (filtrosBody) {
@@ -1936,79 +3421,105 @@ export class ServicoController {
         });
       }
 
-      const encontrarValor = (dado: Record<string, any>, nomeColuna: string): any => {
-        if (!dado || !nomeColuna) return undefined;
-        if (dado[nomeColuna] !== undefined && dado[nomeColuna] !== null) return dado[nomeColuna];
-        
-        const normalizar = (s: string) => s.trim().toUpperCase().normalize('NFD')
-          .replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, '');
-        const chaveNorm = normalizar(nomeColuna);
-        
-        for (const [k, v] of Object.entries(dado)) {
-          if (v !== null && v !== undefined && normalizar(k) === chaveNorm) return v;
-        }
-        return undefined;
+      const resultado = agregarDadosGrafico(dadosFiltrados, { eixoX, eixoY, tipo, topN }, colunasPadrao);
+      const response = {
+        dados: resultado.dados,
+        total: resultado.total,
+        processados: resultado.processados,
       };
-
-      const serialParaMinutosBackend = (v: any): number => {
-        if (v === null || v === undefined) return 0;
-        if (typeof v === 'string' && /^\d{1,2}:\d{2}/.test(v)) {
-          const [h, m] = v.split(':').map(Number);
-          return h * 60 + (m || 0);
-        }
-        if (typeof v === 'number' && v > 0 && v < 1) {
-          return Math.round(v * 24 * 60);
-        }
-        if (typeof v === 'number') return Math.round(v);
-        return Number(v) || 0;
-      };
-
-      let agregado: { name: string; value: number }[] = [];
-
-      if (tipo === 'pizza') {
-        const contagem: Record<string, number> = {};
-        for (const d of dadosFiltrados) {
-          const rawKey = encontrarValor(d, eixoX);
-          const key = eixoXEhData ? serialParaData(rawKey) : String(rawKey || 'N/A');
-          contagem[key] = (contagem[key] || 0) + 1;
-        }
-        agregado = Object.entries(contagem)
-          .sort((a, b) => b[1] - a[1])
-          .slice(0, topN)
-          .map(([name, value]) => ({ name, value }));
-      } else {
-        if (!eixoY) {
-          return res.status(400).json({ error: 'eixoY Ã© obrigatÃ³rio para grÃ¡ficos de barra/linha' });
-        }
-
-        const nomeUpperY = eixoY.toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-        const isHoraY = nomeUpperY.includes('HORA') || nomeUpperY.includes('HORAR') ||
-          nomeUpperY.includes('TEMPO') || nomeUpperY.includes('DURACAO') ||
-          nomeUpperY.includes('MINUT') || nomeUpperY.includes('ENTRADA') ||
-          nomeUpperY.includes('SAIDA') || nomeUpperY.includes('CHEGADA');
-
-        const somas: Record<string, number> = {};
-        for (const d of dadosFiltrados) {
-          const rawKey = encontrarValor(d, eixoX);
-          const key = eixoXEhData ? serialParaData(rawKey) : String(rawKey || 'N/A');
-          const valRaw = encontrarValor(d, eixoY);
-          const val = isHoraY ? serialParaMinutosBackend(valRaw) : Number(valRaw) || 0;
-          somas[key] = (somas[key] || 0) + val;
-        }
-        agregado = Object.entries(somas)
-          .sort((a, b) => b[1] - a[1])
-          .slice(0, topN)
-          .map(([name, value]) => ({ name, value }));
-      }
-
-      return res.json({
-        dados: agregado,
-        total: dadosFiltrados.length,
-        processados: dadosFiltrados.length,
-      });
+      setCache(cacheKey, response);
+      return res.json(response);
     } catch (error: any) {
       console.error('Erro no getGraficoAgregado:', error?.message || error);
-      return res.status(500).json({ error: 'Erro ao agregar dados do grÃ¡fico' });
+      return res.status(500).json({ error: 'Erro ao agregar dados do gráfico' });
+    }
+  }
+
+  /**
+   * POST /api/contracts/:contractId/servicos/:id/graficos-agregados
+   * ⚡ Agrega TODOS os gráficos em uma única leitura do banco (ideal para Docker/máquinas fracas)
+   */
+  async getGraficosAgregadosBatch(req: Request, res: Response): Promise<any> {
+    try {
+      const id = req.params.id as string;
+      const { graficos, filtros: filtrosBody } = req.body as {
+        graficos?: Array<GraficoAgregacaoInput & { idx?: number }>;
+        filtros?: Record<string, unknown>;
+      };
+
+      if (!graficos?.length) {
+        return res.status(400).json({ error: 'Lista de gráficos é obrigatória' });
+      }
+
+      const cacheKey = `graficos-batch:${id}:${JSON.stringify({ graficos, filtros: filtrosBody })}`;
+      const cached = getCache<any>(cacheKey);
+      if (cached) return res.json(cached);
+
+      const filtrosSql = {
+        dataInicio: (filtrosBody as any)?.dataInicio as string | undefined,
+        dataFim: (filtrosBody as any)?.dataFim as string | undefined,
+      };
+      const temFiltroExtraBatch = !!(
+        (filtrosBody as any)?.placa
+        || (filtrosBody as any)?.regional
+        || (filtrosBody as any)?.tipoCaminhao
+        || (filtrosBody as any)?.filtrosDinamicos
+      );
+
+      const graficosComTopN = graficos.map(g => ({
+        ...g,
+        topN: g.topN ?? (g.tipo === 'pizza' ? 8 : 10),
+      }));
+
+      // Tenta SQL por gráfico; se todos resolverem, evita materializar 20k linhas
+      if (!temFiltroExtraBatch) {
+        const sqlResults = await Promise.all(
+          graficosComTopN.map(async (g, i) => {
+            const r = await agregarGraficoColetaSql(
+              id,
+              { eixoX: g.eixoX, eixoY: g.eixoY, tipo: g.tipo, topN: g.topN },
+              filtrosSql,
+            );
+            return r ? { idx: g.idx ?? i, dados: r.dados, modo: 'sql' as const } : null;
+          }),
+        );
+        if (sqlResults.every((r) => r != null)) {
+          const response = { graficos: sqlResults, total: 0, modo: 'sql' };
+          setCache(cacheKey, response);
+          return res.json(response);
+        }
+      }
+
+      const servico = await this.repository.findOne({ where: { id }, select: ['padraoPlanilha'] as any });
+      const colunasPadrao: { nome: string; tipo: string }[] = servico?.padraoPlanilha?.colunas || [];
+
+      const dados = await obterDadosServicoComCache(id);
+      if (!dados.length) {
+        return res.json({
+          graficos: graficos.map((g, i) => ({ idx: g.idx ?? i, dados: [] })),
+          total: 0,
+        });
+      }
+
+      let dadosFiltrados = dados;
+      if (filtrosBody) {
+        dadosFiltrados = this.aplicarFiltros(dados, {
+          dataInicio: (filtrosBody as any).dataInicio,
+          dataFim: (filtrosBody as any).dataFim,
+          placa: (filtrosBody as any).placa,
+          regional: (filtrosBody as any).regional,
+          tipoCaminhao: (filtrosBody as any).tipoCaminhao,
+          filtrosDinamicos: (filtrosBody as any).filtrosDinamicos,
+        });
+      }
+
+      const resultados = agregarGraficosEmLote(dadosFiltrados, graficosComTopN, colunasPadrao);
+      const response = { graficos: resultados, total: dadosFiltrados.length };
+      setCache(cacheKey, response);
+      return res.json(response);
+    } catch (error: any) {
+      console.error('Erro no getGraficosAgregadosBatch:', error?.message || error);
+      return res.status(500).json({ error: 'Erro ao agregar gráficos em lote' });
     }
   }
 async getModeloExecutivo(req: Request, res: Response): Promise<any> {
@@ -2031,6 +3542,9 @@ async getModeloExecutivo(req: Request, res: Response): Promise<any> {
         valoresContrato['VALOR_MINI'] = contract.valorMini ? Number(contract.valorMini) : null;
         valoresContrato['VALOR_TRUCK'] = contract.valorTruck ? Number(contract.valorTruck) : null;
         valoresContrato['VALOR_TOCO'] = contract.valorToco ? Number(contract.valorToco) : null;
+        valoresContrato['VALOR_BASCULANTE'] = contract.valorBasculante
+          ? Number(contract.valorBasculante)
+          : null;
       }
 
       const kpisAtuais = servico.configDashboard?.kpis || [];
@@ -2073,6 +3587,7 @@ async getModeloExecutivo(req: Request, res: Response): Promise<any> {
       if (contract?.valorMini) valoresFixos['VALOR_MINI'] = Number(contract.valorMini);
       if (contract?.valorTruck) valoresFixos['VALOR_TRUCK'] = Number(contract.valorTruck);
       if (contract?.valorToco) valoresFixos['VALOR_TOCO'] = Number(contract.valorToco);
+      if (contract?.valorBasculante) valoresFixos['VALOR_BASCULANTE'] = Number(contract.valorBasculante);
 
       const colunas = servico.padraoPlanilha?.colunas || [];
       const colunasNomes = colunas.map((c: any) => c.nome);
@@ -2115,7 +3630,7 @@ async getModeloExecutivo(req: Request, res: Response): Promise<any> {
         const kpisExistentes: any[] = servico.configDashboard?.kpis || [];
         const nomesExistentes = new Set(kpisExistentes.map((k: any) => k.nome));
         const kpisParaAdicionar = novosKpis.filter(k => !nomesExistentes.has(k.nome));
-        kpisFinais = [...kpisExistentes, ...kpisParaAdicionar];
+        kpisFinais = deduplicarKpisLista([...kpisExistentes, ...kpisParaAdicionar], { manterInativos: true }).kpis;
       }
 
       servico.configDashboard = {
@@ -2338,18 +3853,48 @@ async getModeloExecutivo(req: Request, res: Response): Promise<any> {
       const id = req.params.id as string;
       const contractId = req.params.contractId as string;
 
+      let filtrosDinamicos: Record<string, string> | undefined;
+      if (req.query.filtrosDinamicos) {
+        try {
+          const parsed = JSON.parse(String(req.query.filtrosDinamicos));
+          if (parsed && typeof parsed === 'object') filtrosDinamicos = parsed;
+        } catch { /* ignora JSON inválido */ }
+      }
+
       const filtros = {
         dataInicio: req.query.dataInicio as string | undefined,
         dataFim: req.query.dataFim as string | undefined,
         placa: req.query.placa as string | undefined,
         tipoCaminhao: req.query.tipoCaminhao as string | undefined,
+        filtrosDinamicos,
       };
 
-      const dados = await PlanilhaService.getDadosBrutosPorServico(id, 999999);
+      const emptyRankings = {
+        motoristas: { melhores: [], piores: [] },
+        coletores: { melhores: [], piores: [] },
+        rotas: { melhores: [], piores: [] },
+      };
+
+      const temFiltroExtra = !!(filtros.placa || filtros.tipoCaminhao
+        || (filtros.filtrosDinamicos && Object.keys(filtros.filtrosDinamicos).length));
+
+      // Caminho SQL (escala 600k+) quando não há filtros extras
+      if (!temFiltroExtra) {
+        const sqlRank = await getRankingsColetaSql(id, {
+          dataInicio: filtros.dataInicio,
+          dataFim: filtros.dataFim,
+          topN: 100,
+        });
+        return res.json(sqlRank);
+      }
+
+      const dados = await obterDadosServicoComCache(id, LIMITE_DADOS_MAX);
       if (!dados || dados.length === 0) {
         return res.json({
           motoristas: [],
+          coletores: [],
           rotas: [],
+          rankings: emptyRankings,
           metadados: { totalViagens: 0, totalTonelagem: 0, totalKm: 0 },
         });
       }
@@ -2358,7 +3903,9 @@ async getModeloExecutivo(req: Request, res: Response): Promise<any> {
       if (!dadosFiltrados || dadosFiltrados.length === 0) {
         return res.json({
           motoristas: [],
+          coletores: [],
           rotas: [],
+          rankings: emptyRankings,
           metadados: { totalViagens: 0, totalTonelagem: 0, totalKm: 0 },
         });
       }
@@ -2375,10 +3922,7 @@ async getModeloExecutivo(req: Request, res: Response): Promise<any> {
       const colHora = detectarColuna(dadosNorm, ['HORAS FORA UNIDADE', 'HORAS_FORA_UNIDADE', 'horasForaUnidade', 'TEMPO FORA', 'HORAS', 'HORAS PRODUTIVAS', 'tempoForaUnidade', 'HORA SAIDA', 'HORA SÁIDA BASE', 'HORASAIDABASE', 'HORA CHEGADA BASE', 'HORACHEGADABASE']);
       const colHoraSaida = detectarColuna(dadosNorm, ['HORA SAIDA', 'HORASAIDA', 'HORA_SAIDA', 'horaSaida', 'HORA SÁIDA BASE', 'HORASAIDABASE', 'HORA SAIDA BASE', 'HR SAIDA BASE']);
       const colHoraChegada = detectarColuna(dadosNorm, ['HORA CHEGADA', 'HORACHEGADA', 'HORA_CHEGADA', 'horaChegada', 'HORA CHEGADA BASE', 'HORACHEGADABASE', 'HR CHEGA BASE']);
-      const colRota = detectarColuna(dadosNorm, [
-        'ROTA', 'REGIONAL', 'REGIAO', 'DESTINO', 'ORIGEM', 'LOCAL',
-        'LOCALIDADE', 'CIDADE', 'ROTA/DESTINO', 'DIRETORIA', 'FILIAL',
-      ]);
+      const colRota = detectarColunaRankingRotas(dadosNorm);
 
       const temMotorista = colMotorista !== colPlaca;
 
@@ -2416,7 +3960,7 @@ async getModeloExecutivo(req: Request, res: Response): Promise<any> {
         const placaVal = String(encontrarValorColuna(d, colPlaca) || '').trim();
         if (placaVal) entry.placas.add(placaVal);
 
-        entry.viagens += 1;
+        entry.viagens += contarViagensPorRotaRegistro(d);
         entry.pesoTotal += Number(encontrarValorColuna(d, colPeso)) || 0;
         entry.kmTotal += Number(encontrarValorColuna(d, colKm)) || 0;
 
@@ -2494,7 +4038,7 @@ async getModeloExecutivo(req: Request, res: Response): Promise<any> {
             });
           }
           const entry = rotaMap.get(chaveRota)!;
-          entry.viagens += 1;
+          entry.viagens += contarViagensPorRotaRegistro(d);
           entry.pesoTotal += Number(encontrarValorColuna(d, colPeso)) || 0;
           entry.kmTotal += Number(encontrarValorColuna(d, colKm)) || 0;
         }
@@ -2514,19 +4058,37 @@ async getModeloExecutivo(req: Request, res: Response): Promise<any> {
           .sort((a, b) => b.tonelagem - a.tonelagem);
       }
 
-      const totalViagens = dadosFiltrados.length;
+      const coletores = agregarRankingColetores(
+        dadosNorm,
+        colPeso,
+        colKm,
+        contarViagensPorRotaRegistro,
+      );
+
+      const rankings = {
+        motoristas: separarMelhoresPiores(motoristas, (m) => m.tonelagem),
+        coletores: separarMelhoresPiores(coletores, (c) => c.tonelagem),
+        rotas: separarMelhoresPiores(rotas, (r) => r.tonelagem),
+      };
+
+      const totalViagens = contarViagensValidadas(dadosNorm);
       const totalTonelagem = dadosNorm.reduce((s, d) => s + (Number(encontrarValorColuna(d, colPeso)) || 0), 0) / 1000;
       const totalKm = dadosNorm.reduce((s, d) => s + (Number(encontrarValorColuna(d, colKm)) || 0), 0);
 
       return res.json({
         motoristas,
+        coletores,
         rotas,
+        rankings,
         metadados: {
           totalViagens,
           totalTonelagem: Math.round(totalTonelagem * 100) / 100,
           totalKm: Math.round(totalKm * 100) / 100,
           temMotorista,
           temRota,
+          temColetores: coletores.length > 0,
+          colunaRota: colRota || null,
+          colunaRotaLabel: colRota ? labelColunaRankingRotas(colRota) : null,
         },
       });
     } catch (error: any) {
@@ -2556,6 +4118,7 @@ async getModeloExecutivo(req: Request, res: Response): Promise<any> {
             TRUCK: null,
             TOCO: null,
             MINI: null,
+            BASCULANTE: null,
             km_linear: null,
             m2: null,
             por_arvore: null,
@@ -2597,6 +4160,110 @@ async getModeloExecutivo(req: Request, res: Response): Promise<any> {
   }
 
   /**
+   * GET /api/contracts/:contractId/servicos/:id/resumo-ciclo-por-dia
+   * Agregação SQL por dia (rotas + viagens) — fonte confiável para a tabela do ciclo.
+   */
+  async getResumoCicloPorDia(req: Request, res: Response): Promise<any> {
+    try {
+      const id = req.params.id as string;
+      const servico = await this.repository.findOne({ where: { id } });
+      if (!servico) {
+        return res.status(404).json({ error: 'Servico nao encontrado' });
+      }
+
+      const dataInicio = req.query.dataInicio as string | undefined;
+      const dataFim = req.query.dataFim as string | undefined;
+      if (!dataInicio || !dataFim) {
+        return res.status(400).json({ error: 'dataInicio e dataFim sao obrigatorios' });
+      }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dataInicio) || !/^\d{4}-\d{2}-\d{2}$/.test(dataFim)) {
+        return res.status(400).json({ error: 'Datas invalidas. Use YYYY-MM-DD.' });
+      }
+
+      const dias = await PlanilhaService.getMetricasPorDia(id, dataInicio, dataFim);
+      const totais = dias.reduce(
+        (acc, d) => ({
+          rotas: acc.rotas + d.rotas,
+          viagens: acc.viagens + d.viagens,
+          pesoTotalKg: acc.pesoTotalKg + d.pesoTotalKg,
+          kmTotal: acc.kmTotal + d.kmTotal,
+          areaM2: acc.areaM2 + d.areaM2,
+        }),
+        { rotas: 0, viagens: 0, pesoTotalKg: 0, kmTotal: 0, areaM2: 0 },
+      );
+
+      return res.json({
+        dias,
+        totais,
+        dataInicio,
+        dataFim,
+        tipoServico: servico.tipo || null,
+      });
+    } catch (error: any) {
+      console.error('Erro ao buscar resumo ciclo por dia:', error?.message || error);
+      return res.status(500).json({ error: 'Erro ao buscar resumo do ciclo por dia' });
+    }
+  }
+
+  /**
+   * GET /api/contracts/:contractId/servicos/:id/verificacao-viagens
+   * Compara contagem da planilha vs KPIs do dashboard (linhas, contador, fallback).
+   */
+  async getVerificacaoViagens(req: Request, res: Response): Promise<any> {
+    try {
+      const id = req.params.id as string;
+      const servico = await this.repository.findOne({ where: { id } });
+      if (!servico) {
+        return res.status(404).json({ error: 'Servico nao encontrado' });
+      }
+
+      // Roçada não usa contagem de viagens/placa/peso
+      if (servico.tipo === TipoServico.ROCADEIRA || servico.tipo === 'rocadeira') {
+        const contagem = await PlanilhaService.getContagemRegistrosPorServico(id);
+        return res.json({
+          aplicavel: false,
+          tipoServico: servico.tipo,
+          linhasImportadas: contagem.total,
+          totalRegistrosBanco: contagem.total,
+          registrosValidosBanco: contagem.validos,
+          registrosInvalidosBanco: contagem.total - contagem.validos,
+          temDivergencia: false,
+        });
+      }
+
+      const filtros = {
+        dataInicio: req.query.dataInicio as string | undefined,
+        dataFim: req.query.dataFim as string | undefined,
+        placa: req.query.placa as string | undefined,
+        regional: req.query.regional as string | undefined,
+        tipoCaminhao: req.query.tipoCaminhao as string | undefined,
+        uploadId: req.query.uploadId ? parseInt(req.query.uploadId as string, 10) : undefined,
+      };
+
+      const dados = await obterDadosServicoComCache(id, LIMITE_DADOS_MAX);
+      const dadosFiltrados = this.aplicarFiltros(dados || [], filtros);
+      const verificacao = verificarContagemViagens(dadosFiltrados, {
+        dataInicio: filtros.dataInicio,
+        dataFim: filtros.dataFim,
+      });
+
+      const contagem = await PlanilhaService.getContagemRegistrosPorServico(id);
+
+      return res.json({
+        ...verificacao,
+        aplicavel: true,
+        totalRegistrosBanco: contagem.total,
+        registrosValidosBanco: contagem.validos,
+        registrosInvalidosBanco: contagem.total - contagem.validos,
+        truncado: contagem.validos > dadosFiltrados.length,
+      });
+    } catch (error: any) {
+      console.error('Erro na verificacao de viagens:', error?.message || error);
+      return res.status(500).json({ error: 'Erro ao verificar contagem de viagens' });
+    }
+  }
+
+  /**
    * GET /api/contracts/:contractId/servicos/:id/inconsistencias-viagens
    * Resumo de viagens que não entram no dashboard por dados incompletos/inconsistentes.
    */
@@ -2608,12 +4275,174 @@ async getModeloExecutivo(req: Request, res: Response): Promise<any> {
         return res.status(404).json({ error: 'Servico nao encontrado' });
       }
 
-      const revalidar = req.query.revalidar !== '0';
+      // Roçada: nunca revalidar com regras de viagem (invalidaria m² sem placa/KM/peso)
+      if (servico.tipo === TipoServico.ROCADEIRA || servico.tipo === 'rocadeira') {
+        const contagem = await PlanilhaService.getContagemRegistrosPorServico(id);
+        return res.json({
+          aplicavel: false,
+          tipoServico: servico.tipo,
+          totalViagens: contagem.total,
+          viagensValidas: contagem.validos,
+          viagensInconsistentes: Math.max(0, contagem.total - contagem.validos),
+          percentualValido: contagem.total > 0
+            ? Math.round((contagem.validos / contagem.total) * 1000) / 10
+            : 100,
+          impactoDashboard: 'Serviço de roçada: validação de viagem (placa/KM/peso) não se aplica.',
+          resumoPorMotivo: [],
+          amostra: [],
+        });
+      }
+
+      // Default: não revalidar (evita scan completo em 600k). Use revalidar=1 só pós-upload.
+      const revalidar = req.query.revalidar === '1';
       const resumo = await ValidacaoViagemService.getResumoInconsistencias(id, revalidar);
-      return res.json(resumo);
+      return res.json({ ...resumo, aplicavel: true });
     } catch (error: any) {
       console.error('Erro ao buscar inconsistencias de viagens:', error?.message || error);
       return res.status(500).json({ error: 'Erro ao buscar inconsistencias de viagens' });
+    }
+  }
+
+  /**
+   * GET /api/contracts/:contractId/servicos/:id/relatorio-sobrecarga-peso
+   * Viagens/rotas com peso acima do limite por tipo de caminhão (Mini, Truck, Toco).
+   */
+  async getRelatorioSobrecargaPeso(req: Request, res: Response): Promise<any> {
+    try {
+      const id = req.params.id as string;
+      const servico = await this.repository.findOne({ where: { id } });
+      if (!servico) {
+        return res.status(404).json({ error: 'Servico nao encontrado' });
+      }
+
+      let filtrosDinamicos: Record<string, string> | undefined;
+      if (req.query.filtrosDinamicos) {
+        try {
+          const parsed = JSON.parse(String(req.query.filtrosDinamicos));
+          if (parsed && typeof parsed === 'object') filtrosDinamicos = parsed;
+        } catch { /* ignora */ }
+      }
+
+      const filtros = {
+        dataInicio: req.query.dataInicio as string | undefined,
+        dataFim: req.query.dataFim as string | undefined,
+        placa: req.query.placa as string | undefined,
+        tipoCaminhao: req.query.tipoCaminhao as string | undefined,
+        filtrosDinamicos,
+      };
+
+      const contractId = req.params.contractId as string | undefined;
+      const contract = contractId
+        ? await AppDataSource.getRepository(Contract).findOne({ where: { id: contractId } })
+        : null;
+      const limitesContrato = extrairOverridesLimites(contract?.configOperacional?.pesoMaximoKg);
+
+      const limitesOverrides: Partial<LimitesPesoKg> = {
+        ...limitesContrato,
+        ...extrairLimitesDeConfig(servico.configFaturamento),
+      };
+      const mini = req.query.pesoMaxMini ? parseInt(String(req.query.pesoMaxMini), 10) : NaN;
+      const toco = req.query.pesoMaxToco ? parseInt(String(req.query.pesoMaxToco), 10) : NaN;
+      const basculante = req.query.pesoMaxBasculante
+        ? parseInt(String(req.query.pesoMaxBasculante), 10)
+        : NaN;
+      const truck = req.query.pesoMaxTruck ? parseInt(String(req.query.pesoMaxTruck), 10) : NaN;
+      if (!Number.isNaN(mini) && mini > 0) limitesOverrides.MINI = mini;
+      if (!Number.isNaN(toco) && toco > 0) limitesOverrides.TOCO = toco;
+      if (!Number.isNaN(basculante) && basculante > 0) limitesOverrides.BASCULANTE = basculante;
+      if (!Number.isNaN(truck) && truck > 0) limitesOverrides.TRUCK = truck;
+
+      const dados = await obterDadosServicoComCache(id, LIMITE_DADOS_MAX);
+      const dadosFiltrados = this.aplicarFiltros(dados || [], filtros);
+
+      const relatorio = gerarRelatorioSobrecargaPeso(dadosFiltrados, limitesOverrides);
+      return res.json(relatorio);
+    } catch (error: any) {
+      console.error('Erro ao gerar relatorio sobrecarga peso:', error?.message || error);
+      return res.status(500).json({ error: 'Erro ao gerar relatorio de sobrecarga de peso' });
+    }
+  }
+
+  /**
+   * GET /api/contracts/:contractId/servicos/:id/ciclos-fechados
+   */
+  async listarCiclosFechados(req: Request, res: Response): Promise<any> {
+    try {
+      const id = req.params.id as string;
+      const servico = await this.repository.findOne({ where: { id } });
+      if (!servico) {
+        return res.status(404).json({ error: 'Servico nao encontrado' });
+      }
+      const ciclos = await listarCiclosFechados(id);
+      return res.json({ ciclos });
+    } catch (error: any) {
+      console.error('Erro ao listar ciclos fechados:', error?.message || error);
+      return res.status(500).json({ error: 'Erro ao listar ciclos fechados' });
+    }
+  }
+
+  /**
+   * GET /api/contracts/:contractId/servicos/:id/ciclos/status?mesReferencia=&anoReferencia=
+   */
+  async getStatusCiclo(req: Request, res: Response): Promise<any> {
+    try {
+      const id = req.params.id as string;
+      const mes = parseInt(String(req.query.mesReferencia), 10);
+      const ano = parseInt(String(req.query.anoReferencia), 10);
+      if (!mes || !ano || mes < 1 || mes > 12 || ano < 2000) {
+        return res.status(400).json({ error: 'mesReferencia e anoReferencia sao obrigatorios' });
+      }
+      const fechado = await cicloEstaFechado(id, mes, ano);
+      return res.json({ mesReferencia: mes, anoReferencia: ano, fechado });
+    } catch (error: any) {
+      console.error('Erro ao consultar status do ciclo:', error?.message || error);
+      return res.status(500).json({ error: 'Erro ao consultar status do ciclo' });
+    }
+  }
+
+  /**
+   * POST /api/contracts/:contractId/servicos/:id/ciclos/fechar
+   * Body: { mesReferencia, anoReferencia }
+   */
+  async fecharCiclo(req: Request, res: Response): Promise<any> {
+    try {
+      const contractId = req.params.contractId as string;
+      const id = req.params.id as string;
+      const mesReferencia = parseInt(String(req.body?.mesReferencia), 10);
+      const anoReferencia = parseInt(String(req.body?.anoReferencia), 10);
+
+      if (!mesReferencia || !anoReferencia || mesReferencia < 1 || mesReferencia > 12 || anoReferencia < 2000) {
+        return res.status(400).json({ error: 'mesReferencia e anoReferencia sao obrigatorios' });
+      }
+
+      const servico = await this.repository.findOne({ where: { id, contract_id: contractId } });
+      if (!servico) {
+        return res.status(404).json({ error: 'Servico nao encontrado' });
+      }
+
+      const resultado = await fecharCicloServico({
+        servicoId: id,
+        contractId,
+        mesReferencia,
+        anoReferencia,
+      });
+
+      invalidarCacheDadosServico(id);
+      invalidarCacheDashboardServico(id);
+
+      return res.json({
+        message: `Ciclo ${resultado.ciclo.label} fechado com sucesso`,
+        ciclo: resultado.ciclo,
+        uploadIds: resultado.uploadIds,
+        totalRegistros: resultado.totalRegistros,
+      });
+    } catch (error: any) {
+      const msg = error?.message || 'Erro ao fechar ciclo';
+      if (msg.includes('já está fechado') || msg.includes('Nenhuma planilha')) {
+        return res.status(400).json({ error: msg });
+      }
+      console.error('Erro ao fechar ciclo:', msg);
+      return res.status(500).json({ error: msg });
     }
   }
 }

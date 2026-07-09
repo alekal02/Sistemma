@@ -96,9 +96,24 @@ export interface ResultadoUpload {
   sucesso: boolean
   planilhaUploadId: number
   totalLinhas: number
-  importadas: number
-  erros: number
+  importadas?: number
+  importados?: number
+  erros?: number
   mensagem: string
+  viagensInconsistentes?: number
+  viagensValidasDashboard?: number
+  viagensCorrigidas?: number
+  consolidacao?: {
+    registrosPreservados: number
+    uploadsRemovidos: number
+    uploadsRemovidosIds: number[]
+    diasPreservados: string[]
+  }
+  resumo?: {
+    viagensInconsistentes?: number
+    viagensValidasDashboard?: number
+    viagensCorrigidas?: number
+  }
 }
 
 const coletaService = {
@@ -116,15 +131,90 @@ const coletaService = {
     return response.data
   },
 
-  /** Faz upload de planilha XLSX */
-  async uploadPlanilha(file: File, servicoId?: string): Promise<ResultadoUpload> {
+  /** Faz upload de planilha XLSX / XLSM */
+  async uploadPlanilha(
+    file: File,
+    servicoId?: string,
+    estrategia?: 'ignorar' | 'substituir' | 'atualizar_data' | 'inserir_data',
+  ): Promise<ResultadoUpload> {
     const formData = new FormData()
     formData.append('planilha', file)
     if (servicoId) formData.append('servico_id', servicoId)
+    if (estrategia) formData.append('estrategia', estrategia)
     const response = await api.post<ResultadoUpload>('/coleta/upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
     return response.data
+  },
+
+  /** Preview multi-modelo de planilha de roçada */
+  async previewRocada(file: File) {
+    const formData = new FormData()
+    formData.append('planilha', file)
+    const { data } = await api.post('/coleta/upload/preview-rocada', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    return data as {
+      sucesso: boolean
+      arquivo?: string
+      mensagem: string
+      modelo: string
+      abasUsadas: string[]
+      avisos: string[]
+      podeImportar?: boolean
+      linhasSemArea?: number
+      semColunaArea?: boolean
+      amostraSemArea?: Array<{
+        aba: string
+        linha: number
+        data: string | null
+        bairro: string | null
+        motivo: string
+      }>
+      resumo: {
+        modelo: string
+        abas: number
+        registros: number
+        areaTotalM2: number
+        dias: number
+        bairros: number
+        linhasSemArea?: number
+        semColunaArea?: boolean
+        podeImportar?: boolean
+      }
+    }
+  },
+
+  /** Conferência diária — planilha vs sistema (por data) */
+  async conferenciaDiaria(file: File, servicoId: string) {
+    const formData = new FormData()
+    formData.append('planilha', file)
+    formData.append('servico_id', servicoId)
+    const { data } = await api.post('/coleta/upload/conferencia-diaria', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    return data as {
+      sucesso: boolean
+      arquivo?: string
+      totalDatasPlanilha: number
+      diasNovos: number
+      diasIguais: number
+      diasDivergentes: number
+      diasBloqueados: number
+      diasSomenteSistema: number
+      temDivergencia: boolean
+      ultimaDataPlanilha: string | null
+      ultimaDataSistema: string | null
+      recomendacao: string
+      dias: Array<{
+        data: string
+        dataBr: string
+        status: 'novo' | 'igual' | 'divergente' | 'bloqueado' | 'somente_sistema'
+        planilha: { rotas: number; viagens: number; pesoKg: number; km: number } | null
+        sistema: { rotas: number; viagens: number; pesoKg: number; km: number } | null
+        diferencas: string[]
+      }>
+    }
   },
 
   /** Lista histórico de uploads */
@@ -222,6 +312,7 @@ const coletaService = {
           semKmTotal: number
           semPlaca: number
           semMotorista: number
+          kmRotaAlto: number
         }
       }
     }>
@@ -230,6 +321,17 @@ const coletaService = {
   /** Gera relatório de qualidade do último upload de um serviço */
   async relatorioQualidadeServico(servicoId: string) {
     const response = await api.get(`/coleta/qualidade/servico/${servicoId}`)
+    return response.data
+  },
+
+  /** Exclui um upload de planilha */
+  async excluirUpload(id: number) {
+    await api.delete(`/coleta/uploads/${id}`)
+  },
+
+  /** Lista uploads de um serviço */
+  async listarUploadsServico(servicoId: string) {
+    const response = await api.get('/coleta/uploads', { params: { servico_id: servicoId } })
     return response.data
   },
 }

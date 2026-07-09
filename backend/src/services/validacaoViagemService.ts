@@ -3,19 +3,175 @@ import { Repository } from 'typeorm';
 import AppDataSource from '../database/data-source';
 import { ColetaData } from '../entities/ColetaData';
 import { PlanilhaUpload } from '../entities/PlanilhaUpload';
+import { Servico } from '../entities/Servico';
+import { aplicarViagensPorRota, MAX_VIAGENS_POR_REGISTRO } from './viagensPorRotaService';
+import { formatarDataSaida, parseDataPlanilha } from '../utils/formatarDataPlanilha';
+import { colunaEhPlaca, normalizarPlaca, normalizarPlacaOuNull } from '../utils/normalizarPlaca';
+import { linhaSemDadosOperacionaisMinimos } from '../utils/validarPlacaBr';
+import { encontrarValorColuna, parseNumeroBr } from './FormulaEngine';
+import { invalidarCacheDadosServico } from './servicoDadosCache';
+import { COLUNAS_HODOMETRO } from '../config/modeloColetaCaminhao';
 
 export interface ResultadoValidacaoViagem {
   validoDashboard: boolean;
+  /** Sem placa, KM Total e Peso Total — linha descartada silenciosamente na importação */
+  descartada?: boolean;
   motivos: string[];
   kmEfetivo: number | null;
   pesoEfetivo: number | null;
+  /** Ajustes automáticos aplicados antes da validação final */
+  correcoes?: string[];
 }
+
+/** KM acima deste limite não entra no dashboard (viagem atípica / erro de planilha) */
+export const MAX_KM_DASHBOARD = 300;
+
+/** Hodômetro de base/rota costuma ser > 1000; distância operacional fica abaixo de MAX_KM_DASHBOARD */
+function kmDistanciaPlausivel(km: number): boolean {
+  return !isNaN(km) && km > 0 && km <= MAX_KM_DASHBOARD;
+}
+
+/** Critérios obrigatórios para viagem entrar no dashboard */
+export const REGRAS_VIAGEM_DASHBOARD = [
+  'Data de saída preenchida e válida',
+  'KM Total preenchido (coluna KM TOTAL > 0)',
+  'Peso Total > 0, ou retorno à base sem pesagem (placa + motorista + KM ok, peso zerado)',
+  `KM Total até ${MAX_KM_DASHBOARD} km`,
+  'Sem valores negativos em KM ou peso',
+  'Horas no formato HH:MM (use ":", não ";")',
+] as const;
 
 const CAMPOS_KM = ['kmTotal', 'kmSaida', 'kmChegada', 'kmRota1', 'kmRota2', 'kmRota3', 'kmRota4'] as const;
 const CAMPOS_PESO = ['pesoTotal', 'peso1', 'peso2', 'peso3', 'peso4', 'peso5'] as const;
 
 function normalizarChave(s: string): string {
   return s.toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, '');
+}
+
+function registroUnificado(coleta: Partial<ColetaData>): Record<string, any> {
+  const raw: Record<string, any> = { ...(coleta as Record<string, any>) };
+  if (coleta.dados && typeof coleta.dados === 'object') {
+    for (const [k, v] of Object.entries(coleta.dados)) {
+      if (v !== null && v !== undefined && v !== '') {
+        raw[k] = v;
+      }
+    }
+  }
+  return raw;
+}
+
+/** Postgres/TypeORM pode devolver dataSaida como string — normaliza para Date */
+function normalizarDataSaida(val: Date | string | null | undefined): Date | null {
+  if (val === null || val === undefined || val === '') return null;
+  if (val instanceof Date && !isNaN(val.getTime())) return val;
+  const parsed = parseDataPlanilha(val);
+  if (parsed && !isNaN(parsed.getTime())) return parsed;
+  return null;
+}
+
+/** Preenche campos tipados a partir de coleta.dados (planilhas com nomes de coluna variados) */
+export function enriquecerCamposColeta(coleta: ColetaData): void {
+  const raw = registroUnificado(coleta);
+
+  if (coleta.kmTotal === null || coleta.kmTotal === undefined || coleta.kmTotal <= 0) {
+    const km = parseNumeroBr(encontrarValorColuna(raw, 'KM TOTAL'));
+    if (kmDistanciaPlausivel(km)) coleta.kmTotal = km;
+  }
+
+  if (coleta.pesoTotal === null || coleta.pesoTotal === undefined || coleta.pesoTotal <= 0) {
+    const peso = parseNumeroBr(encontrarValorColuna(raw, 'PESO TOTAL'));
+    if (!isNaN(peso) && peso > 0) coleta.pesoTotal = peso;
+  }
+
+  for (let i = 1; i <= 5; i++) {
+    const field = `peso${i}` as keyof ColetaData;
+    if (coleta[field] === null || coleta[field] === undefined) {
+      const p = parseNumeroBr(encontrarValorColuna(raw, `PESO ${i}`));
+      if (!isNaN(p) && p > 0) (coleta as any)[field] = p;
+    }
+  }
+
+  if (!coleta.regional?.trim()) {
+    const r = encontrarValorColuna(raw, 'REGIONAL') ?? encontrarValorColuna(raw, 'REGIAO');
+    if (r) coleta.regional = String(r).trim();
+  }
+
+  if (!coleta.distrito?.trim()) {
+    const d =
+      encontrarValorColuna(raw, 'DISTRITO') ??
+      encontrarValorColuna(raw, 'SETOR') ??
+      encontrarValorColuna(raw, 'BAIRRO');
+    if (d) coleta.distrito = String(d).trim();
+  }
+
+  if (!coleta.placa?.trim()) {
+    const p = encontrarValorColuna(raw, 'PLACA');
+    if (p) coleta.placa = String(p).trim();
+  }
+
+  if (!coleta.motorista?.trim()) {
+    const m = encontrarValorColuna(raw, 'MOTORISTA') ?? encontrarValorColuna(raw, 'OPERADOR');
+    if (m) coleta.motorista = String(m).trim();
+  }
+
+  const dataRaw =
+    encontrarValorColuna(raw, 'DATA SAIDA') ??
+    encontrarValorColuna(raw, 'DATA SAÍDA') ??
+    encontrarValorColuna(raw, 'DATA DE SAIDA') ??
+    encontrarValorColuna(raw, 'DATA');
+  const parsedPlanilha = parseDataPlanilha(dataRaw);
+  if (parsedPlanilha) {
+    coleta.dataSaida = parsedPlanilha;
+  } else {
+    const dataAtual = normalizarDataSaida(coleta.dataSaida);
+    if (dataAtual) coleta.dataSaida = dataAtual;
+  }
+
+  if (coleta.kmSaida === null || coleta.kmSaida === undefined) {
+    for (const alias of ['KM SAIDA BASE', 'KM SAÍDA BASE', ' KM SAIDA BASE ', 'KM SAIDA', 'KM SAÍDA']) {
+      const km = parseNumeroBr(encontrarValorColuna(raw, alias));
+      if (!isNaN(km) && km > 0) {
+        coleta.kmSaida = km;
+        break;
+      }
+    }
+  }
+
+  if (coleta.kmChegada === null || coleta.kmChegada === undefined) {
+    for (const alias of ['KM CHEGADA BASE', ' KM CHEGADA BASE ', 'KM CHEGADA']) {
+      const km = parseNumeroBr(encontrarValorColuna(raw, alias));
+      if (!isNaN(km) && km > 0) {
+        coleta.kmChegada = km;
+        break;
+      }
+    }
+  }
+
+  for (let i = 1; i <= 4; i++) {
+    const kmField = `kmRota${i}` as keyof ColetaData;
+    if (coleta[kmField] === null || coleta[kmField] === undefined) {
+      const km = parseNumeroBr(encontrarValorColuna(raw, `KM ROTA 0${i}`));
+      if (!isNaN(km) && km > 0) (coleta as any)[kmField] = km;
+    }
+  }
+
+  sincronizarPlacaNormalizada(coleta);
+}
+
+/** Unifica placa com/sem hífen — evita contar o mesmo veículo duas vezes. */
+function sincronizarPlacaNormalizada(coleta: ColetaData): void {
+  const raw = registroUnificado(coleta);
+  const bruta = coleta.placa?.trim() || String(encontrarValorColuna(raw, 'PLACA') || '').trim();
+  coleta.placa = normalizarPlacaOuNull(bruta);
+
+  if (!coleta.placa || !coleta.dados || typeof coleta.dados !== 'object') return;
+
+  const dados = coleta.dados as Record<string, unknown>;
+  for (const chave of Object.keys(dados)) {
+    if (colunaEhPlaca(chave)) {
+      dados[chave] = coleta.placa;
+    }
+  }
 }
 
 function somaPositiva(valores: (number | null | undefined)[]): number {
@@ -54,6 +210,15 @@ export function sanitizarViagem(coleta: ColetaData): boolean {
     limpou = true;
   }
 
+  if (
+    coleta.viagensPorRota !== null &&
+    coleta.viagensPorRota !== undefined &&
+    (coleta.viagensPorRota < 0 || coleta.viagensPorRota > MAX_VIAGENS_POR_REGISTRO)
+  ) {
+    coleta.viagensPorRota = null;
+    limpou = true;
+  }
+
   if (coleta.horasForaUnidade !== null && coleta.horasForaUnidade !== undefined && coleta.horasForaUnidade < 0) {
     coleta.horasForaUnidade = null;
     limpou = true;
@@ -67,28 +232,129 @@ export function sanitizarViagem(coleta: ColetaData): boolean {
   return limpou;
 }
 
-function calcularPesoEfetivo(coleta: Partial<ColetaData>): number | null {
-  if (coleta.pesoTotal !== null && coleta.pesoTotal !== undefined && coleta.pesoTotal > 0) {
-    return coleta.pesoTotal;
+/** KM Total explícito (coluna KM TOTAL) — critério principal do dashboard */
+function obterKmTotalPrincipal(coleta: Partial<ColetaData>): number | null {
+  if (coleta.kmTotal !== null && coleta.kmTotal !== undefined && !isNaN(coleta.kmTotal)) {
+    if (kmDistanciaPlausivel(coleta.kmTotal)) return coleta.kmTotal;
   }
-  const soma = somaPositiva([coleta.peso1, coleta.peso2, coleta.peso3, coleta.peso4, coleta.peso5]);
-  return soma > 0 ? soma : null;
+  const raw = registroUnificado(coleta);
+  const kmCol = parseNumeroBr(encontrarValorColuna(raw, 'KM TOTAL'));
+  if (kmDistanciaPlausivel(kmCol)) return kmCol;
+  return null;
 }
 
-function calcularKmEfetivo(coleta: Partial<ColetaData>): number | null {
-  if (coleta.kmTotal !== null && coleta.kmTotal !== undefined && coleta.kmTotal > 0) {
-    return coleta.kmTotal;
+/** Peso Total explícito (coluna PESO TOTAL) — critério principal do dashboard */
+function obterPesoTotalPrincipal(coleta: Partial<ColetaData>): number | null {
+  if (coleta.pesoTotal !== null && coleta.pesoTotal !== undefined && !isNaN(coleta.pesoTotal)) {
+    return coleta.pesoTotal;
   }
+  const raw = registroUnificado(coleta);
+  const pesoCol = parseNumeroBr(encontrarValorColuna(raw, 'PESO TOTAL'));
+  if (!isNaN(pesoCol)) return pesoCol;
+  return null;
+}
+
+function obterDataSaidaPrincipal(coleta: Partial<ColetaData>): Date | null {
+  const normalizada = normalizarDataSaida(coleta.dataSaida);
+  if (normalizada) return normalizada;
+  const raw = registroUnificado(coleta);
+  const dataRaw =
+    encontrarValorColuna(raw, 'DATA SAIDA') ??
+    encontrarValorColuna(raw, 'DATA SAÍDA') ??
+    encontrarValorColuna(raw, 'DATA DE SAIDA') ??
+    encontrarValorColuna(raw, 'DATA');
+  return parseDataPlanilha(dataRaw);
+}
+
+/** KM efetivo com fallbacks (relatórios / diagnóstico — não usado para validar dashboard) */
+function calcularKmEfetivo(coleta: Partial<ColetaData>): number | null {
+  const principal = obterKmTotalPrincipal(coleta);
+  if (principal !== null && principal > 0) return principal;
+
+  const raw = registroUnificado(coleta);
   if (
     coleta.kmSaida !== null && coleta.kmSaida !== undefined &&
     coleta.kmChegada !== null && coleta.kmChegada !== undefined &&
     coleta.kmChegada >= coleta.kmSaida
   ) {
     const diff = coleta.kmChegada - coleta.kmSaida;
-    if (diff > 0) return diff;
+    if (kmDistanciaPlausivel(diff)) return diff;
   }
-  const somaRotas = somaPositiva([coleta.kmRota1, coleta.kmRota2, coleta.kmRota3, coleta.kmRota4]);
+
+  let kmSaida = coleta.kmSaida ?? NaN;
+  let kmChegada = coleta.kmChegada ?? NaN;
+  if (isNaN(kmSaida)) {
+    for (const alias of ['KM SAIDA BASE', 'KM SAÍDA BASE', ' KM SAIDA BASE ', 'KM SAIDA']) {
+      const km = parseNumeroBr(encontrarValorColuna(raw, alias));
+      if (!isNaN(km) && km > 0) { kmSaida = km; break; }
+    }
+  }
+  if (isNaN(kmChegada)) {
+    for (const alias of ['KM CHEGADA BASE', ' KM CHEGADA BASE ', 'KM CHEGADA']) {
+      const km = parseNumeroBr(encontrarValorColuna(raw, alias));
+      if (!isNaN(km) && km > 0) { kmChegada = km; break; }
+    }
+  }
+  if (!isNaN(kmSaida) && !isNaN(kmChegada) && kmChegada >= kmSaida) {
+    const diff = kmChegada - kmSaida;
+    if (kmDistanciaPlausivel(diff)) return diff;
+  }
+
+  const rotas: number[] = [];
+  for (let i = 1; i <= 4; i++) {
+    const tipado = (coleta as any)[`kmRota${i}`];
+    if (tipado !== null && tipado !== undefined && Number(tipado) > 0) {
+      rotas.push(Number(tipado));
+      continue;
+    }
+    const km = parseNumeroBr(encontrarValorColuna(raw, `KM ROTA 0${i}`));
+    if (!isNaN(km) && km > 0) rotas.push(km);
+  }
+  const somaRotas = somaPositiva(rotas);
   return somaRotas > 0 ? somaRotas : null;
+}
+
+function calcularPesoEfetivo(coleta: Partial<ColetaData>): number | null {
+  const principal = obterPesoTotalPrincipal(coleta);
+  if (principal !== null && principal > 0) return principal;
+
+  const raw = registroUnificado(coleta);
+  const pesosParciais: number[] = [];
+  for (let i = 1; i <= 5; i++) {
+    const tipado = (coleta as any)[`peso${i}`];
+    if (tipado !== null && tipado !== undefined && Number(tipado) > 0) {
+      pesosParciais.push(Number(tipado));
+      continue;
+    }
+    const p = parseNumeroBr(encontrarValorColuna(raw, `PESO ${i}`));
+    if (!isNaN(p) && p > 0) pesosParciais.push(p);
+  }
+  const soma = somaPositiva(pesosParciais);
+  return soma > 0 ? soma : null;
+}
+
+function isColunaHora(chave: string): boolean {
+  const norm = normalizarChave(chave);
+  return norm.includes('HORA') || norm.startsWith('HR');
+}
+
+/** Horas em texto devem usar ":" (ex: 08:30), não ";" */
+function validarCamposHora(coleta: Partial<ColetaData>): string[] {
+  const motivos: string[] = [];
+  const raw = registroUnificado(coleta);
+
+  for (const [chave, valor] of Object.entries(raw)) {
+    if (!isColunaHora(chave)) continue;
+    if (valor === null || valor === undefined || valor === '') continue;
+
+    const s = String(valor).trim();
+
+    if (s.includes(';')) {
+      motivos.push(`Hora inválida em "${chave.trim()}": use ":" (ex: 08:30), não ";"`);
+    }
+  }
+
+  return motivos;
 }
 
 function temValorNegativoOriginal(coleta: Partial<ColetaData>): string[] {
@@ -105,80 +371,374 @@ function temValorNegativoOriginal(coleta: Partial<ColetaData>): string[] {
       motivos.push(`Peso negativo em ${campo}`);
     }
   }
-  return motivos;
+
+  const raw = registroUnificado(coleta);
+  for (const [chave, valor] of Object.entries(raw)) {
+    if (valor === null || valor === undefined || valor === '') continue;
+    const norm = normalizarChave(chave);
+    if (!norm.includes('KM') && !norm.includes('PESO')) continue;
+    const n = parseNumeroBr(valor);
+    if (!isNaN(n) && n < 0) {
+      motivos.push(`Valor negativo em "${chave.trim()}"`);
+    }
+  }
+
+  return [...new Set(motivos)];
 }
 
-function temDadosRota(coleta: Partial<ColetaData>): boolean {
-  if (coleta.regional?.trim()) return true;
-  if (coleta.distrito?.trim()) return true;
+function obterMotoristaPrincipal(coleta: Partial<ColetaData>): string | null {
+  const tipado = coleta.motorista?.trim();
+  if (tipado) return tipado;
+  const raw = registroUnificado(coleta);
+  const col = String(encontrarValorColuna(raw, 'MOTORISTA') ?? '').trim();
+  return col || null;
+}
 
-  const kmRotas = somaPositiva([coleta.kmRota1, coleta.kmRota2, coleta.kmRota3, coleta.kmRota4]);
-  if (kmRotas > 0) return true;
+function obterPlacaPrincipal(coleta: Partial<ColetaData>): string | null {
+  const bruta = coleta.placa?.trim()
+    || String(encontrarValorColuna(registroUnificado(coleta), 'PLACA') ?? '').trim();
+  return normalizarPlacaOuNull(bruta);
+}
 
+/** Peso zerado/ausente — sem carga (retorno à base sem pesagem). Rejeita se houver peso negativo ou parcial positivo. */
+function semPesagemEfetiva(coleta: Partial<ColetaData>): boolean {
+  const raw = registroUnificado(coleta);
+  const principal = obterPesoTotalPrincipal(coleta);
+
+  if (principal !== null && !isNaN(principal)) {
+    if (principal < 0) return false;
+    if (principal > 0) return false;
+  }
+
+  for (let i = 1; i <= 5; i++) {
+    const tipado = (coleta as Record<string, unknown>)[`peso${i}`];
+    if (tipado !== null && tipado !== undefined && tipado !== '') {
+      const n = Number(tipado);
+      if (!isNaN(n)) {
+        if (n < 0) return false;
+        if (n > 0) return false;
+      }
+    }
+    const p = parseNumeroBr(encontrarValorColuna(raw, `PESO ${i}`));
+    if (!isNaN(p)) {
+      if (p < 0) return false;
+      if (p > 0) return false;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Caminhão voltou à base sem pesar/descarregar — rota operacional completa, só peso zerado.
+ */
+function rotaRetornoBaseSemPesagem(coleta: Partial<ColetaData>): boolean {
+  if (!obterDataSaidaPrincipal(coleta)) return false;
+  if (!obterPlacaPrincipal(coleta)) return false;
+  if (!obterMotoristaPrincipal(coleta)) return false;
+
+  const km = obterKmTotalPrincipal(coleta);
+  if (km === null || km === undefined || isNaN(km) || km <= 0) return false;
+
+  return semPesagemEfetiva(coleta);
+}
+
+function kmAcimaDoLimite(coleta: Partial<ColetaData>, kmEfetivo: number | null): string | null {
+  const raw = registroUnificado(coleta);
+  const kmCol = parseNumeroBr(encontrarValorColuna(raw, 'KM TOTAL'));
+  const kmTipado = coleta.kmTotal;
+
+  const candidatos = [kmEfetivo, kmTipado, !isNaN(kmCol) ? kmCol : null].filter(
+    (v): v is number => v !== null && v !== undefined && !isNaN(v),
+  );
+
+  for (const km of candidatos) {
+    if (km > MAX_KM_DASHBOARD) {
+      return `KM Total acima de ${MAX_KM_DASHBOARD} km (excluído do dashboard)`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Valida se a viagem pode alimentar o dashboard.
+ * Critérios principais: Data de saída + KM Total + Peso Total (ou retorno à base sem pesagem).
+ */
+export function validarViagemParaDashboard(coleta: Partial<ColetaData>): ResultadoValidacaoViagem {
+  const motivos: string[] = [
+    ...temValorNegativoOriginal(coleta),
+    ...validarCamposHora(coleta),
+  ];
+
+  const dataSaida = obterDataSaidaPrincipal(coleta);
+  if (!dataSaida) {
+    motivos.push('Data de saída ausente ou inválida');
+  }
+
+  const kmPrincipal = obterKmTotalPrincipal(coleta);
+  if (kmPrincipal === null || kmPrincipal === undefined || isNaN(kmPrincipal)) {
+    motivos.push('KM Total ausente');
+  } else if (kmPrincipal <= 0) {
+    motivos.push('KM Total zerado ou negativo (verifique fórmulas da planilha)');
+  }
+
+  const retornoSemPesagem = rotaRetornoBaseSemPesagem(coleta);
+  const pesoPrincipal = obterPesoTotalPrincipal(coleta);
+
+  if (pesoPrincipal !== null && !isNaN(pesoPrincipal) && pesoPrincipal < 0) {
+    motivos.push('Peso Total negativo (verifique fórmulas da planilha)');
+  } else if (!retornoSemPesagem) {
+    if (pesoPrincipal === null || pesoPrincipal === undefined || isNaN(pesoPrincipal)) {
+      motivos.push('Peso Total ausente');
+    } else if (pesoPrincipal <= 0) {
+      motivos.push('Peso Total zerado ou negativo (verifique fórmulas da planilha)');
+    }
+  }
+
+  const kmEfetivo = kmPrincipal !== null && kmPrincipal > 0 ? kmPrincipal : null;
+  const pesoEfetivo = pesoPrincipal !== null && pesoPrincipal > 0
+    ? pesoPrincipal
+    : (retornoSemPesagem ? 0 : null);
+
+  const kmAlto = kmAcimaDoLimite(coleta, kmEfetivo ?? kmPrincipal);
+  if (kmAlto) motivos.push(kmAlto);
+
+  const validoDashboard = motivos.length === 0;
+  return { validoDashboard, motivos, kmEfetivo, pesoEfetivo };
+}
+
+/** Exportado para relatórios de diagnóstico (KM derivado de rotas/hodômetro) */
+export { calcularKmEfetivo, calcularPesoEfetivo };
+
+export interface ResultadoCorrecaoViagem {
+  corrigido: boolean;
+  ajustes: string[];
+}
+
+const ALIAS_KM_TOTAL = ['KM TOTAL', 'KMTOTAL'];
+const ALIAS_PESO_TOTAL = ['PESO TOTAL', 'PESOTOTAL'];
+
+function sincronizarValorCampo(coleta: ColetaData, chaveOriginal: string, valor: unknown): void {
+  (coleta as unknown as Record<string, unknown>)[chaveOriginal] = valor;
   if (coleta.dados && typeof coleta.dados === 'object') {
-    for (const [chave, valor] of Object.entries(coleta.dados)) {
-      if (valor === null || valor === undefined || valor === '') continue;
-      const norm = normalizarChave(chave);
-      if (
-        norm.includes('ROTA') || norm.includes('SETOR') || norm.includes('BAIRRO') ||
-        norm.includes('REGIAO') || norm.includes('REGIONAL') || norm.includes('DESTINO')
-      ) {
-        return true;
+    (coleta.dados as Record<string, unknown>)[chaveOriginal] = valor;
+    const trimmed = chaveOriginal.trim();
+    if (trimmed !== chaveOriginal) {
+      (coleta.dados as Record<string, unknown>)[trimmed] = valor;
+    }
+  }
+}
+
+function sincronizarAliasesNumericos(coleta: ColetaData, aliases: string[], valor: number): void {
+  const raw = registroUnificado(coleta);
+  for (const alias of aliases) {
+    const alvo = normalizarChave(alias);
+    for (const chave of Object.keys(raw)) {
+      if (normalizarChave(chave) === alvo) {
+        sincronizarValorCampo(coleta, chave, valor);
+      }
+    }
+  }
+}
+
+function kmSegmentoHodometro(saida: number, chegada: number): number | null {
+  if (isNaN(saida) || isNaN(chegada) || chegada < saida) return null;
+  const diff = chegada - saida;
+  return kmDistanciaPlausivel(diff) ? diff : null;
+}
+
+function lerKmColunaExata(raw: Record<string, unknown>, ...nomes: string[]): number {
+  for (const nome of nomes) {
+    const alvo = nome.trim().toUpperCase();
+    for (const [key, val] of Object.entries(raw)) {
+      if (key.trim().toUpperCase() !== alvo) continue;
+      const km = parseNumeroBr(val);
+      if (!isNaN(km) && km > 0) return km;
+    }
+  }
+  return NaN;
+}
+
+function somarKmRotasColeta(coleta: Partial<ColetaData>): number {
+  const raw = registroUnificado(coleta);
+  const rotas: number[] = [];
+
+  for (let i = 1; i <= 4; i++) {
+    const tipado = (coleta as Record<string, unknown>)[`kmRota${i}`];
+    if (tipado !== null && tipado !== undefined && kmDistanciaPlausivel(Number(tipado))) {
+      rotas.push(Number(tipado));
+      continue;
+    }
+
+    const cfg = COLUNAS_HODOMETRO.rotas[i - 1];
+    const kmSaidaRota = lerKmColunaExata(raw, cfg.kmSaida.trim(), `KM SAIDA ROTA 0${i}`, `KM SAÍDA ROTA 0${i}`);
+    const kmChegadaRota = lerKmColunaExata(raw, cfg.kmChegada.trim(), `KM CHEGADA ROTA 0${i}`);
+    const segRota = kmSegmentoHodometro(kmSaidaRota, kmChegadaRota);
+    if (segRota !== null) {
+      rotas.push(segRota);
+      continue;
+    }
+
+    for (const alias of [`KM ROTA 0${i}`, `KM ROTA ${i}`]) {
+      const km = parseNumeroBr(encontrarValorColuna(raw, alias));
+      if (kmDistanciaPlausivel(km)) {
+        rotas.push(km);
+        break;
       }
     }
   }
 
-  return false;
+  if (rotas.length === 0) {
+    const kmSaidaBase = lerKmColunaExata(
+      raw,
+      COLUNAS_HODOMETRO.saidaBase.trim(),
+      'KM SAIDA BASE',
+      'KM SAÍDA BASE',
+    );
+    const kmChegadaBase = lerKmColunaExata(
+      raw,
+      COLUNAS_HODOMETRO.chegadaBase.trim(),
+      'KM CHEGADA BASE',
+    );
+    const segBase = kmSegmentoHodometro(kmSaidaBase, kmChegadaBase);
+    if (segBase !== null) rotas.push(segBase);
+  }
+
+  return somaPositiva(rotas);
+}
+
+function somarPesosParciaisColeta(coleta: Partial<ColetaData>): number {
+  const raw = registroUnificado(coleta);
+  const pesos: number[] = [];
+  for (let i = 1; i <= 5; i++) {
+    const tipado = (coleta as Record<string, unknown>)[`peso${i}`];
+    if (tipado !== null && tipado !== undefined && Number(tipado) > 0) {
+      pesos.push(Number(tipado));
+      continue;
+    }
+    const p = parseNumeroBr(encontrarValorColuna(raw, `PESO ${i}`));
+    if (!isNaN(p) && p > 0) pesos.push(p);
+  }
+  return somaPositiva(pesos);
+}
+
+function calcularKmDerivadoImportacao(coleta: Partial<ColetaData>): number | null {
+  const somaRotas = somarKmRotasColeta(coleta);
+  if (somaRotas > 0) return somaRotas;
+  return calcularKmEfetivo(coleta);
+}
+
+function calcularPesoDerivadoImportacao(coleta: Partial<ColetaData>): number | null {
+  const somaParciais = somarPesosParciaisColeta(coleta);
+  if (somaParciais > 0) return somaParciais;
+  return calcularPesoEfetivo(coleta);
+}
+
+/** Corrige horas com ";" → ":" nos campos de hora da planilha */
+function corrigirHorasRegistro(coleta: ColetaData, ajustes: string[]): void {
+  const raw = registroUnificado(coleta);
+  for (const [chave, valor] of Object.entries(raw)) {
+    if (!isColunaHora(chave)) continue;
+    if (typeof valor !== 'string' || !valor.includes(';')) continue;
+    const corrigido = valor.replace(/;/g, ':');
+    sincronizarValorCampo(coleta, chave, corrigido);
+    ajustes.push(`Hora corrigida em "${chave.trim()}" (; → :)`);
+  }
 }
 
 /**
- * Valida se a viagem pode alimentar o dashboard (KM, peso e rota mínimos).
+ * Completa KM Total, Peso Total e horas a partir de rotas/hodômetro/pesos parciais
+ * quando o operador corrigiu a planilha mas fórmulas ou colunas ainda estão vazias.
  */
-export function validarViagemParaDashboard(coleta: Partial<ColetaData>): ResultadoValidacaoViagem {
-  const motivos: string[] = [...temValorNegativoOriginal(coleta)];
+export function corrigirViagemAutomatica(coleta: ColetaData): ResultadoCorrecaoViagem {
+  const ajustes: string[] = [];
 
-  const pesoEfetivo = calcularPesoEfetivo(coleta);
-  if (!pesoEfetivo || pesoEfetivo <= 0) {
-    if (coleta.pesoTotal !== null && coleta.pesoTotal !== undefined && coleta.pesoTotal <= 0) {
-      motivos.push('Peso Total zerado ou negativo (verifique fórmulas da planilha)');
-    } else {
-      motivos.push('Peso Total ausente');
+  enriquecerCamposColeta(coleta);
+  corrigirHorasRegistro(coleta, ajustes);
+
+  const kmAtual = obterKmTotalPrincipal(coleta);
+  const kmDerivado = calcularKmDerivadoImportacao(coleta);
+  if (kmDerivado !== null && kmDerivado > 0 && kmDerivado <= MAX_KM_DASHBOARD) {
+    const deveUsarKmDerivado = kmAtual === null || kmAtual === undefined || isNaN(kmAtual)
+      || kmAtual <= 0
+      || kmDerivado > kmAtual + 0.01;
+    if (deveUsarKmDerivado) {
+      coleta.kmTotal = Math.round(kmDerivado * 100) / 100;
+      sincronizarAliasesNumericos(coleta, ALIAS_KM_TOTAL, coleta.kmTotal);
+      ajustes.push(
+        kmAtual && kmAtual > 0
+          ? 'KM Total atualizado a partir de hodômetro ou KM das rotas'
+          : 'KM Total preenchido a partir de hodômetro ou KM das rotas',
+      );
     }
   }
 
-  const kmEfetivo = calcularKmEfetivo(coleta);
-  if (!kmEfetivo || kmEfetivo <= 0) {
-    if (coleta.kmTotal !== null && coleta.kmTotal !== undefined && coleta.kmTotal <= 0) {
-      motivos.push('KM Total zerado ou negativo (verifique fórmulas da planilha)');
-    } else {
-      motivos.push('KM Total ausente');
+  const pesoAtual = obterPesoTotalPrincipal(coleta);
+  const pesoDerivado = calcularPesoDerivadoImportacao(coleta);
+  if (pesoDerivado !== null && pesoDerivado > 0) {
+    const deveUsarPesoDerivado = pesoAtual === null || pesoAtual === undefined || isNaN(pesoAtual)
+      || pesoAtual <= 0
+      || pesoDerivado > pesoAtual + 0.01;
+    if (deveUsarPesoDerivado) {
+      coleta.pesoTotal = Math.round(pesoDerivado * 100) / 100;
+      sincronizarAliasesNumericos(coleta, ALIAS_PESO_TOTAL, coleta.pesoTotal);
+      ajustes.push(
+        pesoAtual && pesoAtual > 0
+          ? 'Peso Total atualizado a partir dos pesos parciais da rota'
+          : 'Peso Total preenchido a partir dos pesos parciais da rota',
+      );
     }
   }
 
-  if (!temDadosRota(coleta)) {
-    motivos.push('Dados da rota ausentes (regional, distrito ou rota)');
-  }
+  return { corrigido: ajustes.length > 0, ajustes };
+}
 
-  const validoDashboard = motivos.length === 0;
-  return { validoDashboard, motivos, kmEfetivo, pesoEfetivo };
+/** Linha sem placa, KM Total e Peso Total — não importa nem entra no relatório de inconsistências */
+export function linhaSemDadosOperacionaisImportaveis(coleta: Partial<ColetaData>): boolean {
+  const raw = registroUnificado(coleta);
+  const placaRaw = coleta.placa ?? String(encontrarValorColuna(raw, 'PLACA') ?? '');
+  const km = obterKmTotalPrincipal(coleta);
+  const peso = obterPesoTotalPrincipal(coleta);
+  return linhaSemDadosOperacionaisMinimos(placaRaw, km, peso);
 }
 
 /**
  * Sanitiza e marca validade da viagem para o dashboard.
  */
 export function prepararViagemParaImportacao(coleta: ColetaData): ResultadoValidacaoViagem {
+  enriquecerCamposColeta(coleta);
+
+  if (linhaSemDadosOperacionaisImportaveis(coleta)) {
+    coleta.validoDashboard = false;
+    coleta.motivosInconsistencia = null;
+    return {
+      validoDashboard: false,
+      descartada: true,
+      motivos: [],
+      kmEfetivo: null,
+      pesoEfetivo: null,
+    };
+  }
+
   sanitizarViagem(coleta);
+  const { ajustes: correcoes } = corrigirViagemAutomatica(coleta);
+  aplicarViagensPorRota(coleta);
   const resultado = validarViagemParaDashboard(coleta);
+  if (resultado.validoDashboard && resultado.pesoEfetivo === 0) {
+    coleta.pesoTotal = 0;
+  }
   coleta.validoDashboard = resultado.validoDashboard;
   coleta.motivosInconsistencia = resultado.motivos.length > 0 ? resultado.motivos : null;
-  return resultado;
+  return { ...resultado, correcoes: correcoes.length > 0 ? correcoes : undefined };
 }
 
 export function aplicarFiltroViagensValidasDashboard<T extends ObjectLiteral>(
   qb: SelectQueryBuilder<T>,
   alias = 'c'
 ): SelectQueryBuilder<T> {
-  return qb.andWhere(`${alias}.validoDashboard = :validoDashboard`, { validoDashboard: true });
+  return qb.andWhere(`${alias}.validoDashboard = :validoDashboard`, {
+    validoDashboard: true,
+  });
 }
 
 export interface ResumoInconsistenciasViagem {
@@ -220,6 +780,15 @@ export class ValidacaoViagemService {
    * Revalida todas as viagens de um serviço (útil para dados importados antes desta feature).
    */
   async revalidarViagensServico(servicoId: string): Promise<{ atualizadas: number; inconsistentes: number }> {
+    // Serviços sem viagem (roçada etc.) não devem passar pela regra de placa/KM/peso
+    const servico = await AppDataSource.getRepository(Servico).findOne({
+      where: { id: servicoId },
+      select: ['id', 'tipo'],
+    });
+    if (servico?.tipo === 'rocadeira') {
+      return { atualizadas: 0, inconsistentes: 0 };
+    }
+
     const uploadIds = await this.getUploadIdsPorServico(servicoId);
     if (uploadIds.length === 0) return { atualizadas: 0, inconsistentes: 0 };
 
@@ -249,6 +818,7 @@ export class ValidacaoViagemService {
       if (batch.length < BATCH) break;
     }
 
+    invalidarCacheDadosServico(servicoId);
     return { atualizadas, inconsistentes };
   }
 
@@ -303,7 +873,7 @@ export class ValidacaoViagemService {
       .sort((a, b) => b.quantidade - a.quantidade);
 
     const impactoDashboard = viagensInconsistentes > 0
-      ? `${viagensInconsistentes} viagem(ns) com dados incompletos ou inconsistentes foram excluídas dos cálculos do dashboard. Corrija a planilha e reimporte para incluir esses valores.`
+      ? `${viagensInconsistentes} viagem(ns) com dados incompletos ou inconsistentes estão no banco (importação antiga) e foram excluídas do dashboard. Reimporte a planilha para removê-las — linhas inválidas não são mais salvas.`
       : 'Todas as viagens importadas estão válidas para o dashboard.';
 
     return {
@@ -315,7 +885,7 @@ export class ValidacaoViagemService {
       resumoPorMotivo,
       amostra: inconsistentes.slice(0, 20).map(v => ({
         id: v.id,
-        data: v.dataSaida ? v.dataSaida.toISOString().slice(0, 10) : null,
+        data: formatarDataSaida(v.dataSaida),
         placa: v.placa,
         motorista: v.motorista,
         kmTotal: v.kmTotal,

@@ -232,18 +232,17 @@ export function useKpiCalculator(options: UseKpiCalculatorOptions): UseKpiCalcul
   const [configResumo, setConfigResumo] = useState<ResumoConfig | null>(null);
   const [loading, setLoading] = useState(false);
   const loadedRef = useRef(false);
-  // ⭐ AbortController para cancelar requisição anterior se houver nova
   const ultimoAbortRef = useRef<AbortController | null>(null);
+  const requestIdRef = useRef(0);
 
   const servicoIdRef = useRef(servicoId);
 
-  // ⭐ Quando servicoId muda, limpa dados imediatamente para evitar mostrar dados do serviço anterior
+  // Quando servicoId muda, limpa dados do serviço anterior (loading é controlado pelo reload)
   useEffect(() => {
     servicoIdRef.current = servicoId;
     setKpiValores([]);
     setExecMetrics(null);
     setConfigResumo(null);
-    setLoading(true);
   }, [servicoId]);
 
   // Cache key inclui filtros para diferenciar caches
@@ -256,35 +255,37 @@ export function useKpiCalculator(options: UseKpiCalculatorOptions): UseKpiCalcul
   const reload = useCallback(async () => {
     if (!contractId || !servicoId) return;
 
-    // ⭐ Cancela requisição anterior pendente para evitar race condition
+    const requestId = ++requestIdRef.current;
+
     if (ultimoAbortRef.current) {
       ultimoAbortRef.current.abort();
     }
     const abortController = new AbortController();
     ultimoAbortRef.current = abortController;
 
+    // ⚡ Limpa valores anteriores para evitar flash de dados errados
+    setKpiValores([]);
+    setExecMetrics(null);
     setLoading(true);
     try {
-      // ⭐ Sempre limpa cache ao recarregar (garante dados frescos após ativação de KPIs)
       cacheLocal.delete(cacheKey);
 
       const cached = getFromCache<KpiValoresResponse>(cacheKey);
       if (cached) {
+        if (requestId !== requestIdRef.current) return;
         setKpiValores(cached.kpis);
         setExecMetrics(cached.metrica_executiva);
         setConfigResumo(cached.configResumo || null);
-        setLoading(false);
+        loadedRef.current = true;
         return;
       }
 
-      // Montar query string com filtros
       const f = filtros || {};
       const params = new URLSearchParams();
       if (f.dataInicio) params.append('dataInicio', f.dataInicio);
       if (f.dataFim) params.append('dataFim', f.dataFim);
       if (f.placa) params.append('placa', f.placa);
       if (f.regional) params.append('regional', f.regional);
-      // Filtros dinâmicos
       if (f.filtrosDinamicos) {
         for (const [coluna, valor] of Object.entries(f.filtrosDinamicos)) {
           if (valor) params.append(`filtro_${coluna}`, valor);
@@ -297,31 +298,42 @@ export function useKpiCalculator(options: UseKpiCalculatorOptions): UseKpiCalcul
         { signal: abortController.signal }
       );
 
-      // ⭐ Se esta requisição foi cancelada, não atualiza estado
-      if (abortController.signal.aborted) return;
+      if (requestId !== requestIdRef.current) return;
 
       if (data) {
         setKpiValores(data.kpis || []);
         setExecMetrics(data.metrica_executiva || null);
         setConfigResumo(data.configResumo || null);
         setToCache(cacheKey, data);
+        loadedRef.current = true;
       }
     } catch (err: any) {
       if (err?.name === 'CanceledError' || err?.code === 'ERR_CANCELED') {
         return;
       }
-      console.warn('[useKpiCalculator] Erro ao buscar kpi-valores:', err);
+      if (requestId === requestIdRef.current) {
+        console.warn('[useKpiCalculator] Erro ao buscar kpi-valores:', err);
+      }
     } finally {
-      if (!abortController.signal.aborted) {
+      if (requestId === requestIdRef.current) {
         setLoading(false);
-        loadedRef.current = true;
       }
     }
   }, [contractId, servicoId, filtros, cacheKey]);
 
+  const reloadRef = useRef(reload);
+  reloadRef.current = reload;
+
   useEffect(() => {
-    reload();
-  }, [reload]);
+    // ⭐ Usa ref para evitar loop infinito de renderização
+    const timer = setTimeout(() => {
+      reloadRef.current();
+    }, 0);
+    return () => {
+      clearTimeout(timer);
+      ultimoAbortRef.current?.abort();
+    };
+  }, [contractId, servicoId, cacheKey]);
 
   const getKpiValor = useCallback((nome: string): KpiValor | undefined => {
     return kpiValores.find(k => k.nome === nome);

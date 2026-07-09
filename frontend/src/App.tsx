@@ -4,14 +4,19 @@ import { ToastProvider } from './contexts/ToastContext'
 import { BreadcrumbProvider } from './contexts/BreadcrumbContext'
 import ToastContainer from './components/Toast'
 import ProtectedRoute from './components/ProtectedRoute'
+import AdminRoute from './components/AdminRoute'
 import Layout from './components/Layout'
 import Login from './pages/Login'
 import VisaoGeral from './pages/VisaoGeral'
 import Contratos from './pages/Contratos'
 import ContratoDetalhe from './pages/ContratoDetalhe'
 import ServicoVisao from './pages/ServicoVisao'
+import ServicoDiaDetalhe from './pages/ServicoDiaDetalhe'
 import ConfiguracaoServico from './pages/ConfiguracaoServico'
 import BibliotecaKpisUniversais from './pages/BibliotecaKpisUniversais'
+import DashboardExecutivo from './pages/DashboardExecutivo'
+import BibliotecaGraficosPadrao from './pages/BibliotecaGraficosPadrao'
+import Usuarios from './pages/Usuarios'
 
 import './App.css'
 
@@ -72,9 +77,11 @@ function App() {
             path="/kpis-universais"
             element={
               <ProtectedRoute>
-                <Layout>
-                  <BibliotecaKpisUniversais />
-                </Layout>
+                <AdminRoute>
+                  <Layout>
+                    <BibliotecaKpisUniversais />
+                  </Layout>
+                </AdminRoute>
               </ProtectedRoute>
             }
           />
@@ -90,6 +97,16 @@ function App() {
             }
           />
           <Route
+            path="/contratos/:contractId/servicos/:servicoId/dia/:data"
+            element={
+              <ProtectedRoute>
+                <Layout>
+                  <ServicoDiaDetalhe />
+                </Layout>
+              </ProtectedRoute>
+            }
+          />
+          <Route
             path="/contratos/:contractId/servicos/:servicoId/configurar"
             element={
               <ProtectedRoute>
@@ -99,6 +116,44 @@ function App() {
               </ProtectedRoute>
             }
           />
+
+          <Route
+            path="/dashboard/executivo"
+            element={
+              <ProtectedRoute>
+                <Layout>
+                  <DashboardExecutivo />
+                </Layout>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/graficos-padrao"
+            element={
+              <ProtectedRoute>
+                <AdminRoute>
+                  <Layout>
+                    <BibliotecaGraficosPadrao />
+                  </Layout>
+                </AdminRoute>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/usuarios"
+            element={
+              <ProtectedRoute>
+                <AdminRoute>
+                  <Layout>
+                    <Usuarios />
+                  </Layout>
+                </AdminRoute>
+              </ProtectedRoute>
+            }
+          />
+
+          <Route path="/dashboard" element={<Navigate to="/visao-geral" replace />} />
+          <Route path="/dashboard/*" element={<Navigate to="/visao-geral" replace />} />
 
           {/* ═══ ROTAS ANTIGAS — REDIRECIONAM PARA A NOVA ESTRUTURA ═══ */}
           <Route

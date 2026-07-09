@@ -4,14 +4,14 @@ dotenv.config();
 import AppDataSource from './data-source';
 import { KpiUniversal, PlaceholderKpi } from '../entities/KpiUniversal';
 import { TipoServico } from '../enums/TipoServico';
+import { upsertKpiSistema } from './kpiUniversalSeedUtils';
 
 /**
  * Seed de KPIs de RECEITA por tipo de serviço.
  * Idempotente — insere apenas KPIs que ainda não existem (nome + tipoServico).
  */
-export async function seedKpisUniversaisReceita(): Promise<void> {
-  const repo = AppDataSource.getRepository(KpiUniversal);
-
+/** Catálogo canônico de KPIs de receita (sem gravar no banco). */
+export function buildKpisUniversaisReceita(): Partial<KpiUniversal>[] {
   const PH_PESO: PlaceholderKpi = {
     nome: 'PESO_PLACEHOLDER',
     label: 'Coluna de Peso',
@@ -197,25 +197,22 @@ export async function seedKpisUniversaisReceita(): Promise<void> {
     }),
   ];
 
+  return kpisReceita;
+}
+
+export async function seedKpisUniversaisReceita(): Promise<void> {
+  const repo = AppDataSource.getRepository(KpiUniversal);
+  const kpisReceita = buildKpisUniversaisReceita();
+
   let criados = 0;
+  let atualizados = 0;
   for (const kpiData of kpisReceita) {
-    const existente = await repo.findOne({
-      where: {
-        nome: kpiData.nome!,
-        tipoServico: kpiData.tipoServico!,
-        categoria: 'Financeiro',
-      },
-    });
-    if (!existente) {
-      const kpi = new KpiUniversal();
-      Object.assign(kpi, kpiData);
-      kpi.isPersonalizado = false;
-      await repo.save(kpi);
-      criados++;
-    }
+    const resultado = await upsertKpiSistema(repo, kpiData);
+    if (resultado === 'created') criados++;
+    if (resultado === 'updated') atualizados++;
   }
 
-  console.log(`[seedKpisUniversaisReceita] ✅ ${criados} KPIs de receita criados.`);
+  console.log(`[seedKpisUniversaisReceita] ✅ ${criados} novos, ${atualizados} atualizados.`);
 }
 
 if (require.main === module) {

@@ -4,8 +4,13 @@ import { authenticate, authorize } from '../middlewares/authMiddleware';
 
 const router = Router();
 
-// Rotas públicas
-router.post('/register', AuthController.register.bind(AuthController));
+// Registro: admin por padrão; em dev pode liberar com ALLOW_PUBLIC_REGISTER=true
+const allowPublicRegister = process.env.ALLOW_PUBLIC_REGISTER === 'true';
+if (allowPublicRegister) {
+  router.post('/register', AuthController.register.bind(AuthController));
+} else {
+  router.post('/register', authenticate, authorize('admin'), AuthController.register.bind(AuthController));
+}
 router.post('/login', AuthController.login.bind(AuthController));
 
 // Rotas protegidas (qualquer usuário autenticado)

@@ -5,7 +5,28 @@ import { ColetaData } from '../entities/ColetaData';
 import { PlanilhaUpload } from '../entities/PlanilhaUpload';
 import { Servico } from '../entities/Servico';
 import PlanilhaService from './PlanilhaService';
-import { prepararViagemParaImportacao } from './validacaoViagemService';
+import { prepararViagemParaImportacao, aplicarFiltroViagensValidasDashboard } from './validacaoViagemService';
+import { contarViagensPorRotaRegistro } from './viagensPorRotaService';
+import {
+  compararMetricasDia,
+  formatarDataBr,
+  montarRecomendacaoConferencia,
+  type ConferenciaDiariaPlanilha,
+  type MetricasDiaOperacao,
+} from './conferenciaDiariaPlanilhaService';
+import { parseDataPlanilha } from '../utils/formatarDataPlanilha';
+import { normalizarPlaca } from '../utils/normalizarPlaca';
+import {
+  aplicarReferenciaCicloNoUpload,
+  obterUploadIdsModificaveis,
+  verificarDatasEmCicloFechado,
+} from './cicloPlanilhaService';
+import { normalizarDiaInicioCiclo } from '../utils/periodoCicloContrato';
+import { invalidarCacheDadosServico } from './servicoDadosCache';
+import { invalidarCacheDashboardServico } from '../controllers/ServicoController';
+import { dashboardCache } from './DashboardCacheManager';
+import { agendarWarmupPosUpload } from './executivoCacheWarmupService';
+import { normalizarTextoTipoCaminhao } from '../config/pesoMaximoCaminhao';
 
 /**
  * Interface que representa uma linha da planilha já parseada
@@ -61,6 +82,8 @@ export interface ResultadoImportacaoDedup {
   erros: number;
   viagensInconsistentes?: number;
   viagensValidasDashboard?: number;
+  viagensCorrigidas?: number;
+  duplicatasRemovidasSql?: number;
   resumo: {
     novos: number;
     duplicadosIgnorados: number;
@@ -68,6 +91,8 @@ export interface ResultadoImportacaoDedup {
     substituidos: number;
     viagensInconsistentes?: number;
     viagensValidasDashboard?: number;
+    viagensCorrigidas?: number;
+    duplicatasRemovidasSql?: number;
   };
 }
 
@@ -88,9 +113,10 @@ const CAMPOS_COMPARACAO: (keyof ColetaData)[] = [
 /**
  * Serviço de deduplicação — analisa e resolve conflitos entre
  * dados da planilha e dados já existentes no banco.
- * 
- * Chave única usada: (dataSaida + placa + turno) dentro do mesmo serviço.
- * 
+ *
+ * Chave única usada: (dataSaida + placa + turno + distrito + regional) no mesmo serviço.
+ * Cada linha da planilha BH = uma rota (distrito); o mesmo caminhão pode ter várias rotas no dia.
+ *
  * Lógica:
  * 1. Extrai chave única de cada linha da planilha
  * 2. Busca no banco todos os registros que correspondem às chaves
@@ -108,34 +134,63 @@ export class DeduplicacaoService {
     this.servicoRepo = AppDataSource.getRepository(Servico);
   }
 
+  private async obterDiaInicioCicloServico(servicoId?: string): Promise<number> {
+    if (!servicoId) return 1;
+    const servico = await this.servicoRepo.findOne({
+      where: { id: servicoId },
+      relations: ['contract'],
+    });
+    return normalizarDiaInicioCiclo(servico?.contract?.diaInicioCiclo);
+  }
+
+  private extrairDatasIsoDasLinhas(linhas: LinhaParseada[]): string[] {
+    const set = new Set<string>();
+    for (const linha of linhas) {
+      if (!linha.dataSaida) continue;
+      set.add(linha.dataSaida.toISOString().slice(0, 10));
+    }
+    return [...set];
+  }
+
+  private async validarImportacaoNaoInvadeCicloFechado(
+    servicoId: string | undefined,
+    linhas: LinhaParseada[],
+  ): Promise<void> {
+    if (!servicoId) return;
+    const datas = this.extrairDatasIsoDasLinhas(linhas);
+    const { bloqueadas, ciclos } = await verificarDatasEmCicloFechado(servicoId, datas);
+    if (bloqueadas.length === 0) return;
+    const labels = ciclos.map(c => c.label).join(', ');
+    throw new Error(
+      `A planilha contém ${bloqueadas.length} data(s) em ciclo(s) já fechado(s) (${labels}). `
+      + `Datas bloqueadas: ${bloqueadas.slice(0, 5).join(', ')}${bloqueadas.length > 5 ? '…' : ''}. `
+      + 'Feche o ciclo atual e importe apenas dados do novo período.',
+    );
+  }
+
   /**
    * ⭐ Remove duplicatas no banco via SQL direto.
    * Mantém apenas o registro MAIS ANTIGO (menor id) para cada
-   * combinação (dataSaida::date, placa, turno) de um mesmo serviço.
-   * 
-   * Esta é a REDE DE SEGURANÇA final — garante que não haja
-   * duplicatas mesmo que a análise em memória falhe.
+   * combinação (dataSaida, placa, turno, distrito, regional) de um mesmo serviço.
    */
   private async limparDuplicatas(servicoId?: string): Promise<number> {
     if (!servicoId) return 0;
 
-    // Buscar IDs de upload do serviço
-    const uploads = await this.uploadRepo.find({
-      where: { servico_id: servicoId },
-      select: ['id'],
-    });
-    const uploadIds = uploads.map(u => u.id);
+    const uploadIds = await obterUploadIdsModificaveis(servicoId);
     if (uploadIds.length === 0) return 0;
 
-    // Query SQL: identifica duplicatas por (dataSaida, placa, turno)
-    // e mantém apenas o registro com menor ID
     const result = await AppDataSource.query(`
       DELETE FROM coleta_dados
       WHERE id IN (
         SELECT id FROM (
           SELECT c.id,
                  ROW_NUMBER() OVER (
-                   PARTITION BY c."dataSaida"::date, c."placa", c."turno"
+                   PARTITION BY
+                     c."dataSaida"::date,
+                     c."placa",
+                     c."turno",
+                     COALESCE(NULLIF(TRIM(UPPER(c."distrito")), ''), 'SEM_DISTRITO'),
+                     COALESCE(NULLIF(TRIM(UPPER(c."regional")), ''), 'SEM_REGIONAL')
                    ORDER BY c.id ASC
                  ) as rn
           FROM coleta_dados c
@@ -152,11 +207,25 @@ export class DeduplicacaoService {
     return removidos;
   }
 
+  /** Normaliza texto para chave de deduplicação (distrito, regional, turno). */
+  private normalizarCampoChave(valor: string | null | undefined, fallback: string): string {
+    if (valor === null || valor === undefined) return fallback;
+    const t = String(valor).trim();
+    if (!t) return fallback;
+    return t.toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  }
+
   /**
-   * Gera a chave única para um registro.
-   * Combina dataSaida + placa + turno para formar a chave.
+   * Gera a chave única para um registro (rota operacional).
+   * dataSaida + placa + turno + distrito + regional
    */
-  gerarChave(dataSaida: Date | string | null, placa: string | null, turno: string | null): string {
+  gerarChave(
+    dataSaida: Date | string | null,
+    placa: string | null,
+    turno: string | null,
+    distrito?: string | null,
+    regional?: string | null,
+  ): string {
     let data: string;
     if (dataSaida instanceof Date) {
       data = dataSaida.toISOString().slice(0, 10);
@@ -165,16 +234,123 @@ export class DeduplicacaoService {
     } else {
       data = 'SEM_DATA';
     }
-    const placaNorm = (placa || 'SEM_PLACA').toUpperCase().trim();
-    const turnoNorm = (turno || 'SEM_TURNO').toUpperCase().trim();
-    return `${data}|${placaNorm}|${turnoNorm}`;
+    const placaNorm = normalizarPlaca(placa) || 'SEM_PLACA';
+    const turnoNorm = this.normalizarCampoChave(turno, 'SEM_TURNO');
+    const distritoNorm = this.normalizarCampoChave(distrito, 'SEM_DISTRITO');
+    const regionalNorm = this.normalizarCampoChave(regional, 'SEM_REGIONAL');
+    return `${data}|${placaNorm}|${turnoNorm}|${distritoNorm}|${regionalNorm}`;
   }
 
   /**
    * Gera a chave a partir de uma linha já parseada (ColetaData)
    */
   gerarChaveDeColeta(coleta: ColetaData): string {
-    return this.gerarChave(coleta.dataSaida, coleta.placa, coleta.turno);
+    return this.gerarChave(
+      coleta.dataSaida,
+      coleta.placa,
+      coleta.turno,
+      coleta.distrito,
+      coleta.regional,
+    );
+  }
+
+  /** Recalcula metadados do upload após deduplicação SQL. */
+  private async sincronizarContagemUploadAposDedup(uploadId: number): Promise<number> {
+    const count = await this.coletaRepo.count({
+      where: { planilhaUploadId: uploadId, validoDashboard: true },
+    });
+    const upload = await this.uploadRepo.findOne({ where: { id: uploadId } });
+    if (upload) {
+      upload.linhasImportadas = count;
+      if (upload.resumo) {
+        upload.resumo = {
+          ...upload.resumo,
+          viagensValidasDashboard: count,
+        };
+      }
+      await this.uploadRepo.save(upload);
+    }
+    return count;
+  }
+
+  /**
+   * Após substituir por data: move dias que só existiam nas planilhas antigas
+   * para o upload novo e remove os uploads antigos vazios (ciclo aberto).
+   * Assim o serviço fica com uma planilha ativa sem perder informação.
+   */
+  private async consolidarUploadsAposSubstituicao(
+    servicoId: string,
+    novoUploadId: number,
+  ): Promise<{
+    registrosPreservados: number;
+    uploadsRemovidos: number;
+    uploadsRemovidosIds: number[];
+    diasPreservados: string[];
+  }> {
+    const uploadIdsAntigos = (await obterUploadIdsModificaveis(servicoId))
+      .filter((id) => id !== novoUploadId);
+
+    if (uploadIdsAntigos.length === 0) {
+      return {
+        registrosPreservados: 0,
+        uploadsRemovidos: 0,
+        uploadsRemovidosIds: [],
+        diasPreservados: [],
+      };
+    }
+
+    // Dias que ainda restam nas planilhas antigas (não estavam na nova → não foram apagados)
+    const diasRows = await this.coletaRepo.createQueryBuilder('c')
+      .select("DISTINCT to_char(c.dataSaida, 'YYYY-MM-DD')", 'data')
+      .where('c.planilhaUploadId IN (:...ids)', { ids: uploadIdsAntigos })
+      .andWhere('c.dataSaida IS NOT NULL')
+      .orderBy('data', 'ASC')
+      .getRawMany<{ data: string }>();
+    const diasPreservados = diasRows.map((r) => r.data).filter(Boolean);
+
+    let registrosPreservados = 0;
+    if (diasPreservados.length > 0) {
+      const upd = await this.coletaRepo.createQueryBuilder()
+        .update(ColetaData)
+        .set({ planilhaUploadId: novoUploadId })
+        .where('planilhaUploadId IN (:...ids)', { ids: uploadIdsAntigos })
+        .execute();
+      registrosPreservados = upd.affected || 0;
+    }
+
+    // Remover shells vazios (e qualquer antigo sem linhas restantes)
+    const uploadsRemovidosIds: number[] = [];
+    for (const oldId of uploadIdsAntigos) {
+      const restantes = await this.coletaRepo.count({ where: { planilhaUploadId: oldId } });
+      if (restantes > 0) continue;
+
+      const upload = await this.uploadRepo.findOne({ where: { id: oldId } });
+      if (!upload || upload.cicloFechadoEm) continue;
+
+      const urlDownload = upload.urlDownload;
+      await this.uploadRepo.remove(upload);
+      uploadsRemovidosIds.push(oldId);
+
+      if (urlDownload) {
+        try {
+          const { default: FileStorageService } = await import('./FileStorageService');
+          await FileStorageService.removerImagem(urlDownload);
+        } catch (err) {
+          console.warn('[Deduplicacao] Erro ao remover arquivo antigo do storage:', err);
+        }
+      }
+    }
+
+    if (registrosPreservados > 0 || uploadsRemovidosIds.length > 0) {
+      await this.sincronizarContagemUploadAposDedup(novoUploadId);
+    }
+
+    return {
+      registrosPreservados,
+      uploadsRemovidos: uploadsRemovidosIds.length,
+      uploadsRemovidosIds,
+      diasPreservados,
+    };
   }
 
   /**
@@ -229,6 +405,41 @@ export class DeduplicacaoService {
   /**
    * Lê e parseia as linhas de uma planilha, extraindo dados estruturados
    */
+  private montarColetaDeLinha(linha: LinhaParseada, planilhaUploadId: number): ColetaData {
+    const coleta = new ColetaData();
+    coleta.planilhaUploadId = planilhaUploadId;
+    coleta.dataSaida = linha.dataSaida;
+    coleta.turno = linha.turno;
+    coleta.regional = linha.regional;
+    coleta.distrito = linha.distrito;
+    coleta.placa = linha.placa;
+    coleta.motorista = linha.motorista;
+    coleta.numeroColetores = linha.numeroColetores;
+    coleta.kmSaida = linha.kmSaida;
+    coleta.horaSaida = linha.horaSaida;
+    coleta.kmChegada = linha.kmChegada;
+    coleta.horaChegada = linha.horaChegada;
+    coleta.horaUltimoTerminoCarregamento = linha.horaUltimoTerminoCarregamento;
+    coleta.peso1 = linha.peso1;
+    coleta.peso2 = linha.peso2;
+    coleta.peso3 = linha.peso3;
+    coleta.peso4 = linha.peso4;
+    coleta.peso5 = linha.peso5;
+    coleta.pesoTotal = linha.pesoTotal;
+    coleta.tempoForaUnidade = linha.tempoForaUnidade;
+    coleta.horasForaUnidade = linha.horasForaUnidade;
+    coleta.tipoCaminhao = linha.tipoCaminhao;
+    coleta.kmTotal = linha.kmTotal;
+    coleta.kmRota1 = linha.kmRota1;
+    coleta.kmRota2 = linha.kmRota2;
+    coleta.kmRota3 = linha.kmRota3;
+    coleta.kmRota4 = linha.kmRota4;
+    coleta.numeroViagens = linha.numeroViagens;
+    coleta.diaSemana = linha.diaSemana;
+    coleta.dados = this.filtrarChavesVazias(linha.raw);
+    return coleta;
+  }
+
   private parsearLinhas(buffer: Buffer): LinhaParseada[] {
     const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: false });
     const nomeAba = workbook.SheetNames[0];
@@ -239,9 +450,7 @@ export class DeduplicacaoService {
     });
 
     return linhas.map((raw) => {
-      // Usa os helpers do PlanilhaService (replicados aqui para independência)
-      const dataSerial = this.getNum(raw, 'DATA SAIDA');
-      const dataSaida = dataSerial ? ColetaData.fromExcelDate(dataSerial) : null;
+      const dataSaida = this.parseDataSaida(raw);
 
       const linha: LinhaParseada = {
         raw,
@@ -265,14 +474,33 @@ export class DeduplicacaoService {
         pesoTotal: this.getNum(raw, 'PESO TOTAL'),
         tempoForaUnidade: this.getNum(raw, 'TEMPO FORA DA UNIDADE'),
         horasForaUnidade: this.getNum(raw, 'HORAS QUE FICA FORA DA UNIDADE'),
-        tipoCaminhao: this.getStr(raw, 'CAMINHÃO'),
+        tipoCaminhao: normalizarTextoTipoCaminhao(
+          this.getStr(raw, 'TIPO DE CAMINHÃO')
+          || this.getStr(raw, 'TIPO CAMINHAO')
+          || this.getStr(raw, 'TIPO VEICULO')
+          || this.getStr(raw, 'CAMINHÃO'),
+        ),
         kmTotal: this.getNum(raw, 'KM TOTAL'),
+        kmRota1: this.getNum(raw, 'KM ROTA 01'),
+        kmRota2: this.getNum(raw, 'KM ROTA 02'),
+        kmRota3: this.getNum(raw, 'KM ROTA 03'),
+        kmRota4: this.getNum(raw, 'KM ROTA 04'),
         numeroViagens: this.getInt(raw, 'Nº DE VIAGENS'),
         diaSemana: this.getInt(raw, 'DIA DA SEMANA'),
       };
 
       return linha;
     });
+  }
+
+  private parseDataSaida(raw: Record<string, unknown>): Date | null {
+    for (const key of ['DATA SAIDA', 'DATA SAÍDA', 'DATA DE SAIDA', 'DATA DE SAÍDA', 'DIA', 'DATA']) {
+      const chave = this.encontrarChave(raw, key);
+      if (!chave) continue;
+      const parsed = parseDataPlanilha(raw[chave]);
+      if (parsed) return parsed;
+    }
+    return null;
   }
 
   // ── Helpers de extração (replicados do PlanilhaService) ──
@@ -353,21 +581,17 @@ export class DeduplicacaoService {
         novos: linhas.map((l, i) => ({
           indice: i,
           classificacao: 'novo' as ClassificacaoLinha,
-          chave: this.gerarChave(l.dataSaida, l.placa, l.turno),
+          chave: this.gerarChave(l.dataSaida, l.placa, l.turno, l.distrito, l.regional),
           dadosPlanilha: l,
         })),
         duplicados: [],
         conflitantes: [],
-        chaveUsada: 'dataSaida + placa + turno',
+        chaveUsada: 'dataSaida + placa + turno + distrito + regional',
       };
     }
 
-    // Buscar uploads do serviço para saber quais IDs de upload pertencem a ele
-    const uploads = await this.uploadRepo.find({
-      where: { servico_id: servicoId },
-      select: ['id'],
-    });
-    const uploadIds = uploads.map(u => u.id);
+    // Buscar uploads modificáveis do serviço (ciclos fechados ficam protegidos)
+    const uploadIds = servicoId ? await obterUploadIdsModificaveis(servicoId) : [];
 
     if (uploadIds.length === 0) {
       // Serviço sem uploads anteriores — todos são novos
@@ -376,17 +600,17 @@ export class DeduplicacaoService {
         novos: linhas.map((l, i) => ({
           indice: i,
           classificacao: 'novo' as ClassificacaoLinha,
-          chave: this.gerarChave(l.dataSaida, l.placa, l.turno),
+          chave: this.gerarChave(l.dataSaida, l.placa, l.turno, l.distrito, l.regional),
           dadosPlanilha: l,
         })),
         duplicados: [],
         conflitantes: [],
-        chaveUsada: 'dataSaida + placa + turno',
+        chaveUsada: 'dataSaida + placa + turno + distrito + regional',
       };
     }
 
     // Gerar chaves de todas as linhas da planilha
-    const chavesPlanilha = linhas.map(l => this.gerarChave(l.dataSaida, l.placa, l.turno));
+    const chavesPlanilha = linhas.map(l => this.gerarChave(l.dataSaida, l.placa, l.turno, l.distrito, l.regional));
     
     // ⭐ DEBUG: mostrar as chaves geradas
     console.log('[DEBUG analisarPlanilha] servicoId:', servicoId);
@@ -412,7 +636,7 @@ export class DeduplicacaoService {
         d.setHours(0, 0, 0, 0);
         linhasComData.push(d);
       }
-      if (linha.placa) placas.push(linha.placa.toUpperCase().trim());
+      if (linha.placa) placas.push(normalizarPlaca(linha.placa) || linha.placa.toUpperCase().trim());
       if (linha.turno) turnos.push(linha.turno.toUpperCase().trim());
     }
 
@@ -519,6 +743,9 @@ export class DeduplicacaoService {
     usuarioId?: string,
     servicoId?: string
   ): Promise<ResultadoImportacaoDedup> {
+    const linhas = this.parsearLinhas(buffer);
+    await this.validarImportacaoNaoInvadeCicloFechado(servicoId, linhas);
+
     // 1. Analisar conflitos
     const analise = await this.analisarPlanilha(buffer, servicoId);
 
@@ -548,6 +775,7 @@ export class DeduplicacaoService {
     let substituidos = 0;
     let erros = 0;
     let viagensInconsistentes = 0;
+    let viagensCorrigidas = 0;
 
     // 3. Identificar registros a excluir (se estratégia = substituir)
     if (estrategia === 'substituir' && analise.conflitantes.length > 0) {
@@ -569,43 +797,27 @@ export class DeduplicacaoService {
     const BATCH_SIZE = 500;
 
     // Função auxiliar para criar entidade ColetaData a partir de LinhaParseada
-    const criarColeta = (linha: LinhaParseada): ColetaData => {
-      const coleta = new ColetaData();
-      coleta.planilhaUploadId = uploadSalvo.id;
-      coleta.dataSaida = linha.dataSaida;
-      coleta.turno = linha.turno;
-      coleta.regional = linha.regional;
-      coleta.distrito = linha.distrito;
-      coleta.placa = linha.placa;
-      coleta.motorista = linha.motorista;
-      coleta.numeroColetores = linha.numeroColetores;
-      coleta.kmSaida = linha.kmSaida;
-      coleta.horaSaida = linha.horaSaida;
-      coleta.kmChegada = linha.kmChegada;
-      coleta.horaChegada = linha.horaChegada;
-      coleta.horaUltimoTerminoCarregamento = linha.horaUltimoTerminoCarregamento;
-      coleta.peso1 = linha.peso1;
-      coleta.peso2 = linha.peso2;
-      coleta.peso3 = linha.peso3;
-      coleta.peso4 = linha.peso4;
-      coleta.peso5 = linha.peso5;
-      coleta.pesoTotal = linha.pesoTotal;
-      coleta.tempoForaUnidade = linha.tempoForaUnidade;
-      coleta.horasForaUnidade = linha.horasForaUnidade;
-      coleta.tipoCaminhao = linha.tipoCaminhao;
-      coleta.kmTotal = linha.kmTotal;
-      coleta.numeroViagens = linha.numeroViagens;
-      coleta.diaSemana = linha.diaSemana;
-      coleta.dados = this.filtrarChavesVazias(linha.raw);
+    const criarColetaSeValida = (linha: LinhaParseada): ColetaData | null => {
+      const coleta = this.montarColetaDeLinha(linha, uploadSalvo.id);
       const validacao = prepararViagemParaImportacao(coleta);
-      if (!validacao.validoDashboard) viagensInconsistentes++;
+      if (validacao.correcoes?.length) viagensCorrigidas++;
+      if (validacao.descartada) return null;
+      if (!validacao.validoDashboard) {
+        viagensInconsistentes++;
+        return null;
+      }
       return coleta;
     };
 
     // Processar NOVOS
     for (const item of analise.novos) {
       try {
-        batch.push(criarColeta(item.dadosPlanilha));
+        const coleta = criarColetaSeValida(item.dadosPlanilha);
+        if (!coleta) {
+          ignorados++;
+          continue;
+        }
+        batch.push(coleta);
         importados++;
         if (batch.length >= BATCH_SIZE) {
           await this.coletaRepo.save(batch);
@@ -620,7 +832,12 @@ export class DeduplicacaoService {
     if (estrategia === 'substituir') {
       for (const item of analise.conflitantes) {
         try {
-          batch.push(criarColeta(item.dadosPlanilha));
+          const coleta = criarColetaSeValida(item.dadosPlanilha);
+          if (!coleta) {
+            ignorados++;
+            continue;
+          }
+          batch.push(coleta);
           substituidos++;
           importados++;
           if (batch.length >= BATCH_SIZE) {
@@ -667,13 +884,31 @@ export class DeduplicacaoService {
       substituidos,
       detalhes,
       viagensInconsistentes,
-      viagensValidasDashboard: importados - viagensInconsistentes,
+      viagensValidasDashboard: importados,
+      viagensCorrigidas,
     };
 
     await this.uploadRepo.save(uploadSalvo);
 
+    if (servicoId) {
+      const diaInicio = await this.obterDiaInicioCicloServico(servicoId);
+      await aplicarReferenciaCicloNoUpload(
+        uploadSalvo.id,
+        this.extrairDatasIsoDasLinhas(linhas),
+        diaInicio,
+      );
+    }
+
     // ⭐ Pós-importação: limpeza de duplicatas via SQL (rede de segurança)
     const duplicatasRemovidas = await this.limparDuplicatas(servicoId);
+    importados = await this.sincronizarContagemUploadAposDedup(uploadSalvo.id);
+
+    if (servicoId) {
+      invalidarCacheDadosServico(servicoId);
+      invalidarCacheDashboardServico(servicoId);
+      dashboardCache.invalidar(servicoId);
+      agendarWarmupPosUpload(servicoId);
+    }
 
     return {
       planilhaUploadId: uploadSalvo.id,
@@ -683,14 +918,18 @@ export class DeduplicacaoService {
       substituidos,
       erros,
       viagensInconsistentes,
-      viagensValidasDashboard: importados - viagensInconsistentes,
+      viagensValidasDashboard: importados,
+      viagensCorrigidas,
+      duplicatasRemovidasSql: duplicatasRemovidas,
       resumo: {
         novos: analise.novos.length,
         duplicadosIgnorados: analise.duplicados.length,
         conflitantes: analise.conflitantes.length,
         substituidos,
         viagensInconsistentes,
-        viagensValidasDashboard: importados - viagensInconsistentes,
+        viagensValidasDashboard: importados,
+        viagensCorrigidas,
+        duplicatasRemovidasSql: duplicatasRemovidas,
       },
     };
   }
@@ -747,12 +986,8 @@ export class DeduplicacaoService {
       };
     }
 
-    // Buscar IDs de upload do serviço
-    const uploads = await this.uploadRepo.find({
-      where: { servico_id: servicoId },
-      select: ['id'],
-    });
-    const uploadIds = uploads.map(u => u.id);
+    // Buscar IDs de upload modificáveis
+    const uploadIds = servicoId ? await obterUploadIdsModificaveis(servicoId) : [];
 
     if (uploadIds.length === 0) {
       return {
@@ -804,6 +1039,191 @@ export class DeduplicacaoService {
   }
 
   /**
+   * Compara métricas por dia — planilha vs sistema (rotas, viagens, peso, km).
+   * Uso diário: detectar divergências antes de atualizar o banco.
+   */
+  async conferirPlanilhaDiaria(buffer: Buffer, servicoId: string): Promise<ConferenciaDiariaPlanilha> {
+    const linhas = this.parsearLinhas(buffer);
+    const mapaPlanilha = new Map<string, MetricasDiaOperacao>();
+
+    for (const linha of linhas) {
+      if (!linha.dataSaida) continue;
+      const dataIso = linha.dataSaida.toISOString().slice(0, 10);
+      try {
+        const coleta = this.montarColetaDeLinha(linha, 0);
+        const validacao = prepararViagemParaImportacao(coleta);
+        if (validacao.descartada || !validacao.validoDashboard) continue;
+
+        const viagens = contarViagensPorRotaRegistro(coleta);
+        const entry = mapaPlanilha.get(dataIso) || { rotas: 0, viagens: 0, pesoKg: 0, km: 0 };
+        entry.rotas += 1;
+        entry.viagens += viagens;
+        entry.pesoKg += coleta.pesoTotal ?? 0;
+        entry.km += coleta.kmTotal ?? 0;
+        mapaPlanilha.set(dataIso, entry);
+      } catch {
+        // linha ignorada
+      }
+    }
+
+    const datasPlanilha = [...mapaPlanilha.keys()].sort();
+    const ultimaDataPlanilha = datasPlanilha.length > 0 ? datasPlanilha[datasPlanilha.length - 1] : null;
+
+    const { bloqueadas } = await verificarDatasEmCicloFechado(servicoId, datasPlanilha);
+    const bloqueadasSet = new Set(bloqueadas);
+
+    const uploadIds = await obterUploadIdsModificaveis(servicoId);
+    const mapaSistema = new Map<string, MetricasDiaOperacao>();
+
+    if (uploadIds.length > 0) {
+      const qb = this.coletaRepo.createQueryBuilder('c')
+        .select("to_char(c.dataSaida, 'YYYY-MM-DD')", 'data')
+        .addSelect('COUNT(*)::int', 'rotas')
+        .addSelect(
+          'COALESCE(SUM(COALESCE(NULLIF(c.viagensPorRota, 0), c.numeroViagens, 1)), 0)',
+          'viagens',
+        )
+        .addSelect('COALESCE(SUM(c.pesoTotal), 0)', 'peso_kg')
+        .addSelect('COALESCE(SUM(c.kmTotal), 0)', 'km')
+        .where('c.planilhaUploadId IN (:...uploadIds)', { uploadIds });
+      aplicarFiltroViagensValidasDashboard(qb, 'c');
+      qb.groupBy("to_char(c.dataSaida, 'YYYY-MM-DD')");
+
+      const rows = await qb.getRawMany<{
+        data: string;
+        rotas: string;
+        viagens: string;
+        peso_kg: string;
+        km: string;
+      }>();
+
+      for (const row of rows) {
+        mapaSistema.set(row.data, {
+          rotas: Number(row.rotas) || 0,
+          viagens: Math.round(Number(row.viagens) || 0),
+          pesoKg: Number(row.peso_kg) || 0,
+          km: Number(row.km) || 0,
+        });
+      }
+    }
+
+    let ultimaDataSistema: string | null = null;
+    if (uploadIds.length > 0) {
+      const maxRow = await this.coletaRepo.createQueryBuilder('c')
+        .select('MAX(c.dataSaida)', 'maxData')
+        .where('c.planilhaUploadId IN (:...uploadIds)', { uploadIds });
+      aplicarFiltroViagensValidasDashboard(maxRow, 'c');
+      const raw = await maxRow.getRawOne<{ maxData: Date | string | null }>();
+      if (raw?.maxData) {
+        const d = raw.maxData instanceof Date ? raw.maxData : new Date(raw.maxData);
+        ultimaDataSistema = d.toISOString().slice(0, 10);
+      }
+    }
+
+    const dias: ConferenciaDiariaPlanilha['dias'] = [];
+    let diasNovos = 0;
+    let diasIguais = 0;
+    let diasDivergentes = 0;
+    let diasBloqueados = 0;
+    let diasSomenteSistema = 0;
+    const datasPlanilhaSet = new Set(datasPlanilha);
+
+    for (const data of datasPlanilha) {
+      const planilha = mapaPlanilha.get(data)!;
+      const sistema = mapaSistema.get(data) ?? null;
+
+      if (bloqueadasSet.has(data)) {
+        diasBloqueados++;
+        dias.push({
+          data,
+          dataBr: formatarDataBr(data),
+          status: 'bloqueado',
+          planilha,
+          sistema,
+          diferencas: ['Data em ciclo fechado — não pode ser alterada'],
+        });
+        continue;
+      }
+
+      if (!sistema || (sistema.rotas === 0 && sistema.viagens === 0)) {
+        diasNovos++;
+        dias.push({
+          data,
+          dataBr: formatarDataBr(data),
+          status: 'novo',
+          planilha,
+          sistema,
+          diferencas: [],
+        });
+        continue;
+      }
+
+      const diferencas = compararMetricasDia(planilha, sistema);
+      if (diferencas.length === 0) {
+        diasIguais++;
+        dias.push({
+          data,
+          dataBr: formatarDataBr(data),
+          status: 'igual',
+          planilha,
+          sistema,
+          diferencas: [],
+        });
+      } else {
+        diasDivergentes++;
+        dias.push({
+          data,
+          dataBr: formatarDataBr(data),
+          status: 'divergente',
+          planilha,
+          sistema,
+          diferencas,
+        });
+      }
+    }
+
+    // Dias no sistema que a planilha nova não traz — serão preservados na consolidação
+    for (const [data, sistema] of mapaSistema) {
+      if (datasPlanilhaSet.has(data)) continue;
+      if (sistema.rotas === 0 && sistema.viagens === 0) continue;
+      diasSomenteSistema++;
+      dias.push({
+        data,
+        dataBr: formatarDataBr(data),
+        status: 'somente_sistema',
+        planilha: null,
+        sistema,
+        diferencas: ['Só no sistema — será mantido ao substituir a planilha'],
+      });
+    }
+
+    dias.sort((a, b) => b.data.localeCompare(a.data));
+
+    const temPlanilhaAnterior = uploadIds.length > 0;
+    const temDivergencia = diasDivergentes > 0 || diasBloqueados > 0;
+
+    return {
+      totalDatasPlanilha: datasPlanilha.length,
+      diasNovos,
+      diasIguais,
+      diasDivergentes,
+      diasBloqueados,
+      diasSomenteSistema,
+      temDivergencia,
+      ultimaDataPlanilha,
+      ultimaDataSistema,
+      recomendacao: montarRecomendacaoConferencia({
+        diasNovos,
+        diasDivergentes,
+        diasBloqueados,
+        diasSomenteSistema,
+        temPlanilhaAnterior,
+      }),
+      dias,
+    };
+  }
+
+  /**
    * Importa uma planilha usando estratégia baseada em DATA.
    * 
    * 'atualizar_data' → apaga TODOS os registros do banco cuja dataSaida
@@ -837,8 +1257,17 @@ export class DeduplicacaoService {
     modo: 'atualizar_data' | 'inserir_data';
     viagensInconsistentes?: number;
     viagensValidasDashboard?: number;
+    viagensCorrigidas?: number;
+    duplicatasRemovidasSql?: number;
+    consolidacao?: {
+      registrosPreservados: number;
+      uploadsRemovidos: number;
+      uploadsRemovidosIds: number[];
+      diasPreservados: string[];
+    };
   }> {
     const linhas = this.parsearLinhas(buffer);
+    await this.validarImportacaoNaoInvadeCicloFechado(servicoId, linhas);
 
     // Agrupar por data
     const mapaDatas = new Map<string, LinhaParseada[]>();
@@ -873,15 +1302,12 @@ export class DeduplicacaoService {
     let importados = 0;
     let ignorados = 0;
     let viagensInconsistentes = 0;
+    let viagensCorrigidas = 0;
 
-    // Se tem serviço, buscar upload IDs
+    // Se tem serviço, buscar upload IDs modificáveis (ciclos fechados protegidos)
     let uploadIds: number[] = [];
     if (servicoId) {
-      const uploads = await this.uploadRepo.find({
-        where: { servico_id: servicoId },
-        select: ['id'],
-      });
-      uploadIds = uploads.map(u => u.id);
+      uploadIds = await obterUploadIdsModificaveis(servicoId);
     }
 
     // ─── Decidir quais datas importar ───
@@ -953,35 +1379,15 @@ export class DeduplicacaoService {
       }
 
       try {
-        const coleta = new ColetaData();
-        coleta.planilhaUploadId = uploadSalvo.id;
-        coleta.dataSaida = linha.dataSaida;
-        coleta.turno = linha.turno;
-        coleta.regional = linha.regional;
-        coleta.distrito = linha.distrito;
-        coleta.placa = linha.placa;
-        coleta.motorista = linha.motorista;
-        coleta.numeroColetores = linha.numeroColetores;
-        coleta.kmSaida = linha.kmSaida;
-        coleta.horaSaida = linha.horaSaida;
-        coleta.kmChegada = linha.kmChegada;
-        coleta.horaChegada = linha.horaChegada;
-        coleta.horaUltimoTerminoCarregamento = linha.horaUltimoTerminoCarregamento;
-        coleta.peso1 = linha.peso1;
-        coleta.peso2 = linha.peso2;
-        coleta.peso3 = linha.peso3;
-        coleta.peso4 = linha.peso4;
-        coleta.peso5 = linha.peso5;
-        coleta.pesoTotal = linha.pesoTotal;
-        coleta.tempoForaUnidade = linha.tempoForaUnidade;
-        coleta.horasForaUnidade = linha.horasForaUnidade;
-        coleta.tipoCaminhao = linha.tipoCaminhao;
-        coleta.kmTotal = linha.kmTotal;
-        coleta.numeroViagens = linha.numeroViagens;
-        coleta.diaSemana = linha.diaSemana;
-        coleta.dados = this.filtrarChavesVazias(linha.raw);
+        const coleta = this.montarColetaDeLinha(linha, uploadSalvo.id);
         const validacao = prepararViagemParaImportacao(coleta);
-        if (!validacao.validoDashboard) viagensInconsistentes++;
+        if (validacao.correcoes?.length) viagensCorrigidas++;
+        if (validacao.descartada) continue;
+        if (!validacao.validoDashboard) {
+          viagensInconsistentes++;
+          ignorados++;
+          continue;
+        }
         batch.push(coleta);
         importados++;
 
@@ -1008,12 +1414,61 @@ export class DeduplicacaoService {
       conflitantes: 0,
       substituidos: estrategia === 'atualizar_data' ? importados : 0,
       viagensInconsistentes,
-      viagensValidasDashboard: importados - viagensInconsistentes,
+      viagensValidasDashboard: importados,
+      viagensCorrigidas,
     };
     await this.uploadRepo.save(uploadSalvo);
 
+    if (servicoId) {
+      const diaInicio = await this.obterDiaInicioCicloServico(servicoId);
+      await aplicarReferenciaCicloNoUpload(uploadSalvo.id, datasUnicas, diaInicio);
+    }
+
     // ⭐ Pós-importação: limpeza de duplicatas via SQL (rede de segurança)
     const duplicatasRemovidas = await this.limparDuplicatas(servicoId);
+    importados = await this.sincronizarContagemUploadAposDedup(uploadSalvo.id);
+
+    let consolidacao: {
+      registrosPreservados: number;
+      uploadsRemovidos: number;
+      uploadsRemovidosIds: number[];
+      diasPreservados: string[];
+    } | undefined;
+
+    // Substituição por data: preserva dias só da antiga e remove planilhas antigas
+    if (estrategia === 'atualizar_data' && servicoId) {
+      consolidacao = await this.consolidarUploadsAposSubstituicao(servicoId, uploadSalvo.id);
+      if (consolidacao.registrosPreservados > 0) {
+        await this.limparDuplicatas(servicoId);
+      }
+      importados = await this.sincronizarContagemUploadAposDedup(uploadSalvo.id);
+
+      const uploadAtual = await this.uploadRepo.findOne({ where: { id: uploadSalvo.id } });
+      if (uploadAtual) {
+        uploadAtual.resumo = {
+          ...(uploadAtual.resumo || {
+            novos: importados,
+            duplicadosIgnorados: ignorados,
+            conflitantes: 0,
+            substituidos: importados,
+          }),
+          viagensValidasDashboard: importados,
+          consolidacao: {
+            registrosPreservados: consolidacao.registrosPreservados,
+            uploadsRemovidos: consolidacao.uploadsRemovidos,
+            diasPreservados: consolidacao.diasPreservados,
+          },
+        };
+        await this.uploadRepo.save(uploadAtual);
+      }
+    }
+
+    if (servicoId) {
+      invalidarCacheDadosServico(servicoId);
+      invalidarCacheDashboardServico(servicoId);
+      dashboardCache.invalidar(servicoId);
+      agendarWarmupPosUpload(servicoId);
+    }
 
     return {
       planilhaUploadId: uploadSalvo.id,
@@ -1025,7 +1480,10 @@ export class DeduplicacaoService {
       datasApagadas,
       modo: estrategia,
       viagensInconsistentes,
-      viagensValidasDashboard: importados - viagensInconsistentes,
+      viagensValidasDashboard: importados,
+      viagensCorrigidas,
+      duplicatasRemovidasSql: duplicatasRemovidas,
+      consolidacao,
     };
   }
 

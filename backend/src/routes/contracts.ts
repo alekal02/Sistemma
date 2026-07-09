@@ -1,9 +1,10 @@
 import { Router } from 'express';
 import { ContractController } from '../controllers/ContractController';
-import { authenticate } from '../middlewares/authMiddleware';
+import { authenticate, authorize } from '../middlewares/authMiddleware';
 
 const router = Router();
 const controller = new ContractController();
+const adminOnly = authorize('admin');
 
 // ⚠️ Rotas fixas DEVEM vir antes de rotas com parâmetro :id
 
@@ -22,8 +23,8 @@ router.get('/:id', authenticate, (req, res) => controller.buscarUm(req, res));
 // Atualizar contrato
 router.put('/:id', authenticate, (req, res) => controller.atualizar(req, res));
 
-// Excluir contrato
-router.delete('/:id', authenticate, (req, res) => controller.excluir(req, res));
+// Excluir contrato — apenas admin (ação destrutiva)
+router.delete('/:id', authenticate, adminOnly, (req, res) => controller.excluir(req, res));
 
 // KPIs do contrato
 router.get('/:id/kpis', authenticate, (req, res) => controller.listarKpis(req, res));

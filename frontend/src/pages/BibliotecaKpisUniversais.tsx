@@ -11,6 +11,8 @@ import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import kpiUniversalService from '../services/kpiUniversalService';
 import graficosPadraoService from '../services/graficosPadraoService';
+import contractService from '../services/contractService';
+import servicoService from '../services/servicoService';
 import type { KpiUniversal } from '../services/kpiUniversalService';
 import type { GraficoPadraoConfig } from '../services/graficosPadraoService';
 import { TIPOS_SERVICO_LABELS, TIPOS_SERVICO_META, type TipoServico } from '../types';
@@ -25,7 +27,6 @@ function getTipoLabel(tipo: string): string {
   return (TIPOS_SERVICO_LABELS as any)[tipo] || tipo;
 }
 
-// Helper: cor associada ao tipo
 function getTipoCor(tipo: string): string {
   const cores: Record<string, string> = {
     coleta_caminhao: '#6366f1',
@@ -38,6 +39,12 @@ function getTipoCor(tipo: string): string {
     geral: '#64748b',
   };
   return cores[tipo] || '#6366f1';
+}
+
+/** Converte tipo da UI para parâmetro da API (undefined = todos). */
+function tipoParaApi(tipo: string | null | undefined): string | undefined {
+  if (!tipo || tipo === '__todos__') return undefined;
+  return tipo;
 }
 
 export default function BibliotecaKpisUniversais() {
@@ -84,18 +91,8 @@ export default function BibliotecaKpisUniversais() {
     setCarregandoIndicadores(true);
     try {
       // Buscar todos os contratos
-      const resContratos = await fetch('/api/contracts', {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!resContratos.ok) throw new Error('Erro ao carregar contratos');
-      const contratosData = await resContratos.json();
-      const contratos: { id: string; numeroContrato: string }[] = contratosData.contratos || [];
-
-      // Buscar KPIs consolidados
-      const resConsolidado = await fetch('/dashboard/kpis-consolidado', {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const consolidadoData = resConsolidado.ok ? await resConsolidado.json() : { servicos: [] };
+      const contratos = await contractService.listar();
+      const consolidadoData = await servicoService.getKpisConsolidado();
       const mapaKpis = new Map<string, { kpis: any[]; totalRegistros: number; ultimoUpload: string | null }>();
       for (const sv of consolidadoData.servicos || []) {
         mapaKpis.set(sv.id, {
@@ -109,15 +106,11 @@ export default function BibliotecaKpisUniversais() {
       const todosServicos: any[] = [];
       for (const contrato of contratos) {
         try {
-          const resServicos = await fetch(`/api/contracts/${contrato.id}/servicos`, {
-            headers: { Authorization: `Bearer ${token}` },
-          });
-          if (!resServicos.ok) continue;
-          const servicosData = await resServicos.json();
-          const lista = servicosData.servicos || [];
+          const lista = await servicoService.listarServicosContrato(contrato.id);
 
           for (const sv of lista) {
-            const tipoOk = tipo ? sv.tipo === tipo : true;
+            const tiposSv = (sv.tipo || '').split(',').map((t: string) => t.trim());
+            const tipoOk = tipo ? tiposSv.includes(tipo) : true;
             if (!tipoOk) continue;
             const infoKpi = mapaKpis.get(sv.id);
             todosServicos.push({
@@ -166,11 +159,11 @@ export default function BibliotecaKpisUniversais() {
 
       setKpisAgregadosPorTipo(agregados);
     } catch {
-      // Silêncio
+      adicionarToast('Erro ao carregar dados dos gráficos', 'error');
     } finally {
       setCarregandoIndicadores(false);
     }
-  }, [token]);
+  }, [token, adicionarToast]);
 
   // ──────────────────────────────────────
   // Estado dos tipos (tela inicial)
@@ -241,7 +234,7 @@ export default function BibliotecaKpisUniversais() {
       const data = await graficosPadraoService.listarBiblioteca(tipo);
       setGraficosBiblioteca(data.graficos);
     } catch {
-      // Silêncio — não mostrar toast para erro de gráficos
+      adicionarToast('Erro ao carregar gráficos da biblioteca', 'error');
     } finally {
       setCarregandoGraficos(false);
     }
@@ -271,7 +264,7 @@ export default function BibliotecaKpisUniversais() {
       await graficosPadraoService.excluir(graficoId);
       adicionarToast('Gráfico personalizado removido', 'success');
       setConfirmarExcluirGrafico(null);
-      carregarGraficos(tipoSelecionado === '__todos__' ? undefined : (tipoSelecionado ?? undefined));
+      carregarGraficos(tipoParaApi(tipoSelecionado));
     } catch {
       adicionarToast('Erro ao remover gráfico', 'error');
     }
@@ -280,9 +273,10 @@ export default function BibliotecaKpisUniversais() {
   // Carrega KPIs quando seleciona um tipo
   useEffect(() => {
     if (tipoSelecionado !== null) {
-      carregarKpis(tipoSelecionado);
-      carregarGraficos(tipoSelecionado === '__todos__' ? undefined : (tipoSelecionado ?? undefined));
-      carregarDadosGraficos(tipoSelecionado === '__todos__' ? undefined : (tipoSelecionado ?? undefined));
+      const tipoApi = tipoParaApi(tipoSelecionado);
+      carregarKpis(tipoApi);
+      carregarGraficos(tipoApi);
+      carregarDadosGraficos(tipoApi);
     } else {
       setKpis([]);
       setGraficosBiblioteca([]);
@@ -298,18 +292,24 @@ export default function BibliotecaKpisUniversais() {
     try {
       await kpiUniversalService.duplicar(id);
       adicionarToast('KPI universal duplicado!', 'success');
-      carregarKpis(tipoSelecionado ?? undefined);
+      carregarKpis(tipoParaApi(tipoSelecionado));
     } catch {
       adicionarToast('Erro ao duplicar', 'error');
     }
   };
 
   const handleExcluir = async (id: string) => {
+    const kpi = kpis.find(k => k.id === id);
+    if (kpi && !kpi.isPersonalizado) {
+      adicionarToast('KPIs de sistema não podem ser excluídos. Use Duplicar para criar uma versão personalizada.', 'warning');
+      setConfirmarExcluir(null);
+      return;
+    }
     try {
       await kpiUniversalService.excluir(id);
       adicionarToast('KPI universal excluído!', 'success');
       setConfirmarExcluir(null);
-      carregarKpis(tipoSelecionado ?? undefined);
+      carregarKpis(tipoParaApi(tipoSelecionado));
       // Atualiza contagem dos tipos
       carregarTipos();
     } catch {
@@ -318,6 +318,10 @@ export default function BibliotecaKpisUniversais() {
   };
 
   const handleEditar = (kpi: KpiUniversal) => {
+    if (!kpi.isPersonalizado) {
+      adicionarToast('KPIs de sistema não podem ser editados. Use Duplicar para criar uma versão personalizada.', 'warning');
+      return;
+    }
     setEditandoId(kpi.id);
     setForm({
       nome: kpi.nome,
@@ -341,6 +345,10 @@ export default function BibliotecaKpisUniversais() {
   };
 
   const handleNovo = () => {
+    if (tipoSelecionado === '__todos__') {
+      adicionarToast('Selecione um tipo específico para criar um KPI', 'warning');
+      return;
+    }
     setEditandoId(null);
     setForm({
       nome: '',
@@ -353,7 +361,7 @@ export default function BibliotecaKpisUniversais() {
       cor: '#6366f1',
       descricao: '',
       metaSugerida: '',
-      tipoServico: tipoSelecionado || 'coleta_caminhao',
+      tipoServico: tipoParaApi(tipoSelecionado) || 'coleta_caminhao',
       placeholders: [{ nome: '', label: '', colunasCandidatas: '' }],
     });
     setMostrarForm(true);
@@ -396,7 +404,7 @@ export default function BibliotecaKpisUniversais() {
       }
       setMostrarForm(false);
       setEditandoId(null);
-      carregarKpis(tipoSelecionado ?? undefined);
+      carregarKpis(tipoParaApi(tipoSelecionado));
       carregarTipos();
     } catch {
       adicionarToast('Erro ao salvar KPI universal', 'error');
@@ -699,7 +707,7 @@ export default function BibliotecaKpisUniversais() {
             </h2>
           </div>
           <div style={{ display: 'flex', gap: '0.5rem' }}>
-            {abaAtiva === 'kpis' && (
+            {abaAtiva === 'kpis' && tipoSelecionado !== '__todos__' && (
               <button className="btn btn-primary" onClick={handleNovo} style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', fontSize: '0.82rem' }}>
                 <FiPlus size={14} /> Novo KPI Universal
               </button>
@@ -997,7 +1005,17 @@ export default function BibliotecaKpisUniversais() {
                     </div>
 
                     {/* Ações */}
-                    <div style={{ display: 'flex', gap: '0.2rem', flexShrink: 0 }}>
+                    <div style={{ display: 'flex', gap: '0.2rem', flexShrink: 0, alignItems: 'center' }}>
+                      {!kpi.isPersonalizado && (
+                        <span style={{
+                          fontSize: '0.58rem', fontWeight: 600, color: '#64748b',
+                          background: '#f1f5f9', padding: '0.15rem 0.35rem',
+                          borderRadius: '4px', marginRight: '0.15rem',
+                        }}>
+                          Sistema
+                        </span>
+                      )}
+                      {kpi.isPersonalizado && (
                       <button
                         onClick={() => handleEditar(kpi)}
                         title="Editar"
@@ -1011,6 +1029,7 @@ export default function BibliotecaKpisUniversais() {
                       >
                         <FiEdit2 size={12} />
                       </button>
+                      )}
                       <button
                         onClick={() => handleDuplicar(kpi.id)}
                         title="Duplicar"
@@ -1024,7 +1043,8 @@ export default function BibliotecaKpisUniversais() {
                       >
                         <FiCopy size={12} />
                       </button>
-                      {confirmarExcluir === kpi.id ? (
+                      {kpi.isPersonalizado && (
+                        confirmarExcluir === kpi.id ? (
                         <div style={{ display: 'flex', gap: '0.2rem' }}>
                           <button
                             onClick={() => handleExcluir(kpi.id)}
@@ -1060,7 +1080,7 @@ export default function BibliotecaKpisUniversais() {
                         >
                           <FiTrash2 size={12} />
                         </button>
-                      )}
+                      ))}
                     </div>
                   </div>
                   ))}

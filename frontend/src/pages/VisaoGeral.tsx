@@ -1,15 +1,19 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   FiSettings, FiRefreshCw, FiBarChart2, FiAlertCircle,
   FiTrendingUp, FiDollarSign, FiActivity, FiTruck,
-  FiClock, FiMapPin, FiArrowRight, FiDatabase,
+  FiClock, FiMapPin, FiArrowRight, FiDatabase, FiGrid, FiColumns,
 } from 'react-icons/fi';
 import { useToast } from '../contexts/ToastContext';
 import { useBreadcrumbs } from '../contexts/BreadcrumbContext';
 import servicoService from '../services/servicoService';
+import api from '../services/api';
 import type { ServicoConsolidado, KpiConsolidadoItem } from '../services/servicoService';
+import CompararPorTipo from '../components/CompararPorTipo';
 import '../styles/Dashboard.css';
+
+type AbaDashboard = 'visao' | 'comparar';
 
 function formatarUltimoUpload(data: string | null): string {
   if (!data) return 'Nunca';
@@ -30,9 +34,9 @@ function estaDesatualizado(data: string | null): boolean {
 }
 
 const CORES_KPI: Record<string, { bg: string; text: string; bar: string }> = {
-  numero: { bg: '#f1f5f9', text: '#1e293b', bar: '#22c55e' },
-  moeda: { bg: '#fefce8', text: '#b45309', bar: '#f59e0b' },
-  porcentagem: { bg: '#ecfdf5', text: '#047857', bar: '#22c55e' },
+  numero: { bg: '#f8f9fa', text: '#202124', bar: '#1a73e8' },
+  moeda: { bg: '#fef7e0', text: '#e37400', bar: '#f9ab00' },
+  porcentagem: { bg: '#e6f4ea', text: '#137333', bar: '#1e8e3e' },
 };
 
 function iconeKpi(nome: string): React.ReactElement {
@@ -61,7 +65,19 @@ function KpiMiniCard({ kpi }: { kpi: KpiConsolidadoItem }) {
   );
 }
 
-function ServicoCard({ servico, onNavigate }: { servico: ServicoConsolidado; onNavigate: (path: string) => void }) {
+function ServicoCard({
+  servico,
+  onNavigate,
+  selecionado,
+  onToggleSelecao,
+  carregandoKpis = false,
+}: {
+  servico: ServicoConsolidado;
+  onNavigate: (path: string) => void;
+  selecionado?: boolean;
+  onToggleSelecao?: (id: string) => void;
+  carregandoKpis?: boolean;
+}) {
   const desatualizado = estaDesatualizado(servico.ultimoUpload);
   const kpisVisiveis = servico.kpis.slice(0, 6);
   const kpisExcedentes = servico.kpis.length - 6;
@@ -69,10 +85,20 @@ function ServicoCard({ servico, onNavigate }: { servico: ServicoConsolidado; onN
   return (
     <div
       id={'servico-card-' + servico.id}
-      className={'vg-card' + (desatualizado ? ' desatualizado' : '')}
+      className={'vg-card' + (desatualizado ? ' desatualizado' : '') + (selecionado ? ' selecionado-comparar' : '')}
     >
       <div className="vg-card-header">
         <div className="vg-card-header-left">
+          {onToggleSelecao && (
+            <button
+              type="button"
+              className={'vg-card-checkbox' + (selecionado ? ' ativo' : '')}
+              onClick={() => onToggleSelecao(servico.id)}
+              title="Selecionar para comparar"
+            >
+              {selecionado ? '✓' : ''}
+            </button>
+          )}
           <div className="vg-card-contrato">
             <FiDatabase size={11} /> {servico.contratoNome}
           </div>
@@ -97,7 +123,13 @@ function ServicoCard({ servico, onNavigate }: { servico: ServicoConsolidado; onN
       </div>
 
       <div className="vg-card-kpis">
-        {kpisVisiveis.length > 0 ? (
+        {carregandoKpis ? (
+          <div className="vg-kpi-grid">
+            {[1, 2, 3, 4].map(i => (
+              <div key={i} className="skeleton" style={{ height: '52px', borderRadius: '8px' }} />
+            ))}
+          </div>
+        ) : kpisVisiveis.length > 0 ? (
           <div className="vg-kpi-grid">
             {kpisVisiveis.map((kpi, idx) => (
               <KpiMiniCard key={kpi.id || kpi.nome + idx} kpi={kpi} />
@@ -144,18 +176,35 @@ export default function VisaoGeral() {
 
   const [servicos, setServicos] = useState<ServicoConsolidado[]>([]);
   const [carregando, setCarregando] = useState(true);
+  const [carregandoKpis, setCarregandoKpis] = useState(false);
   const [erro, setErro] = useState('');
+  const [abaAtiva, setAbaAtiva] = useState<AbaDashboard>('visao');
+  const [servicosSelecionados, setServicosSelecionados] = useState<Set<string>>(new Set());
+  const [selecaoComparar, setSelecaoComparar] = useState<string[] | undefined>(undefined);
+  const [metaContratos, setMetaContratos] = useState<Record<string, number>>({});
 
   useEffect(() => {
     setBreadcrumbs([{ label: 'Dashboard' }]);
   }, [setBreadcrumbs]);
 
-  const carregarDados = useCallback(async () => {
+  useEffect(() => {
+    api.get<{ contratos: Array<{ id: string; diaInicioCiclo?: number }> }>('/contracts/saude')
+      .then(({ data }) => {
+        const map: Record<string, number> = {};
+        for (const c of data.contratos || []) {
+          map[c.id] = c.diaInicioCiclo ?? 1;
+        }
+        setMetaContratos(map);
+      })
+      .catch(() => { /* fallback dia 1 */ });
+  }, []);
+
+  const carregarResumo = useCallback(async () => {
     setCarregando(true);
     setErro('');
     try {
-      const data = await servicoService.getKpisConsolidado();
-      setServicos(data.servicos || []);
+      const resumo = await servicoService.getKpisConsolidado({ modo: 'resumo' });
+      setServicos(resumo.servicos || []);
     } catch {
       setErro('Erro ao carregar dados dos servicos');
       adicionarToast('Erro ao carregar dashboard', 'error');
@@ -164,7 +213,31 @@ export default function VisaoGeral() {
     }
   }, [adicionarToast]);
 
-  useEffect(() => { carregarDados(); }, []);
+  const carregarKpisCompletos = useCallback(async () => {
+    if (servicos.length === 0) return;
+    setCarregandoKpis(true);
+    try {
+      const completo = await servicoService.getKpisConsolidado({ modo: 'completo' });
+      setServicos(completo.servicos || []);
+    } catch {
+      adicionarToast('Erro ao carregar KPIs detalhados', 'error');
+    } finally {
+      setCarregandoKpis(false);
+    }
+  }, [adicionarToast, servicos.length]);
+
+  const carregarDados = useCallback(async () => {
+    await carregarResumo();
+    await carregarKpisCompletos();
+  }, [carregarResumo, carregarKpisCompletos]);
+
+  useEffect(() => { carregarResumo(); }, [carregarResumo]);
+
+  useEffect(() => {
+    if (servicos.length === 0 || carregando) return;
+    const timer = window.setTimeout(() => { carregarKpisCompletos(); }, 2500);
+    return () => window.clearTimeout(timer);
+  }, [servicos.length, carregando, carregarKpisCompletos]);
 
   const handleNavigate = useCallback((path: string) => {
     navigate(path);
@@ -181,6 +254,43 @@ export default function VisaoGeral() {
     }
     grupos.get(s.contratoId)!.servicos.push(s);
   }
+
+  const contratosOpcoes = useMemo(() => {
+    const map = new Map<string, { id: string; nome: string; diaInicioCiclo: number }>();
+    for (const s of servicos) {
+      if (!map.has(s.contratoId)) {
+        map.set(s.contratoId, {
+          id: s.contratoId,
+          nome: s.contratoNome,
+          diaInicioCiclo: metaContratos[s.contratoId] ?? 1,
+        });
+      }
+    }
+    return Array.from(map.values());
+  }, [servicos, metaContratos]);
+
+  const servicosCatalogo = servicos.map(s => ({
+    id: s.id,
+    nome: s.servicoNome,
+    contratoId: s.contratoId,
+    contratoNome: s.contratoNome,
+    tipoServico: s.tipoServico || 'geral',
+  }));
+
+  const toggleSelecaoServico = (id: string) => {
+    setServicosSelecionados(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const abrirComparacaoSelecionados = () => {
+    if (servicosSelecionados.size < 2) return;
+    setSelecaoComparar([...servicosSelecionados]);
+    setAbaAtiva('comparar');
+  };
 
   if (carregando) {
     return (
@@ -236,14 +346,58 @@ export default function VisaoGeral() {
   return (
     <div className="vg-container">
       <div className="vg-header">
-        <h2>Dashboard</h2>
-        <p>
-          {totalServicos} serviço(s) em {grupos.size} contrato(s) —{' '}
-          {totalRegistros.toLocaleString('pt-BR')} registros
-        </p>
+        <div className="vg-header-top">
+          <div>
+            <h2>Dashboard</h2>
+            <p>
+              {totalServicos} serviço(s) em {grupos.size} contrato(s) —{' '}
+              {totalRegistros.toLocaleString('pt-BR')} registros
+            </p>
+          </div>
+          <div className="vg-header-actions">
+            {servicosSelecionados.size >= 2 && abaAtiva === 'visao' && (
+              <button className="btn btn-sm btn-primary" onClick={abrirComparacaoSelecionados}>
+                <FiColumns size={14} /> Comparar {servicosSelecionados.size} selecionados
+              </button>
+            )}
+            <button
+              className="btn-refresh"
+              onClick={carregarDados}
+              title="Atualizar"
+              disabled={carregandoKpis}
+            >
+              <FiRefreshCw size={14} className={carregandoKpis ? 'spin' : ''} />
+            </button>
+          </div>
+        </div>
+        <div className="vg-abas">
+          <button
+            type="button"
+            className={'vg-aba' + (abaAtiva === 'visao' ? ' ativa' : '')}
+            onClick={() => setAbaAtiva('visao')}
+          >
+            <FiGrid size={14} /> Visao Geral
+          </button>
+          <button
+            type="button"
+            className={'vg-aba' + (abaAtiva === 'comparar' ? ' ativa' : '')}
+            onClick={() => setAbaAtiva('comparar')}
+          >
+            <FiColumns size={14} /> Comparar por Tipo
+          </button>
+        </div>
       </div>
 
-      {Array.from(grupos.entries()).map(([contratoId, grupo]) => (
+      {abaAtiva === 'comparar' && (
+        <CompararPorTipo
+          contratos={contratosOpcoes}
+          servicosCatalogo={servicosCatalogo}
+          selecaoInicial={selecaoComparar}
+          onSelecaoConsumida={() => setSelecaoComparar(undefined)}
+        />
+      )}
+
+      {abaAtiva === 'visao' && Array.from(grupos.entries()).map(([contratoId, grupo]) => (
         <div key={contratoId} className="vg-grupo">
           <div className="vg-grupo-header">
             <div className="vg-grupo-indicator" />
@@ -254,7 +408,14 @@ export default function VisaoGeral() {
           </div>
           <div className="vg-servicos-grid">
             {grupo.servicos.map(servico => (
-              <ServicoCard key={servico.id} servico={servico} onNavigate={handleNavigate} />
+              <ServicoCard
+                key={servico.id}
+                servico={servico}
+                onNavigate={handleNavigate}
+                selecionado={servicosSelecionados.has(servico.id)}
+                onToggleSelecao={toggleSelecaoServico}
+                carregandoKpis={carregandoKpis}
+              />
             ))}
           </div>
         </div>

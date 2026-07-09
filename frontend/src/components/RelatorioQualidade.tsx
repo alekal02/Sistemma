@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { FiAlertTriangle, FiCheckCircle, FiXCircle, FiAlertCircle, FiDownload, FiX, FiBarChart2 } from 'react-icons/fi';
 import { useAuth } from '../contexts/AuthContext';
+import coletaService from '../services/coletaService';
 
 /* ───────────────────────────────────────────
    TIPOS
@@ -23,6 +24,7 @@ interface Problema {
 
 interface ResumoQualidade {
   registrosValidos: number;
+  registrosInconsistentesDashboard?: number;
   registrosComAlgumProblema: number;
   percentualValido: number;
   categorias: {
@@ -33,6 +35,7 @@ interface ResumoQualidade {
     semKmTotal: number;
     semPlaca: number;
     semMotorista: number;
+    kmRotaAlto: number;
   };
 }
 
@@ -123,20 +126,9 @@ export default function RelatorioQualidade({ uploadId, servicoId, aberto, onFech
     setErro(null);
     setRelatorio(null);
     try {
-      let url = '';
-      if (uploadId) {
-        url = `/api/coleta/qualidade/${uploadId}`;
-      } else if (servicoId) {
-        url = `/api/coleta/qualidade/servico/${servicoId}`;
-      }
-      const res = await fetch(url, {
-        headers: { Authorization: 'Bearer ' + token },
-      });
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || 'Erro ao carregar relatório');
-      }
-      const data = await res.json();
+      const data = uploadId
+        ? await coletaService.relatorioQualidade(uploadId)
+        : await coletaService.relatorioQualidadeServico(servicoId!);
       setRelatorio(data);
     } catch (err: any) {
       setErro(err.message);
@@ -319,15 +311,22 @@ function RelatorioConteudo({ relatorio }: { relatorio: RelatorioData }) {
           />
           <ResumoCard
             icon={<FiCheckCircle size={18} />}
-            label="Registros Válidos"
+            label="No Dashboard"
             valor={relatorio.resumo.registrosValidos.toLocaleString('pt-BR')}
             cor="#16a34a"
           />
           <ResumoCard
             icon={<FiAlertTriangle size={18} />}
-            label="Com Problemas"
-            valor={relatorio.resumo.registrosComAlgumProblema.toLocaleString('pt-BR')}
+            label="Fora do Dashboard"
+            valor={(relatorio.resumo.registrosInconsistentesDashboard
+              ?? (relatorio.totalRegistros - relatorio.resumo.registrosValidos)).toLocaleString('pt-BR')}
             cor="#dc2626"
+          />
+          <ResumoCard
+            icon={<FiAlertCircle size={18} />}
+            label="Alertas de Campo"
+            valor={relatorio.resumo.registrosComAlgumProblema.toLocaleString('pt-BR')}
+            cor="#ea580c"
           />
           <ResumoCard
             icon={<FiAlertCircle size={18} />}
@@ -368,6 +367,7 @@ function RelatorioConteudo({ relatorio }: { relatorio: RelatorioData }) {
           <CatCard label="Sem KM Total" valor={relatorio.resumo.categorias.semKmTotal} cor="#ca8a04" />
           <CatCard label="Sem Placa" valor={relatorio.resumo.categorias.semPlaca} cor="#dc2626" />
           <CatCard label="Sem Motorista" valor={relatorio.resumo.categorias.semMotorista} cor="#ca8a04" />
+          <CatCard label="KM Rota > 200" valor={relatorio.resumo.categorias.kmRotaAlto ?? 0} cor="#ea580c" />
         </div>
       </div>
 
@@ -601,15 +601,16 @@ function gerarHtmlRelatorio(relatorio: RelatorioData, nivel: { label: string; co
     <div>
       <div style="font-size: 16px; font-weight: 800; color: ${nivel.cor};">${nivel.label}</div>
       <div style="font-size: 12px; color: #64748b;">${relatorio.totalRegistros} registros analisados</div>
-      <div style="font-size: 12px; color: #64748b;">${relatorio.resumo.percentualValido}% válidos</div>
+      <div style="font-size: 12px; color: #64748b;">${relatorio.resumo.percentualValido}% no dashboard</div>
     </div>
   </div>
 
   <table style="margin-bottom: 20px;">
     <tr><th colspan="2">Resumo</th></tr>
     <tr><td>Total de Registros</td><td style="font-weight: 700;">${relatorio.totalRegistros.toLocaleString('pt-BR')}</td></tr>
-    <tr><td>Registros Válidos</td><td style="font-weight: 700; color: #16a34a;">${relatorio.resumo.registrosValidos.toLocaleString('pt-BR')}</td></tr>
-    <tr><td>Registros com Problemas</td><td style="font-weight: 700; color: #dc2626;">${relatorio.resumo.registrosComAlgumProblema.toLocaleString('pt-BR')}</td></tr>
+    <tr><td>No Dashboard</td><td style="font-weight: 700; color: #16a34a;">${relatorio.resumo.registrosValidos.toLocaleString('pt-BR')}</td></tr>
+    <tr><td>Fora do Dashboard</td><td style="font-weight: 700; color: #dc2626;">${(relatorio.resumo.registrosInconsistentesDashboard ?? (relatorio.totalRegistros - relatorio.resumo.registrosValidos)).toLocaleString('pt-BR')}</td></tr>
+    <tr><td>Alertas de Campo</td><td style="font-weight: 700; color: #ea580c;">${relatorio.resumo.registrosComAlgumProblema.toLocaleString('pt-BR')}</td></tr>
     <tr><td>Tipos de Problemas</td><td style="font-weight: 700;">${relatorio.totalProblemas}</td></tr>
   </table>
 
@@ -622,6 +623,7 @@ function gerarHtmlRelatorio(relatorio: RelatorioData, nivel: { label: string; co
     <tr><td>Sem KM Total</td><td style="font-weight: 700; color: #ca8a04;">${relatorio.resumo.categorias.semKmTotal}</td></tr>
     <tr><td>Sem Placa</td><td style="font-weight: 700; color: #dc2626;">${relatorio.resumo.categorias.semPlaca}</td></tr>
     <tr><td>Sem Motorista</td><td style="font-weight: 700; color: #ca8a04;">${relatorio.resumo.categorias.semMotorista}</td></tr>
+    <tr><td>KM Rota &gt; 200</td><td style="font-weight: 700; color: #ea580c;">${relatorio.resumo.categorias.kmRotaAlto ?? 0}</td></tr>
   </table>
 
   <h2 style="margin-bottom: 10px;">Detalhamento dos Problemas</h2>

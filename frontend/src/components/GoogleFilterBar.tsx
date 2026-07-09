@@ -13,8 +13,8 @@
 
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import {
-  FiCalendar, FiFilter, FiX, FiChevronDown, FiSearch,
-  FiClock, FiTrendingUp, FiRefreshCw, FiPlus,
+  FiCalendar, FiX, FiChevronDown, FiSearch,
+  FiTrendingUp, FiRefreshCw, FiDatabase, FiSliders,
 } from 'react-icons/fi';
 import type {
   PeriodoPreset, PeriodoState, ComparacaoState,
@@ -49,6 +49,15 @@ interface GoogleFilterBarProps {
 
   /** Opcional: label personalizada */
   label?: string;
+  /** Oculta pills de período (ex.: dashboard executivo usa ciclo do contrato) */
+  omitirSeletorPeriodo?: boolean;
+}
+
+function formatarDataCurta(iso: string): string {
+  if (!iso) return '';
+  const partes = iso.split('-');
+  if (partes.length !== 3) return iso;
+  return `${partes[2]}/${partes[1]}`;
 }
 
 /* ══════════════════════════════════════
@@ -71,6 +80,7 @@ export default function GoogleFilterBar({
   onLimparTodos,
   onRefresh,
   label = 'Filtros',
+  omitirSeletorPeriodo = false,
 }: GoogleFilterBarProps) {
   /* ═══ Estado local do dropdown de busca ═══ */
   const [dropdownAberto, setDropdownAberto] = useState(false);
@@ -183,46 +193,49 @@ export default function GoogleFilterBar({
     ? Math.round((totalFiltrado / totalRegistros) * 100)
     : 100;
 
+  const periodoIntervalo = useMemo(() => {
+    if (periodo.dataInicio === periodo.dataFim) {
+      return formatarDataCurta(periodo.dataInicio);
+    }
+    return `${formatarDataCurta(periodo.dataInicio)} – ${formatarDataCurta(periodo.dataFim)}`;
+  }, [periodo.dataInicio, periodo.dataFim]);
+
+  const placeholderFiltro = useMemo(() => {
+    const nomes = dimensoesDisponiveis.slice(0, 3).map(d => d.label.toLowerCase());
+    if (nomes.length === 0) return 'Buscar dimensão para filtrar...';
+    return `Filtrar por ${nomes.join(', ')}...`;
+  }, [dimensoesDisponiveis]);
+
+  const dimensoesRapidas = useMemo(
+    () => dimensoesDisponiveis.slice(0, 4),
+    [dimensoesDisponiveis],
+  );
+
+  const temFiltrosOuComparacao = totalFiltrosAtivos > 0 || comparacao.ativo;
+
   return (
     <div className="gfb-container">
-      {/* ═══ LINHA 1: Período + Ações ═══ */}
-      <div className="gfb-top-row">
-        {/* Pill group de período */}
-        <div className="gfb-periodo-group">
-          <FiCalendar size={14} className="gfb-periodo-icon" />
-          {periodos.map(p => {
-            const ativo = periodo.preset === p.preset;
-            return (
-              <button
-                key={p.preset}
-                className={`gfb-periodo-pill ${ativo ? 'active' : ''}`}
-                onClick={() => {
-                  if (p.preset === 'personalizado') {
-                    setDatePickerAberto(!datePickerAberto);
-                  } else {
-                    onSetPeriodo(p.preset);
-                    setDatePickerAberto(false);
-                  }
-                }}
-              >
-                {p.label}
-              </button>
-            );
-          })}
-
-          {/* Comparação */}
-          <button
-            className={`gfb-compare-btn ${comparacao.ativo ? 'active' : ''}`}
-            onClick={onToggleComparacao}
-            title="Comparar com período anterior"
-          >
-            <FiTrendingUp size={13} />
-            <span>Comparar</span>
-          </button>
+      {/* ═══ Cabeçalho: Período + resumo de registros ═══ */}
+      <div className="gfb-header-row">
+        <div className="gfb-header-left">
+          <span className="gfb-section-label">
+            <FiCalendar size={12} />
+            Período
+          </span>
+          <span className="gfb-periodo-resumo" title={periodo.label}>
+            {periodoIntervalo}
+            <span className="gfb-periodo-resumo-label">· {periodo.label}</span>
+          </span>
         </div>
-
-        {/* Ações direita */}
-        <div className="gfb-actions">
+        <div className="gfb-header-right">
+          <div
+            className={`gfb-stat-badge ${totalFiltrosAtivos > 0 && totalFiltrado < totalRegistros ? 'filtrado' : ''}`}
+            title={totalFiltrosAtivos > 0 ? `${totalFiltrado} de ${totalRegistros} registros` : `${totalRegistros} registros no período`}
+          >
+            <FiDatabase size={12} />
+            <strong>{(totalFiltrosAtivos > 0 ? totalFiltrado : totalRegistros).toLocaleString('pt-BR')}</strong>
+            <span>{totalFiltrosAtivos > 0 && totalFiltrado < totalRegistros ? 'filtrados' : 'registros'}</span>
+          </div>
           {onRefresh && (
             <button
               className="gfb-refresh-btn"
@@ -236,76 +249,132 @@ export default function GoogleFilterBar({
         </div>
       </div>
 
-      {/* ═══ Date Picker Expandido (personalizado) ═══ */}
-      {datePickerAberto && (
+      {/* ═══ Pills de período (scroll horizontal) ═══ */}
+      {!omitirSeletorPeriodo && (
+      <div className="gfb-top-row">
+        <div className="gfb-periodo-scroll">
+          <div className="gfb-periodo-group">
+            {periodos.map(p => {
+              const ativo = periodo.preset === p.preset;
+              return (
+                <button
+                  key={p.preset}
+                  className={`gfb-periodo-pill ${ativo ? 'active' : ''}`}
+                  onClick={() => {
+                    if (p.preset === 'personalizado') {
+                      setDatePickerAberto(!datePickerAberto);
+                    } else {
+                      onSetPeriodo(p.preset);
+                      setDatePickerAberto(false);
+                    }
+                  }}
+                >
+                  {p.label}
+                </button>
+              );
+            })}
+            <button
+              className={`gfb-compare-btn ${comparacao.ativo ? 'active' : ''}`}
+              onClick={onToggleComparacao}
+              title="Comparar com período anterior"
+            >
+              <FiTrendingUp size={13} />
+              <span>Comparar</span>
+            </button>
+          </div>
+        </div>
+      </div>
+      )}
+
+      {!omitirSeletorPeriodo && datePickerAberto && (
         <div className="gfb-datepicker">
-          <div className="gfb-date-field">
-            <label>Data Início</label>
-            <input
-              type="date"
-              value={periodo.dataInicio}
-              onChange={e => {
-                onSetPeriodo('personalizado', e.target.value, periodo.dataFim);
-              }}
-            />
+          <div className="gfb-datepicker-presets">
+            <button className="gfb-dp-preset" onClick={() => { onSetPeriodo('hoje'); setDatePickerAberto(false); }}>Hoje</button>
+            <button className="gfb-dp-preset" onClick={() => { onSetPeriodo('7d'); setDatePickerAberto(false); }}>7 Dias</button>
+            <button className="gfb-dp-preset" onClick={() => { onSetPeriodo('30d'); setDatePickerAberto(false); }}>30 Dias</button>
+            <button className="gfb-dp-preset" onClick={() => {
+              const hoje = new Date();
+              const fim = hoje.toISOString().split('T')[0];
+              const inicio = new Date(hoje.getFullYear(), hoje.getMonth(), 1).toISOString().split('T')[0];
+              onSetPeriodo('personalizado', inicio, fim);
+              setDatePickerAberto(false);
+            }}>Este Mês</button>
           </div>
-          <div className="gfb-date-field">
-            <label>Data Fim</label>
-            <input
-              type="date"
-              value={periodo.dataFim}
-              onChange={e => {
-                onSetPeriodo('personalizado', periodo.dataInicio, e.target.value);
-              }}
-            />
+          <div className="gfb-datepicker-fields">
+            <div className="gfb-date-field">
+              <label>De</label>
+              <div className="gfb-date-input-group">
+                <input
+                  type="date"
+                  value={periodo.dataInicio}
+                  className="gfb-date-input"
+                  onChange={e => onSetPeriodo('personalizado', e.target.value, periodo.dataFim)}
+                />
+                <span className="gfb-date-icon">📅</span>
+              </div>
+            </div>
+            <div className="gfb-datepicker-sep">até</div>
+            <div className="gfb-date-field">
+              <label>Até</label>
+              <div className="gfb-date-input-group">
+                <input
+                  type="date"
+                  value={periodo.dataFim}
+                  className="gfb-date-input"
+                  onChange={e => {
+                    onSetPeriodo('personalizado', periodo.dataInicio, e.target.value);
+                    if (periodo.dataInicio && e.target.value) {
+                      setTimeout(() => setDatePickerAberto(false), 1200);
+                    }
+                  }}
+                />
+                <span className="gfb-date-icon">📅</span>
+              </div>
+            </div>
+            <button className="gfb-date-apply" onClick={() => setDatePickerAberto(false)}>✔</button>
           </div>
-          <button
-            className="gfb-date-apply"
-            onClick={() => setDatePickerAberto(false)}
-          >
-            Aplicar
-          </button>
         </div>
       )}
 
-      {/* ═══ LINHA 2: Busca Universal + Tags ═══ */}
-      <div className="gfb-filter-row">
-        {/* Botão/Busca de dimensões */}
-        <div className="gfb-search-wrapper" ref={dropdownRef}>
-          <button
-            className="gfb-search-btn"
-            onClick={() => setDropdownAberto(!dropdownAberto)}
-          >
-            <FiFilter size={14} />
-            <span>Filtrar por...</span>
-            <FiChevronDown size={12} className={`gfb-chevron ${dropdownAberto ? 'open' : ''}`} />
-            {totalFiltrosAtivos > 0 && (
-              <span className="gfb-filter-count">{totalFiltrosAtivos}</span>
-            )}
-          </button>
+      {/* ═══ Dimensões: busca inline + atalhos ═══ */}
+      <div className="gfb-filter-section">
+        <span className="gfb-section-label gfb-section-label-dim">
+          <FiSliders size={12} />
+          Dimensões
+        </span>
+        <div className="gfb-filter-row">
+          <div className="gfb-search-wrapper" ref={dropdownRef}>
+            <div
+              className={`gfb-filter-input-wrap ${dropdownAberto ? 'open' : ''}`}
+              onClick={() => {
+                setDropdownAberto(true);
+                setTimeout(() => searchInputRef.current?.focus(), 30);
+              }}
+            >
+              <FiSearch size={14} className="gfb-filter-input-icon" />
+              <input
+                ref={searchInputRef}
+                type="text"
+                className="gfb-filter-input"
+                value={dropdownAberto ? buscaTexto : ''}
+                readOnly={!dropdownAberto}
+                onChange={e => setBuscaTexto(e.target.value)}
+                onFocus={() => setDropdownAberto(true)}
+                placeholder={
+                  dimensaoSelecionada
+                    ? `Buscar em ${dimensoes.find(d => d.nome === dimensaoSelecionada)?.label || dimensaoSelecionada}...`
+                    : placeholderFiltro
+                }
+              />
+              {totalFiltrosAtivos > 0 && (
+                <span className="gfb-filter-count">{totalFiltrosAtivos}</span>
+              )}
+              <FiChevronDown size={12} className={`gfb-chevron ${dropdownAberto ? 'open' : ''}`} />
+            </div>
 
           {/* ─── Dropdown de busca ─── */}
           {dropdownAberto && (
             <div className="gfb-dropdown">
-              {/* Input de busca */}
-              <div className="gfb-dropdown-search">
-                <FiSearch size={14} className="gfb-search-icon" />
-                <input
-                  ref={searchInputRef}
-                  type="text"
-                  value={buscaTexto}
-                  onChange={e => setBuscaTexto(e.target.value)}
-                  placeholder={dimensaoSelecionada
-                    ? `Buscar em ${dimensoes.find(d => d.nome === dimensaoSelecionada)?.label || dimensaoSelecionada}...`
-                    : 'Buscar dimensão para filtrar...'}
-                />
-                {buscaTexto && (
-                  <button className="gfb-clear-search" onClick={() => setBuscaTexto('')}>
-                    <FiX size={14} />
-                  </button>
-                )}
-              </div>
-
               {/* Se não tem dimensão selecionada: lista de dimensões */}
               {!dimensaoSelecionada ? (
                 <div className="gfb-dropdown-body">
@@ -424,79 +493,109 @@ export default function GoogleFilterBar({
               )}
             </div>
           )}
+          </div>
+
+          {dimensoesRapidas.length > 0 && (
+            <div className="gfb-quick-dims">
+              {dimensoesRapidas.map(dim => {
+                const ativos = dim.selecionados.length;
+                return (
+                  <button
+                    key={dim.nome}
+                    type="button"
+                    className={`gfb-quick-dim ${ativos > 0 ? 'ativo' : ''}`}
+                    onClick={() => abrirDropdown(dim.nome)}
+                    title={`Filtrar por ${dim.label}`}
+                  >
+                    {dim.label}
+                    {ativos > 0 && <span className="gfb-quick-dim-badge">{ativos}</span>}
+                  </button>
+                );
+              })}
+              {dimensoesDisponiveis.length > 4 && (
+                <button
+                  type="button"
+                  className="gfb-quick-dim gfb-quick-dim-more"
+                  onClick={() => abrirDropdown()}
+                >
+                  + Mais
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Tags de filtros ativos */}
         {filtrosAtivos.length > 0 && (
-          <div className="gfb-tags-wrapper">
-            <div className="gfb-tags">
-              {filtrosAtivos.map(dim => (
-                dim.selecionados.map(valor => (
-                  <span
-                    key={`${dim.nome}-${valor}`}
-                    className="gfb-tag"
-                  >
-                    <span className="gfb-tag-dim">{dim.label}:</span>
-                    <span className="gfb-tag-valor">{valor}</span>
-                    <button
-                      className="gfb-tag-remove"
-                      onClick={() => onRemoverFiltro(dim.nome, valor)}
-                      title={`Remover filtro ${dim.label}: ${valor}`}
+          <div className="gfb-tags-row">
+            <div className="gfb-tags-wrapper">
+              <div className="gfb-tags">
+                {filtrosAtivos.map(dim => (
+                  dim.selecionados.map(valor => (
+                    <span
+                      key={`${dim.nome}-${valor}`}
+                      className="gfb-tag"
                     >
-                      <FiX size={12} />
-                    </button>
-                  </span>
-                ))
-              ))}
+                      <span className="gfb-tag-dim">{dim.label}:</span>
+                      <span className="gfb-tag-valor">{valor}</span>
+                      <button
+                        type="button"
+                        className="gfb-tag-remove"
+                        onClick={() => onRemoverFiltro(dim.nome, valor)}
+                        title={`Remover filtro ${dim.label}: ${valor}`}
+                      >
+                        <FiX size={12} />
+                      </button>
+                    </span>
+                  ))
+                ))}
+              </div>
+              <button
+                type="button"
+                className="gfb-clear-all"
+                onClick={onLimparTodos}
+                title="Limpar todos os filtros"
+              >
+                <FiX size={12} />
+                Limpar tudo
+              </button>
             </div>
-            <button
-              className="gfb-clear-all"
-              onClick={onLimparTodos}
-              title="Limpar todos os filtros"
-            >
-              <FiX size={12} />
-              Limpar
-            </button>
           </div>
         )}
       </div>
 
-      {/* ═══ LINHA 3: Barra de Contexto ═══ */}
-      <div className="gfb-context-bar">
-        <div className="gfb-context-left">
-          <span className="gfb-context-item">
-            <strong>{totalRegistros.toLocaleString('pt-BR')}</strong> registros
-          </span>
-
-          {totalFiltrosAtivos > 0 && totalFiltrado > 0 && (
-            <>
-              <span className="gfb-context-sep">·</span>
+      {/* ═══ Rodapé contextual (só quando há comparação ou filtros) ═══ */}
+      {temFiltrosOuComparacao && (
+        <div className="gfb-context-bar">
+          <div className="gfb-context-left">
+            {totalFiltrosAtivos > 0 && totalFiltrado > 0 && totalFiltrado < totalRegistros && (
               <span className="gfb-context-item gfb-context-filtrado">
-                <strong>{totalFiltrado.toLocaleString('pt-BR')}</strong> filtrados
+                Exibindo <strong>{totalFiltrado.toLocaleString('pt-BR')}</strong> de{' '}
+                <strong>{totalRegistros.toLocaleString('pt-BR')}</strong>
                 <span className="gfb-context-pct">({pctFiltrado}%)</span>
               </span>
-            </>
-          )}
+            )}
 
-          {comparacao.ativo && variacaoFormatada && (
-            <>
-              <span className="gfb-context-sep">·</span>
-              <span className={`gfb-context-item gfb-variacao ${variacaoFormatada.classe}`}>
-                {variacaoFormatada.icone} {variacaoFormatada.texto}
-                <span className="gfb-context-vs">vs período anterior</span>
-              </span>
-            </>
-          )}
-        </div>
+            {comparacao.ativo && variacaoFormatada && (
+              <>
+                {totalFiltrosAtivos > 0 && <span className="gfb-context-sep">·</span>}
+                <span className={`gfb-context-item gfb-variacao ${variacaoFormatada.classe}`}>
+                  {variacaoFormatada.icone} {variacaoFormatada.texto}
+                  <span className="gfb-context-vs">vs período anterior</span>
+                </span>
+              </>
+            )}
+          </div>
 
-        <div className="gfb-context-right">
           {comparacao.ativo && (
-            <span className="gfb-context-compare-badge">
-              🔄 Comparando: {comparacao.label}
-            </span>
+            <div className="gfb-context-right">
+              <span className="gfb-context-compare-badge">
+                Comparando: {comparacao.label}
+              </span>
+            </div>
           )}
         </div>
-      </div>
+      )}
     </div>
   );
 }

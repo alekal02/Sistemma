@@ -3,7 +3,41 @@ import AppDataSource from '../database/data-source';
 import { Contract } from '../entities/Contract';
 import { Servico } from '../entities/Servico';
 import { PlanilhaUpload } from '../entities/PlanilhaUpload';
+import { ColetaData } from '../entities/ColetaData';
 import { invalidarPdfCache } from '../services/PdfCacheManager';
+import PlanilhaService from '../services/PlanilhaService';
+import { normalizarDiaInicioCiclo } from '../utils/periodoCicloContrato';
+import { normalizarListaPlacasReserva } from '../utils/placasReserva';
+import {
+  normalizarListaNomesOperacionais,
+  normalizarListaPlacasAtivas,
+} from '../utils/configOperacional';
+import { normalizarMapaLimitesContrato } from '../config/pesoMaximoCaminhao';
+import { invalidarCacheComparacaoContrato } from '../services/comparacaoCache';
+
+const cacheSaude = new Map<string, { data: any; timestamp: number }>();
+const CACHE_SAUDE_TTL_MS = 120_000;
+
+function getCacheSaude<T>(key: string): T | null {
+  const item = cacheSaude.get(key);
+  if (item && Date.now() - item.timestamp < CACHE_SAUDE_TTL_MS) return item.data as T;
+  cacheSaude.delete(key);
+  return null;
+}
+
+function setCacheSaude(key: string, data: any): void {
+  cacheSaude.set(key, { data, timestamp: Date.now() });
+  if (cacheSaude.size > 20) {
+    const agora = Date.now();
+    for (const [k, v] of cacheSaude) {
+      if (agora - v.timestamp > CACHE_SAUDE_TTL_MS) cacheSaude.delete(k);
+    }
+  }
+}
+
+function compareContratoNome(a: string | null | undefined, b: string | null | undefined): number {
+  return (a ?? '').localeCompare(b ?? '', 'pt-BR', { sensitivity: 'base' });
+}
 
 export class ContractController {
   private get repository() {
@@ -12,9 +46,8 @@ export class ContractController {
 
   async listar(req: Request, res: Response): Promise<any> {
     try {
-      const contracts = await this.repository.find({
-        order: { criadoEm: 'DESC' },
-      });
+      const contracts = await this.repository.find();
+      contracts.sort((a, b) => compareContratoNome(a.numeroContrato, b.numeroContrato));
 
       return res.json({ contratos: contracts, total: contracts.length });
     } catch (error) {
@@ -41,7 +74,7 @@ export class ContractController {
 
   async criar(req: Request, res: Response): Promise<any> {
     try {
-      const { numeroContrato, valorTonelada, valorMini, valorTruck, valorToco } = req.body;
+      const { numeroContrato, valorTonelada, valorMini, valorTruck, valorToco, valorBasculante, diaInicioCiclo } = req.body;
 
       if (!numeroContrato || !numeroContrato.trim()) {
         return res.status(400).json({ error: 'Nome do contrato é obrigatório' });
@@ -49,10 +82,12 @@ export class ContractController {
 
       const contract = this.repository.create({
         numeroContrato: numeroContrato.trim(),
+        diaInicioCiclo: normalizarDiaInicioCiclo(diaInicioCiclo),
         valorTonelada: valorTonelada !== undefined ? Number(valorTonelada) : null,
         valorMini: valorMini !== undefined ? Number(valorMini) : null,
         valorTruck: valorTruck !== undefined ? Number(valorTruck) : null,
         valorToco: valorToco !== undefined ? Number(valorToco) : null,
+        valorBasculante: valorBasculante !== undefined ? Number(valorBasculante) : null,
       });
 
       const novoContract = await this.repository.save(contract);
@@ -67,7 +102,16 @@ export class ContractController {
   async atualizar(req: Request, res: Response): Promise<any> {
     try {
       const { id } = req.params as { id: string };
-      const { numeroContrato, valorTonelada, valorMini, valorTruck, valorToco } = req.body;
+      const {
+        numeroContrato,
+        valorTonelada,
+        valorMini,
+        valorTruck,
+        valorToco,
+        valorBasculante,
+        diaInicioCiclo,
+        configOperacional,
+      } = req.body;
 
       const contract = await this.repository.findOne({ where: { id } });
 
@@ -78,18 +122,55 @@ export class ContractController {
       if (numeroContrato !== undefined) {
         contract.numeroContrato = numeroContrato.trim();
       }
+      if (diaInicioCiclo !== undefined) {
+        contract.diaInicioCiclo = normalizarDiaInicioCiclo(diaInicioCiclo);
+      }
       if (valorTonelada !== undefined) contract.valorTonelada = Number(valorTonelada);
       if (valorMini !== undefined) contract.valorMini = Number(valorMini);
       if (valorTruck !== undefined) contract.valorTruck = Number(valorTruck);
       if (valorToco !== undefined) contract.valorToco = Number(valorToco);
+      if (valorBasculante !== undefined) contract.valorBasculante = Number(valorBasculante);
+      if (configOperacional !== undefined) {
+        const atual = contract.configOperacional || {};
+        // Novo objeto + update explícito: TypeORM às vezes não detecta mudança em jsonb
+        const novoConfig = {
+          ...atual,
+          ...configOperacional,
+          ...(configOperacional.placasReserva !== undefined
+            ? { placasReserva: normalizarListaPlacasReserva(configOperacional.placasReserva) }
+            : {}),
+          ...(configOperacional.placasAtivas !== undefined
+            ? { placasAtivas: normalizarListaPlacasAtivas(configOperacional.placasAtivas) }
+            : {}),
+          ...(configOperacional.motoristas !== undefined
+            ? { motoristas: normalizarListaNomesOperacionais(configOperacional.motoristas) }
+            : {}),
+          ...(configOperacional.coletores !== undefined
+            ? { coletores: normalizarListaNomesOperacionais(configOperacional.coletores) }
+            : {}),
+          ...(configOperacional.pesoMaximoKg !== undefined
+            ? { pesoMaximoKg: normalizarMapaLimitesContrato(configOperacional.pesoMaximoKg) ?? {} }
+            : {}),
+          ...(configOperacional.volumeL !== undefined
+            ? { volumeL: normalizarMapaLimitesContrato(configOperacional.volumeL) ?? {} }
+            : {}),
+        };
+        contract.configOperacional = novoConfig;
+        await this.repository.update(id, { configOperacional: novoConfig as any });
+      }
 
       await this.repository.save(contract);
 
       // Invalidar cache do dashboard e PDF ao salvar valores do contrato
       invalidarPdfCache(id);
       invalidarPdfCache(); // limpar cache geral também
+      // CAIXA MÉDIA / análise de peso usam volumeL e pesoMaximoKg do contrato
+      if (configOperacional !== undefined) {
+        invalidarCacheComparacaoContrato(id);
+      }
 
-      return res.json(contract);
+      const atualizado = await this.repository.findOne({ where: { id } });
+      return res.json(atualizado || contract);
     } catch (error: any) {
       console.error('Erro ao atualizar contrato:', error?.message || error);
       return res.status(500).json({ error: 'Erro ao atualizar contrato' });
@@ -149,6 +230,7 @@ export class ContractController {
           VALOR_MINI: contract.valorMini,
           VALOR_TRUCK: contract.valorTruck,
           VALOR_TOCO: contract.valorToco,
+          VALOR_BASCULANTE: contract.valorBasculante,
         },
       });
     } catch (error: any) {
@@ -236,95 +318,98 @@ export class ContractController {
    */
   async saudeLista(req: Request, res: Response): Promise<any> {
     try {
-      const servicoRepo = AppDataSource.getRepository(Servico);
-      const uploadRepo = AppDataSource.getRepository(PlanilhaUpload);
+      const cacheKey = 'contracts-saude-lista';
+      const cached = getCacheSaude<any>(cacheKey);
+      if (cached) return res.json(cached);
 
-      const contracts = await this.repository.find({
-        order: { criadoEm: 'DESC' },
+      const servicoRepo = AppDataSource.getRepository(Servico);
+
+      const [contracts, todosServicos] = await Promise.all([
+        this.repository.find(),
+        servicoRepo.find(),
+      ]);
+
+      const servicosPorContrato = new Map<string, Servico[]>();
+      for (const s of todosServicos) {
+        if (!servicosPorContrato.has(s.contract_id)) {
+          servicosPorContrato.set(s.contract_id, []);
+        }
+        servicosPorContrato.get(s.contract_id)!.push(s);
+      }
+
+      const servicoIds = todosServicos.map(s => s.id);
+      const [contagens, ultimosUploads] = await Promise.all([
+        PlanilhaService.getContagemRegistrosPorServicos(servicoIds),
+        PlanilhaService.getUltimosUploadsPorServicos(servicoIds),
+      ]);
+
+      const seteDiasAtras = Date.now() - 7 * 24 * 60 * 60 * 1000;
+
+      const resultados = contracts.map(contract => {
+        const servicos = servicosPorContrato.get(contract.id) || [];
+
+        let totalRegistros = 0;
+        let ultimoUpload: string | null = null;
+        const tiposSet = new Set<string>();
+        let servicosConfigurados = 0;
+        let servicosComUpload = 0;
+        let servicosSemKpi = 0;
+        let totalKpisAtivos = 0;
+
+        for (const s of servicos) {
+          const cont = contagens.get(s.id) || { total: 0, validos: 0 };
+          const registros = cont.total;
+          const configKpis: any[] = s.configDashboard?.kpis || [];
+          const kpisAtivos = configKpis.filter((k: any) => k.ativo !== false).length;
+          const ultimo = ultimosUploads.get(s.id);
+          const ultimoUploadStr = ultimo ? ultimo.toISOString() : null;
+          const temUpload = registros > 0;
+          const temConfig = kpisAtivos > 0;
+
+          const tiposStr = s.tipo || '';
+          tiposStr.split(',').filter(Boolean).forEach((t: string) => tiposSet.add(t.trim()));
+
+          totalRegistros += registros;
+          if (ultimoUploadStr && (!ultimoUpload || new Date(ultimoUploadStr).getTime() > new Date(ultimoUpload).getTime())) {
+            ultimoUpload = ultimoUploadStr;
+          }
+          if (temUpload) servicosComUpload++;
+          if (temConfig) servicosConfigurados++;
+          if (!temConfig) servicosSemKpi++;
+          totalKpisAtivos += kpisAtivos;
+        }
+
+        const temUploadRecente = ultimoUpload && new Date(ultimoUpload).getTime() > seteDiasAtras;
+        const todosConfigurados = servicos.length === 0 || servicosConfigurados >= servicos.length;
+
+        let statusSaude: 'green' | 'yellow' | 'red';
+        if (servicos.length === 0) statusSaude = 'yellow';
+        else if (servicosComUpload === 0) statusSaude = 'red';
+        else if (todosConfigurados && temUploadRecente) statusSaude = 'green';
+        else statusSaude = 'yellow';
+
+        return {
+          id: contract.id,
+          numeroContrato: contract.numeroContrato,
+          status: contract.status,
+          diaInicioCiclo: normalizarDiaInicioCiclo(contract.diaInicioCiclo),
+          statusSaude,
+          totalServicos: servicos.length,
+          servicosConfigurados,
+          servicosComUpload,
+          servicosSemKpi,
+          totalRegistros,
+          totalKpisAtivos,
+          ultimoUpload,
+          tiposServico: Array.from(tiposSet),
+        };
       });
 
-      const resultados = await Promise.all(
-        contracts.map(async (contract) => {
-          const servicos = await servicoRepo.find({ where: { contract_id: contract.id } });
+      resultados.sort((a, b) => compareContratoNome(a.numeroContrato, b.numeroContrato));
 
-          let totalRegistros = 0;
-          let ultimoUpload: string | null = null;
-          let tiposSet = new Set<string>();
-          let servicosConfigurados = 0;
-          let servicosComUpload = 0;
-          let servicosSemKpi = 0;
-          let totalKpisAtivos = 0;
-
-          const servicosComDados = await Promise.all(
-            servicos.map(async (s) => {
-              const uploads = await uploadRepo.find({
-                where: { servico_id: s.id },
-                order: { criadoEm: 'DESC' },
-                take: 1,
-              });
-
-              const totalImportados = await uploadRepo
-                .createQueryBuilder('u')
-                .where('u.servico_id = :sid', { sid: s.id })
-                .select('COALESCE(SUM(u.linhasImportadas), 0)', 'total')
-                .getRawOne();
-
-              const registros = parseInt(totalImportados?.total || '0');
-              const configKpis: any[] = s.configDashboard?.kpis || [];
-              const kpisAtivos = configKpis.filter((k: any) => k.ativo !== false).length;
-
-              const tiposStr = s.tipo || '';
-              tiposStr.split(',').filter(Boolean).forEach((t: string) => tiposSet.add(t.trim()));
-
-              return {
-                temUpload: registros > 0,
-                registros,
-                kpisAtivos,
-                ultimoUploadStr: uploads[0]?.criadoEm ? uploads[0].criadoEm.toISOString() : null,
-                temConfig: kpisAtivos > 0,
-              };
-            })
-          );
-
-          for (const sd of servicosComDados) {
-            totalRegistros += sd.registros;
-            if (sd.ultimoUploadStr && (!ultimoUpload || new Date(sd.ultimoUploadStr).getTime() > new Date(ultimoUpload).getTime())) {
-              ultimoUpload = sd.ultimoUploadStr;
-            }
-            if (sd.temUpload) servicosComUpload++;
-            if (sd.temConfig) servicosConfigurados++;
-            if (!sd.temConfig) servicosSemKpi++;
-            totalKpisAtivos += sd.kpisAtivos;
-          }
-
-          const seteDiasAtras = Date.now() - 7 * 24 * 60 * 60 * 1000;
-          const temUploadRecente = ultimoUpload && new Date(ultimoUpload).getTime() > seteDiasAtras;
-          const todosConfigurados = servicos.length === 0 || servicosConfigurados >= servicos.length;
-
-          let statusSaude: 'green' | 'yellow' | 'red';
-          if (servicos.length === 0) statusSaude = 'yellow';
-          else if (servicosComUpload === 0) statusSaude = 'red';
-          else if (todosConfigurados && temUploadRecente) statusSaude = 'green';
-          else statusSaude = 'yellow';
-
-          return {
-            id: contract.id,
-            numeroContrato: contract.numeroContrato,
-            status: contract.status,
-            statusSaude,
-            totalServicos: servicos.length,
-            servicosConfigurados,
-            servicosComUpload,
-            servicosSemKpi,
-            totalRegistros,
-            totalKpisAtivos,
-            ultimoUpload,
-            tiposServico: Array.from(tiposSet),
-          };
-        })
-      );
-
-      return res.json({ contratos: resultados });
+      const response = { contratos: resultados };
+      setCacheSaude(cacheKey, response);
+      return res.json(response);
     } catch (error: any) {
       console.error('Erro ao carregar saude dos contratos:', error?.message || error);
       return res.status(500).json({ error: 'Erro ao carregar dados de saude' });
@@ -340,6 +425,7 @@ export class ContractController {
       const { id } = req.params as { id: string };
       const servicoRepo = AppDataSource.getRepository(Servico);
       const uploadRepo = AppDataSource.getRepository(PlanilhaUpload);
+      const coletaRepo = AppDataSource.getRepository(ColetaData);
 
       const contract = await this.repository.findOne({ where: { id } });
       if (!contract) return res.status(404).json({ error: 'Contrato não encontrado' });
@@ -354,13 +440,11 @@ export class ContractController {
             take: 1,
           });
 
-          const totalImportados = await uploadRepo
-            .createQueryBuilder('u')
+          const registros = await coletaRepo
+            .createQueryBuilder('c')
+            .innerJoin(PlanilhaUpload, 'u', 'u.id = c.planilhaUploadId')
             .where('u.servico_id = :sid', { sid: s.id })
-            .select('COALESCE(SUM(u.linhasImportadas), 0)', 'total')
-            .getRawOne();
-
-          const registros = parseInt(totalImportados?.total || '0');
+            .getCount();
           const configKpis: any[] = s.configDashboard?.kpis || [];
           const kpisAtivos = configKpis.filter((k: any) => k.ativo !== false).length;
 

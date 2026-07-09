@@ -60,7 +60,7 @@ const TEMPLATES_FORMULAS = [
   { nome: '⭐ Receita por KM', formula: 'DIVIDE(FATURAMENTO_EST({colPeso}, {colTipo}), SUM({colKm}))', descricao: 'Receita dividida pelos KM rodados' },
   // ═══ Do Resumo Executivo — Métricas Secundárias ═══
   { nome: '⚡ Tonelada por KM Rodado', formula: 'ROUND(DIVIDE(SUM({colPeso}) / 1000, SUM({colKm})), 4)', descricao: 'Eficiência: peso por KM rodado' },
-  { nome: '⚡ Produtividade por Coletor', formula: 'ROUND(SUM({colPeso}) / 1000 / SUM(Nº DE COLETORES), 2)', descricao: 'Peso total (ton) / soma total de coletores' },
+  { nome: '⚡ Média Ton/Coletor por Viagem', formula: 'MEDIA_TON_POR_COLETOR()', descricao: 'PESO TOTAL (ton) ÷ Nº DE COLETORES por viagem' },
   { nome: '⚡ KM Médio por Viagem', formula: 'ROUND(DIVIDE(SUM({colKm}), COUNT(*)), 1)', descricao: 'Média de KM rodados por registro' },
   { nome: '⚡ Tonelagem Média por Coleta', formula: 'ROUND(DIVIDE(SUM({colPeso}), COUNT(*)) / 1000, 2)', descricao: 'Peso médio em toneladas por viagem' },
   { nome: '⚡ Receita por KM Rodado', formula: 'ROUND(DIVIDE(FATURAMENTO_EST({colPeso}, {colTipo}), SUM({colKm})), 2)', descricao: 'Faturamento por KM com precisão' },

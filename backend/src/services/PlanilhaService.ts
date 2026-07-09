@@ -11,7 +11,13 @@ import {
   aplicarFiltroViagensValidasDashboard,
   prepararViagemParaImportacao,
   sanitizarViagem as sanitizarViagemCampos,
+  enriquecerCamposColeta,
+  validarViagemParaDashboard,
 } from './validacaoViagemService';
+import { deduplicarKpisLista } from './kpiDeduplicacaoService';
+import { invalidarCacheDadosServico } from './servicoDadosCache';
+import { invalidarCacheDashboardServico } from './comparacaoCache';
+import { normalizarTextoTipoCaminhao } from '../config/pesoMaximoCaminhao';
 
 interface LinhaPlanilha {
   [key: string]: any;
@@ -24,6 +30,7 @@ interface ResultadoImportacao {
   erros: number;
   viagensInconsistentes?: number;
   viagensValidasDashboard?: number;
+  linhasDescartadasSemDados?: number;
 }
 
 /**
@@ -91,8 +98,10 @@ export class PlanilhaService {
 
     let importadas = 0;
     let erros = 0;
+    let linhasIgnoradas = 0;
     let registrosLimpos = 0;
-    let viagensInconsistentes = 0; // contador de registros com valores negativos corrigidos
+    let viagensInconsistentes = 0;
+    let linhasDescartadasSemDados = 0;
 
     // Processar em lotes para performance
     const batch: ColetaData[] = [];
@@ -101,30 +110,28 @@ export class PlanilhaService {
     for (const linha of linhas) {
       try {
         const coleta = this.mapearLinha(linha, uploadSalvo.id);
-        if (coleta) {
-          // SEMPRE salvar os dados brutos originais (sem colunas __EMPTY)
-          // para que o dashboard consiga acessar pelos nomes das colunas
-          coleta.dados = this.filtrarChavesVazias(linha);
-          
-          // ═══ SISTEMA DE 3 NÍVEIS DE MAPEAMENTO ═══
-          // Nível 1: mapearLinha já tentou match exato (via getStr/getNum/encontrarChave)
-          // Nível 2: encontrarChave já tentou normalização automática nos helpers
-          // Nível 3: mapearPorPalavrasChave como fallback inteligente para o que sobrou
-          this.mapearPorPalavrasChave(coleta, linha);
-
-          // ════════════════════════════════════════════════════════════════
-          // 🧹 SANITIZAÇÃO DA VIAGEM: remove valores negativos que
-          // poderiam distorcer os KPIs do dashboard (kmTotal, pesoTotal...)
-          // ════════════════════════════════════════════════════════════════
-          const validacao = prepararViagemParaImportacao(coleta);
-          if (!validacao.validoDashboard) viagensInconsistentes++;
-          if (validacao.motivos.some(m => m.includes('negativo'))) registrosLimpos++;
-
-          batch.push(coleta);
-          importadas++;
-        } else {
+        if (!coleta) {
           erros++;
+          continue;
         }
+
+        coleta.dados = this.filtrarChavesVazias(linha);
+        this.mapearPorPalavrasChave(coleta, linha);
+
+        const validacao = prepararViagemParaImportacao(coleta);
+        if (validacao.descartada) {
+          linhasDescartadasSemDados++;
+          continue;
+        }
+        if (!validacao.validoDashboard) {
+          viagensInconsistentes++;
+          linhasIgnoradas++;
+          if (validacao.motivos.some(m => m.includes('negativo'))) registrosLimpos++;
+          continue;
+        }
+
+        batch.push(coleta);
+        importadas++;
 
         if (batch.length >= BATCH_SIZE) {
           await this.coletaRepo.save(batch);
@@ -140,23 +147,28 @@ export class PlanilhaService {
       await this.coletaRepo.save(batch);
     }
 
-    // Log de resumo da sanitizacao
+    if (linhasDescartadasSemDados > 0) {
+      console.log(`[PlanilhaService] 🗑️ ${linhasDescartadasSemDados} linha(s) ignorada(s) (sem placa, KM Total e Peso Total).`);
+    }
+    if (viagensInconsistentes > 0) {
+      console.log(`[PlanilhaService] ⛔ ${viagensInconsistentes} linha(s) rejeitada(s) na importação (não salvas no sistema). ${importadas} viagem(ns) válida(s) importada(s).`);
+    }
     if (registrosLimpos > 0) {
-      console.log(`[PlanilhaService] 🧹 RESUMO: ${registrosLimpos} de ${linhas.length} registros tiveram valores negativos corrigidos (convertidos para null) — esses registros foram ignorados nos cálculos do dashboard.`);
-    } else {
-      console.log(`[PlanilhaService] ✅ Nenhum valor negativo encontrado nos ${linhas.length} registros importados.`);
+      console.log(`[PlanilhaService] 🧹 ${registrosLimpos} linha(s) com valores negativos foram rejeitadas.`);
     }
 
     // Atualizar metadados do upload
     uploadSalvo.linhasImportadas = importadas;
+    uploadSalvo.linhasIgnoradas = linhasIgnoradas;
     uploadSalvo.linhasComErro = erros;
     uploadSalvo.resumo = {
       novos: importadas,
-      duplicadosIgnorados: 0,
+      duplicadosIgnorados: linhasIgnoradas,
       conflitantes: 0,
       substituidos: 0,
       viagensInconsistentes,
-      viagensValidasDashboard: importadas - viagensInconsistentes,
+      viagensValidasDashboard: importadas,
+      linhasDescartadasSemDados,
     };
 
     // Salvar planilha no MinIO para download futuro
@@ -170,6 +182,11 @@ export class PlanilhaService {
     }
 
     await this.uploadRepo.save(uploadSalvo);
+
+    if (servicoId) {
+      invalidarCacheDadosServico(servicoId);
+      invalidarCacheDashboardServico(servicoId);
+    }
 
     // Detectar padrão e salvar no serviço (se vinculado)
     if (servicoId) {
@@ -231,8 +248,13 @@ export class PlanilhaService {
 
           // 4️⃣ MERGE: manter KPIs existentes + adicionar novos (evitando duplicatas por nome)
           const nomesKpisExistentes = new Set(kpisAtuais.map((k: any) => k.nome));
-          const kpisNovos = kpisGerados.filter((k: any) => !nomesKpisExistentes.has(k.nome));
-          const kpisMerge = [...kpisAtuais, ...kpisNovos];
+          const kpisNovos = kpisGerados
+            .filter((k: any) => !nomesKpisExistentes.has(k.nome))
+            .map((k: any) => ({ ...k, automatico: true }));
+          const { kpis: kpisMerge } = deduplicarKpisLista(
+            [...kpisAtuais, ...kpisNovos],
+            { manterInativos: true },
+          );
 
           servico.configDashboard = {
             ...configAtual,
@@ -258,7 +280,8 @@ export class PlanilhaService {
       importadas,
       erros,
       viagensInconsistentes,
-      viagensValidasDashboard: importadas - viagensInconsistentes,
+      viagensValidasDashboard: importadas,
+      linhasDescartadasSemDados,
     };
   }
 
@@ -299,9 +322,15 @@ export class PlanilhaService {
 
     coleta.tempoForaUnidade = this.getNum(linha, 'TEMPO FORA DA UNIDADE');
     coleta.horasForaUnidade = this.getNum(linha, 'HORAS QUE FICA FORA DA UNIDADE');
-    coleta.tipoCaminhao = this.getStr(linha, 'CAMINHÃO');
+    coleta.tipoCaminhao = normalizarTextoTipoCaminhao(
+      this.getStr(linha, 'TIPO DE CAMINHÃO')
+      || this.getStr(linha, 'TIPO CAMINHAO')
+      || this.getStr(linha, 'TIPO VEICULO')
+      || null,
+    );
     coleta.kmTotal = this.getNum(linha, 'KM TOTAL');
-    coleta.numeroViagens = this.getInt(linha, 'Nº DE VIAGENS');
+    coleta.numeroViagens = this.getInt(linha, 'CONTADOR DE VIAGENS')
+      ?? this.getInt(linha, 'Nº DE VIAGENS');
 
     // Dia da semana (1=domingo a 7=sábado)
     const diaSemana = this.getNum(linha, 'DIA DA SEMANA');
@@ -571,7 +600,7 @@ export class PlanilhaService {
         const val = String(col.valor).trim();
         // Excluir se for placa (formato letras+números) ou número puro
         if (!/^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$/.test(val.toUpperCase()) && !/^\d+$/.test(val)) {
-          coleta.tipoCaminhao = val;
+          coleta.tipoCaminhao = normalizarTextoTipoCaminhao(val);
         }
       }
     }
@@ -584,15 +613,20 @@ export class PlanilhaService {
       if (col && col.numerico !== null) coleta.kmTotal = col.numerico;
     }
 
-    // NÚMERO DE VIAGENS (pode estar como "CONTADOR DE VIAGENS" ou "CONTADOR VIAGENS")
-    // Normalizacao: "CONTADOR DE VIAGENS" → "CONTADORDEVIAGENS"
+    // CONTADOR DE VIAGENS (coluna padrão da planilha modelo coleta)
     if (!coleta.numeroViagens) {
-      const col = colunas.find(c =>
-        c.normalizada.includes('VIAGENS') || c.normalizada.includes('VIAGEM') ||
-        c.normalizada.includes('CONTADORVIAGENS') || c.normalizada.includes('NRVIAGENS') ||
-        c.normalizada.includes('CONTADORDEVIAGENS') || c.normalizada.includes('CONTADORVIAGEM')
+      const colContador = colunas.find(c =>
+        c.normalizada.includes('CONTADORDEVIAGENS') || c.normalizada.includes('CONTADORVIAGENS')
       );
-      if (col && col.numerico !== null) coleta.numeroViagens = Math.round(col.numerico);
+      if (colContador && colContador.numerico !== null) {
+        coleta.numeroViagens = Math.round(colContador.numerico);
+      } else {
+        const col = colunas.find(c =>
+          c.normalizada.includes('NRVIAGENS') || c.normalizada.includes('NUMERODEVAGENS') ||
+          (c.normalizada.includes('VIAGENS') && !c.normalizada.includes('CONTADOR'))
+        );
+        if (col && col.numerico !== null) coleta.numeroViagens = Math.round(col.numerico);
+      }
     }
 
     // DIA DA SEMANA (pode ter \r\n no nome)
@@ -675,8 +709,8 @@ export class PlanilhaService {
         'AVG(c.pesoTotal) as media_peso',
         'SUM(c.kmTotal) as total_km',
         'AVG(c.kmTotal) as media_km',
-        'SUM(c.numeroViagens) as total_viagens',
-        'AVG(c.numeroViagens) as media_viagens',
+        'COALESCE(SUM(c.viagensPorRota), 0) as total_viagens',
+        'COALESCE(AVG(c.viagensPorRota), 0) as media_viagens',
         'SUM(c.horasForaUnidade) as total_horas_fora',
         'AVG(c.horasForaUnidade) as media_horas_fora',
         'COUNT(DISTINCT c.placa) as total_caminhoes',
@@ -717,7 +751,7 @@ export class PlanilhaService {
 
     // Subquery: filtra ColetaData cujo planilhaUploadId está nos uploads do serviço
     const qb = this.coletaRepo.createQueryBuilder('c')
-      .where('c.planilhaUploadId IN (SELECT p.id FROM planilha_uploads p WHERE p.servico_id = :servicoId)', { servicoId });
+      .innerJoin(PlanilhaUpload, 'u', 'u.id = c.planilhaUploadId AND u.servico_id = :servicoId', { servicoId });
 
     if (uploadId) {
       qb.andWhere('c.planilhaUploadId = :uploadId', { uploadId });
@@ -754,7 +788,7 @@ export class PlanilhaService {
   ): Promise<Record<string, any>[]> {
     const apenasValidos = opts?.apenasValidos !== false;
     const qb = this.coletaRepo.createQueryBuilder('c')
-      .where('c.planilhaUploadId IN (SELECT p.id FROM planilha_uploads p WHERE p.servico_id = :servicoId)', { servicoId });
+      .innerJoin(PlanilhaUpload, 'u', 'u.id = c.planilhaUploadId AND u.servico_id = :servicoId', { servicoId });
     if (apenasValidos) {
       aplicarFiltroViagensValidasDashboard(qb, 'c');
     }
@@ -764,83 +798,183 @@ export class PlanilhaService {
       .getMany();
     if (dados.length === 0) return [];
 
-    // Buscar padrão da planilha para mapear nomes das colunas
-    const servico = await this.servicoRepo.findOne({
-      where: { id: servicoId },
-      select: ['padraoPlanilha'],
-    });
-    const colunasPadrao: { nome: string; tipo: string }[] = servico?.padraoPlanilha?.colunas || [];
+    return this.converterColetasParaBrutos(dados, apenasValidos);
+  }
 
-    // Mapa de normalização: gera variações de um nome (sem acento, sem espaços extras, maiúsculo)
-    const normalizarChave = (chave: string): string => {
-      return chave.trim().toUpperCase();
+  /**
+   * Retorna todos os registros upados em uma data específica (consulta direta no banco).
+   */
+  async getDadosBrutosPorDia(
+    servicoId: string,
+    dataIso: string,
+    opts?: {
+      apenasValidos?: boolean;
+      pularValidacaoViagem?: boolean;
+      page?: number;
+      limit?: number;
+    },
+  ): Promise<{
+    dados: Record<string, any>[];
+    total: number;
+    pagina: number;
+    totalPaginas: number;
+    limit: number;
+  }> {
+    const apenasValidos = opts?.apenasValidos !== false;
+    const pularValidacaoViagem = opts?.pularValidacaoViagem === true;
+    const page = Math.max(1, opts?.page || 1);
+    // Sem page/limit explícitos: comportamento legado (tudo). Com limit: pagina.
+    const paginar = opts?.limit != null && opts.limit > 0;
+    const limit = paginar ? Math.min(Math.max(opts!.limit!, 1), 500) : 0;
+
+    const qb = this.coletaRepo.createQueryBuilder('c')
+      .leftJoinAndSelect('c.planilhaUpload', 'upload')
+      .innerJoin(PlanilhaUpload, 'u', 'u.id = c.planilhaUploadId AND u.servico_id = :servicoId', { servicoId })
+      .andWhere('c.dataSaida = :data', { data: dataIso });
+    if (apenasValidos) {
+      aplicarFiltroViagensValidasDashboard(qb, 'c');
+    }
+    qb.orderBy('c.id', 'ASC');
+
+    let dados: ColetaData[];
+    let total: number;
+    if (paginar) {
+      const skip = (page - 1) * limit;
+      [dados, total] = await qb.skip(skip).take(limit).getManyAndCount();
+    } else {
+      dados = await qb.getMany();
+      total = dados.length;
+    }
+
+    if (dados.length === 0) {
+      return { dados: [], total, pagina: page, totalPaginas: Math.ceil(total / (limit || 1)) || 0, limit: limit || total };
+    }
+    const convertidos = this.converterColetasParaBrutos(dados, apenasValidos, pularValidacaoViagem);
+    return {
+      dados: convertidos,
+      total,
+      pagina: page,
+      totalPaginas: paginar ? Math.ceil(total / limit) : 1,
+      limit: paginar ? limit : total,
+    };
+  }
+
+  private converterColetasParaBrutos(
+    dados: ColetaData[],
+    apenasValidos: boolean,
+    pularValidacaoViagem = false,
+  ): Record<string, any>[] {
+    const mapaEntidadeParaColuna: Record<string, string[]> = {
+      dataSaida: ['DATA SAIDA', 'DATA SAÍDA', 'DATA DE SAIDA', 'DATA DE SAÍDA', 'DIA', 'Data'],
+      turno: ['TURNO'],
+      regional: ['REGIONAL', 'REGIAO', 'REGIÃO'],
+      distrito: ['DISTRITO', 'BAIRRO'],
+      placa: ['PLACA', 'VEICULO', 'VEÍCULO', 'CAMINHAO', 'CAMINHÃO', 'CARRO'],
+      motorista: ['MOTORISTA', 'OPERADOR', 'NOME', 'Operador'],
+      numeroColetores: ['Nº DE COLETORES', 'NUMERO DE COLETORES', 'NÚMERO DE COLETORES', 'COLETORES'],
+      kmSaida: ['KM SAIDA', 'KM SAÍDA', 'KM SAIDA BASE', 'KM SAÍDA BASE', ' KM SAIDA BASE '],
+      horaSaida: ['HORA SAIDA', 'HORA SÁIDA', 'HORA SAIDA BASE', 'HORA SÁIDA BASE', 'HORA DE SAIDA', 'HORA DE SAÍDA'],
+      kmChegada: ['KM CHEGADA', 'KM DE CHEGADA', 'KM CHEGADA BASE'],
+      horaChegada: ['HORA CHEGADA', 'HORA DE CHEGADA', 'HORA CHEGADA BASE'],
+      horaUltimoTerminoCarregamento: ['HORA ULTIMO TÉRMINO DO CARREGAMENTO', 'HORA ÚLTIMO TÉRMINO DO CARREGAMENTO'],
+      peso1: ['PESO 1'],
+      peso2: ['PESO 2'],
+      peso3: ['PESO 3'],
+      peso4: ['PESO 4'],
+      peso5: ['PESO 5'],
+      pesoTotal: ['PESO TOTAL'],
+      tempoForaUnidade: ['TEMPO FORA DA UNIDADE'],
+      horasForaUnidade: ['HORAS QUE FICA FORA DA UNIDADE', 'HORAS FORA UNIDADE'],
+      tipoCaminhao: ['TIPO DE CAMINHÃO', 'TIPO CAMINHAO', 'TIPO VEICULO', 'TIPO VEÍCULO'],
+      kmTotal: ['KM TOTAL'],
+      numeroViagens: ['CONTADOR DE VIAGENS', 'CONTADOR VIAGENS', 'Nº DE VIAGENS', 'NUMERO DE VIAGENS', 'NÚMERO DE VIAGENS', 'NR VIAGENS', 'NUMERO VIAGENS'],
+      viagensPorRota: ['VIAGENS POR ROTA'],
+      kmRota1: ['KM ROTA 01', 'KM CHEGADA ROTA 01', ' KM CHEGADA ROTA 01 '],
+      horaRota1: ['HORA ROTA 01', 'HORA CHEGADA ROTA 01', 'HORA SAÍDA ROTA 01'],
+      kmRota2: ['KM ROTA 02', 'KM CHEGADA ROTA 02', ' KM CHEGADA ROTA 02 '],
+      horaRota2: ['HORA ROTA 02', 'HORA CHEGADA ROTA 02', 'HORA SAÍDA ROTA 02'],
+      kmRota3: ['KM ROTA 03', 'KM CHEGADA ROTA 03', ' KM CHEGADA ROTA 03 '],
+      horaRota3: ['HORA ROTA 03', 'HORA CHEGADA ROTA 03', 'HORA CHEGA ROTA 03'],
+      kmRota4: ['KM ROTA 04', 'KM CHEGADA ROTA 04', ' KM CHEGADA ROTA 04 '],
+      horaRota4: ['HORA ROTA 04', 'HORA CHEGADA ROTA 04', 'HORA SAÍDA ROTA 04'],
+      diaSemana: ['DIA DA SEMANA', 'DIA DA SEMANA\r\n1(DOMINGO) A 7(SÁBADO)'],
+      coletor01: ['COLETOR 01'],
+      coletor02: ['COLETOR 02'],
+      coletor03: ['COLETOR 03'],
+      coletor04: ['COLETOR 04'],
     };
 
-    // Converter para objetos planos
-    return dados.map(d => {
+    // Enriquecer + converter para objetos planos; revalidar viagens (corrige validoDashboard=false legado)
+    const objetos = dados.map(d => {
+      enriquecerCamposColeta(d);
       const obj: Record<string, any> = {};
-      
-      // 1. Propriedades da entidade (pesoTotal, kmTotal, etc.)
+
       for (const [key, value] of Object.entries(d)) {
         obj[key] = value;
       }
-      
-      // 2. Dados brutos (nomes originais da planilha)
+
       if (d.dados && typeof d.dados === 'object') {
         for (const [key, value] of Object.entries(d.dados)) {
           const keyTrimmed = key.trim();
-          // Adiciona com a chave original (pode ter espaços)
-          if (!(key in obj) || obj[key] === null) {
+          if (!(key in obj) || obj[key] === null || obj[key] === '') {
             obj[key] = value;
           }
-          // Adiciona com a chave sem espaços (para matching com o padrão)
-          if (keyTrimmed !== key && (!(keyTrimmed in obj) || obj[keyTrimmed] === null)) {
+          if (keyTrimmed !== key && (!(keyTrimmed in obj) || obj[keyTrimmed] === null || obj[keyTrimmed] === '')) {
             obj[keyTrimmed] = value;
           }
         }
-      } else {
-        // 3. Fallback para dados antigos (sem d.dados): criar aliases com base no padrão
-        const mapaEntidadeParaColuna: Record<string, string[]> = {
-          dataSaida: ['DATA SAIDA', 'DATA SAÍDA', 'DATA DE SAIDA', 'DATA DE SAÍDA', 'DIA', 'Data'],
-          turno: ['TURNO'],
-          regional: ['REGIONAL', 'REGIAO', 'REGIÃO'],
-          distrito: ['DISTRITO', 'BAIRRO'],
-          placa: ['PLACA', 'VEICULO', 'VEÍCULO', 'CAMINHAO', 'CAMINHÃO', 'CARRO'],
-          motorista: ['MOTORISTA', 'OPERADOR', 'NOME', 'Operador'],
-          numeroColetores: ['Nº DE COLETORES', 'NUMERO DE COLETORES', 'NÚMERO DE COLETORES', 'COLETORES'],
-          kmSaida: ['KM SAIDA', 'KM SAÍDA', 'KM SAIDA BASE', 'KM SAÍDA BASE', ' KM SAIDA BASE '],
-          horaSaida: ['HORA SAIDA', 'HORA SÁIDA', 'HORA SAIDA BASE', 'HORA SÁIDA BASE', 'HORA DE SAIDA', 'HORA DE SAÍDA'],
-          kmChegada: ['KM CHEGADA', 'KM DE CHEGADA', 'KM CHEGADA BASE', 'KM CHEGADA ROTA 01'],
-          horaChegada: ['HORA CHEGADA', 'HORA DE CHEGADA', 'HORA CHEGADA BASE', 'HORA CHEGADA ROTA 01'],
-          horaUltimoTerminoCarregamento: ['HORA ULTIMO TÉRMINO DO CARREGAMENTO', 'HORA ÚLTIMO TÉRMINO DO CARREGAMENTO'],
-          peso1: ['PESO 1'],
-          peso2: ['PESO 2'],
-          peso3: ['PESO 3'],
-          peso4: ['PESO 4'],
-          peso5: ['PESO 5'],
-          pesoTotal: ['PESO TOTAL'],
-          tempoForaUnidade: ['TEMPO FORA DA UNIDADE'],
-          horasForaUnidade: ['HORAS QUE FICA FORA DA UNIDADE', 'HORAS FORA UNIDADE'],
-          tipoCaminhao: ['CAMINHAO', 'CAMINHÃO', 'TIPO CAMINHAO', 'TIPO DE CAMINHÃO', 'TIPO VEICULO'],
-          kmTotal: ['KM TOTAL'],
-          numeroViagens: ['Nº DE VIAGENS', 'NUMERO DE VIAGENS', 'NÚMERO DE VIAGENS', 'VIAGENS', 'CONTADOR DE VIAGENS'],
-          diaSemana: ['DIA DA SEMANA', 'DIA DA SEMANA\r\n1(DOMINGO) A 7(SÁBADO)'],
-          coletor01: ['COLETOR 01'],
-        };
-        
-        for (const [prop, nomesColuna] of Object.entries(mapaEntidadeParaColuna)) {
-          const valor = (d as any)[prop];
-          if (valor !== null && valor !== undefined) {
-            for (const nomeCol of nomesColuna) {
-              if (!(nomeCol in obj)) {
-                obj[nomeCol] = valor;
-              }
+      }
+
+      for (const [prop, nomesColuna] of Object.entries(mapaEntidadeParaColuna)) {
+        const valor = (d as any)[prop];
+        if (valor !== null && valor !== undefined && valor !== '') {
+          let valorExport = valor;
+          if (prop === 'dataSaida' && valor instanceof Date) {
+            const ds = valor as Date;
+            valorExport = `${ds.getUTCFullYear()}-${String(ds.getUTCMonth() + 1).padStart(2, '0')}-${String(ds.getUTCDate()).padStart(2, '0')}`;
+            obj.dataSaida = valorExport;
+          }
+          for (const nomeCol of nomesColuna) {
+            if (!(nomeCol in obj) || obj[nomeCol] === null || obj[nomeCol] === '') {
+              obj[nomeCol] = valorExport;
             }
           }
         }
       }
-      
+
+      if (d.planilhaUpload?.nomeArquivo) {
+        obj._nomePlanilha = d.planilhaUpload.nomeArquivo;
+      }
+
+      const ehRocada =
+        pularValidacaoViagem
+        || d.dados?._tipoServico === 'rocadeira'
+        || obj._tipoServico === 'rocadeira';
+
+      if (ehRocada) {
+        // Roçada não usa regras de placa/KM/peso — respeita flag persistida
+        const valido = d.validoDashboard !== false;
+        obj.validoDashboard = valido;
+        obj._validoDashboard = valido;
+      } else {
+        const validacao = validarViagemParaDashboard(d);
+        obj.validoDashboard = validacao.validoDashboard;
+        obj._validoDashboard = validacao.validoDashboard;
+        if (validacao.motivos?.length) {
+          obj._motivosInvalidos = validacao.motivos;
+        }
+      }
+
       return obj;
+    });
+
+    if (!apenasValidos) return objetos;
+
+    return objetos.filter((obj) => {
+      if (pularValidacaoViagem || obj._tipoServico === 'rocadeira') {
+        return obj.validoDashboard !== false;
+      }
+      return validarViagemParaDashboard(obj).validoDashboard;
     });
   }
 
@@ -886,7 +1020,7 @@ export class PlanilhaService {
    */
   async getTopMotoristas(limite: number = 10, filtros?: { dataInicio?: string; dataFim?: string; regional?: string; distrito?: string }) {
     const qb = this.coletaRepo.createQueryBuilder('c')
-      .select(['c.motorista as motorista', 'SUM(c.pesoTotal) as total_peso', 'COUNT(*) as quantidade', 'SUM(c.kmTotal) as total_km', 'SUM(c.numeroViagens) as total_viagens'])
+      .select(['c.motorista as motorista', 'SUM(c.pesoTotal) as total_peso', 'COUNT(*) as quantidade', 'SUM(c.kmTotal) as total_km', 'COALESCE(SUM(c.viagensPorRota), 0) as total_viagens'])
       .where('c.motorista IS NOT NULL')
       .andWhere('c.pesoTotal IS NOT NULL')
       .groupBy('c.motorista')
@@ -908,7 +1042,7 @@ export class PlanilhaService {
         'COUNT(*) as quantidade',
         'SUM(c.pesoTotal) as total_peso',
         'SUM(c.kmTotal) as total_km',
-        'SUM(c.numeroViagens) as total_viagens',
+        'COALESCE(SUM(c.viagensPorRota), 0) as total_viagens',
       ])
       .where('c.dataSaida IS NOT NULL')
       .groupBy('COALESCE(c.diaSemana, EXTRACT(DOW FROM c.dataSaida)::int + 1)')
@@ -945,7 +1079,7 @@ export class PlanilhaService {
    */
   async getPesoPorDia(filtros?: { dataInicio?: string; dataFim?: string; regional?: string; distrito?: string }) {
     const qb = this.coletaRepo.createQueryBuilder('c')
-      .select(['c.dataSaida as data', 'SUM(c.pesoTotal) as total_peso', 'COUNT(*) as quantidade', 'SUM(c.kmTotal) as total_km', 'SUM(c.numeroViagens) as total_viagens'])
+      .select(['c.dataSaida as data', 'SUM(c.pesoTotal) as total_peso', 'COUNT(*) as quantidade', 'SUM(c.kmTotal) as total_km', 'COALESCE(SUM(c.viagensPorRota), 0) as total_viagens'])
       .where('c.dataSaida IS NOT NULL')
       .andWhere('c.pesoTotal IS NOT NULL')
       .groupBy('c.dataSaida')
@@ -961,7 +1095,7 @@ export class PlanilhaService {
    */
   async getTopPlacas(limite: number = 10, filtros?: { dataInicio?: string; dataFim?: string; regional?: string; distrito?: string }) {
     const qb = this.coletaRepo.createQueryBuilder('c')
-      .select(['c.placa as placa', 'SUM(c.pesoTotal) as total_peso', 'COUNT(*) as quantidade', 'SUM(c.kmTotal) as total_km', 'SUM(c.numeroViagens) as total_viagens'])
+      .select(['c.placa as placa', 'SUM(c.pesoTotal) as total_peso', 'COUNT(*) as quantidade', 'SUM(c.kmTotal) as total_km', 'COALESCE(SUM(c.viagensPorRota), 0) as total_viagens'])
       .where('c.placa IS NOT NULL')
       .andWhere('c.pesoTotal IS NOT NULL')
       .groupBy('c.placa')
@@ -1029,14 +1163,49 @@ export class PlanilhaService {
   async excluirUpload(id: number) {
     const upload = await this.uploadRepo.findOne({ where: { id } });
     if (!upload) throw new Error('Upload não encontrado.');
+    if (upload.cicloFechadoEm) {
+      throw new Error('Esta planilha pertence a um ciclo fechado e não pode ser excluída.');
+    }
 
-    // Excluir dados de coleta vinculados
-    await this.coletaRepo.delete({ planilhaUploadId: id });
+    const servicoId = upload.servico_id;
+    const urlDownload = upload.urlDownload;
 
-    // Excluir registro de upload
-    await this.uploadRepo.remove(upload);
+    await AppDataSource.transaction(async (manager) => {
+      await manager.delete(ColetaData, { planilhaUploadId: id });
+      await manager.remove(upload);
+    });
 
-    return { message: 'Upload excluído com sucesso.' };
+    if (urlDownload) {
+      try {
+        await FileStorageService.removerImagem(urlDownload);
+      } catch (err) {
+        console.warn('[PlanilhaService] Erro ao remover arquivo do storage:', err);
+      }
+    }
+
+    if (servicoId) {
+      invalidarCacheDadosServico(servicoId);
+      invalidarCacheDashboardServico(servicoId);
+      const restantes = await this.uploadRepo.count({ where: { servico_id: servicoId } });
+      if (restantes === 0) {
+        const servico = await this.servicoRepo.findOne({ where: { id: servicoId } });
+        if (servico) {
+          servico.padraoPlanilha = null;
+          await this.servicoRepo.save(servico);
+        }
+      }
+    }
+
+    const contagem = servicoId
+      ? await this.getContagemRegistrosPorServico(servicoId)
+      : { total: 0, validos: 0 };
+
+    return {
+      message: 'Upload excluído com sucesso.',
+      servicoId,
+      registrosValidos: contagem.validos,
+      registrosTotais: contagem.total,
+    };
   }
 
   /**
@@ -1118,7 +1287,7 @@ export class PlanilhaService {
 
     const qb = this.coletaRepo.createQueryBuilder('c')
       .select([
-        'COUNT(*) as viagens',
+        'COALESCE(SUM(c.viagensPorRota), 0) as viagens',
         'COALESCE(SUM(c.pesoTotal), 0) as peso_total_kg',
         'COALESCE(SUM(c.kmTotal), 0) as km_total',
         'COALESCE(SUM(CASE WHEN c.horasForaUnidade BETWEEN 0 AND 24 THEN c.horasForaUnidade ELSE 0 END), 0) as horas_produtivas',
@@ -1159,31 +1328,60 @@ export class PlanilhaService {
    */
   async getMetricasPorDia(
     servicoId: string,
-    dataInicio: Date,
-    dataFim: Date
-  ): Promise<{ data: string; viagens: number; pesoTotalKg: number; kmTotal: number }[]> {
+    dataInicio: string,
+    dataFim: string,
+  ): Promise<{ data: string; rotas: number; viagens: number; pesoTotalKg: number; kmTotal: number; areaM2: number }[]> {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dataInicio) || !/^\d{4}-\d{2}-\d{2}$/.test(dataFim)) {
+      return [];
+    }
+
     const uploadIds = await this.getUploadIdsPorServico(servicoId);
     if (uploadIds.length === 0) return [];
+
+    // Área m² fica no JSONB (roçada); COALESCE entre aliases canônicos
+    const areaExpr = `
+      COALESCE(
+        NULLIF(c.dados->>'Area m²', '')::double precision,
+        NULLIF(c.dados->>'AREA_M2', '')::double precision,
+        NULLIF(c.dados->>'M2', '')::double precision,
+        NULLIF(c.dados->>'AREA_ROCADA', '')::double precision,
+        0
+      )
+    `;
 
     const qb = this.coletaRepo.createQueryBuilder('c')
       .select([
         'c.dataSaida as data',
-        'COUNT(*) as viagens',
+        'COUNT(*)::int as rotas',
+        'COALESCE(SUM(COALESCE(NULLIF(c.viagensPorRota, 0), c.numeroViagens, 1)), 0) as viagens',
         'COALESCE(SUM(c.pesoTotal), 0) as peso_total_kg',
         'COALESCE(SUM(c.kmTotal), 0) as km_total',
+        `COALESCE(SUM(${areaExpr}), 0) as area_m2`,
       ])
       .where('c.planilhaUploadId IN (:...uploadIds)', { uploadIds });
     aplicarFiltroViagensValidasDashboard(qb, 'c');
-    qb.andWhere('c.dataSaida BETWEEN :inicio AND :fim', { inicio: dataInicio, fim: dataFim })
+    qb.andWhere('c.dataSaida >= :inicio', { inicio: dataInicio })
+      .andWhere('c.dataSaida <= :fim', { fim: dataFim })
       .groupBy('c.dataSaida')
       .orderBy('c.dataSaida', 'ASC');
 
     const results = await qb.getRawMany();
+    const toIso = (v: Date | string) => {
+      const d = v instanceof Date ? v : new Date(v);
+      if (isNaN(d.getTime())) return '';
+      const y = d.getUTCFullYear();
+      const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+      const day = String(d.getUTCDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    };
+
     return results.map(r => ({
-      data: r.data ? (typeof r.data === 'string' ? r.data : r.data.toISOString().slice(0, 10)) : '',
+      data: r.data ? toIso(r.data) : '',
+      rotas: Number(r.rotas || 0),
       viagens: Number(r.viagens || 0),
       pesoTotalKg: Number(r.peso_total_kg || 0),
       kmTotal: Number(r.km_total || 0),
+      areaM2: Number(r.area_m2 || 0),
     }));
   }
 
@@ -1191,13 +1389,95 @@ export class PlanilhaService {
    * Retorna o total de registros de um serviço (rápido, COUNT no banco)
    */
   async getTotalRegistrosPorServico(servicoId: string): Promise<number> {
-    const uploadIds = await this.getUploadIdsPorServico(servicoId);
-    if (uploadIds.length === 0) return 0;
-    const result = await this.coletaRepo.createQueryBuilder('c')
-      .select('COUNT(*)', 'total')
-      .where('c.planilhaUploadId IN (:...uploadIds)', { uploadIds })
+    const { total } = await this.getContagemRegistrosPorServico(servicoId);
+    return total;
+  }
+
+  /** Total de linhas importadas e quantas entram no dashboard (validoDashboard) */
+  async getContagemRegistrosPorServico(servicoId: string): Promise<{ total: number; validos: number }> {
+    const mapa = await this.getContagemRegistrosPorServicos([servicoId]);
+    return mapa.get(servicoId) || { total: 0, validos: 0 };
+  }
+
+  /** Intervalo de datas das viagens válidas no dashboard (min/max dataSaida) */
+  async getPeriodoDadosPorServico(
+    servicoId: string,
+  ): Promise<{ dataInicio: string; dataFim: string } | null> {
+    const row = await this.coletaRepo
+      .createQueryBuilder('c')
+      .innerJoin(PlanilhaUpload, 'u', 'u.id = c.planilhaUploadId')
+      .select('MIN(c.dataSaida)', 'minData')
+      .addSelect('MAX(c.dataSaida)', 'maxData')
+      .where('u.servico_id = :servicoId', { servicoId })
+      .andWhere('c.validoDashboard = true')
+      .andWhere('c.dataSaida IS NOT NULL')
       .getRawOne();
-    return Number(result?.total || 0);
+
+    if (!row?.minData || !row?.maxData) return null;
+
+    const toIso = (v: Date | string) => {
+      const d = v instanceof Date ? v : new Date(v);
+      if (isNaN(d.getTime())) return null;
+      const y = d.getUTCFullYear();
+      const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+      const day = String(d.getUTCDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    };
+
+    const dataInicio = toIso(row.minData);
+    const dataFim = toIso(row.maxData);
+    if (!dataInicio || !dataFim) return null;
+
+    return { dataInicio, dataFim };
+  }
+
+  /**
+   * Contagem em lote por serviço (1 query em vez de N)
+   */
+  async getContagemRegistrosPorServicos(
+    servicoIds: string[],
+  ): Promise<Map<string, { total: number; validos: number }>> {
+    const resultado = new Map<string, { total: number; validos: number }>();
+    if (!servicoIds.length) return resultado;
+
+    const rows = await this.coletaRepo
+      .createQueryBuilder('c')
+      .innerJoin(PlanilhaUpload, 'u', 'u.id = c.planilhaUploadId')
+      .select('u.servico_id', 'servicoId')
+      .addSelect('COUNT(*)', 'total')
+      .addSelect('SUM(CASE WHEN c.validoDashboard = true THEN 1 ELSE 0 END)', 'validos')
+      .where('u.servico_id IN (:...servicoIds)', { servicoIds })
+      .groupBy('u.servico_id')
+      .getRawMany();
+
+    for (const row of rows) {
+      resultado.set(row.servicoId, {
+        total: Number(row.total || 0),
+        validos: Number(row.validos || 0),
+      });
+    }
+    return resultado;
+  }
+
+  /**
+   * Último upload por serviço (1 query em vez de N)
+   */
+  async getUltimosUploadsPorServicos(servicoIds: string[]): Promise<Map<string, Date>> {
+    const resultado = new Map<string, Date>();
+    if (!servicoIds.length) return resultado;
+
+    const rows = await this.uploadRepo
+      .createQueryBuilder('u')
+      .select('u.servico_id', 'servicoId')
+      .addSelect('MAX(u.criadoEm)', 'ultimoUpload')
+      .where('u.servico_id IN (:...servicoIds)', { servicoIds })
+      .groupBy('u.servico_id')
+      .getRawMany();
+
+    for (const row of rows) {
+      if (row.ultimoUpload) resultado.set(row.servicoId, new Date(row.ultimoUpload));
+    }
+    return resultado;
   }
 
   /**

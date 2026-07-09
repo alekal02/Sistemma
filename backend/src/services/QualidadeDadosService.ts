@@ -2,6 +2,13 @@ import { Repository } from 'typeorm';
 import AppDataSource from '../database/data-source';
 import { ColetaData } from '../entities/ColetaData';
 import { PlanilhaUpload } from '../entities/PlanilhaUpload';
+import {
+  filtrarRegistrosKmRotaExcessivo,
+  MAX_KM_ROTA,
+  resumoKmRotaExcesso,
+} from './kmRotaValidacaoService';
+import { formatarDataSaida } from '../utils/formatarDataPlanilha';
+import { enriquecerCamposColeta } from './validacaoViagemService';
 
 interface Problema {
   tipo: string;
@@ -30,6 +37,7 @@ interface RelatorioQualidade {
   problemas: Problema[];
   resumo: {
     registrosValidos: number;
+    registrosInconsistentesDashboard: number;
     registrosComAlgumProblema: number;
     percentualValido: number;
     categorias: {
@@ -40,6 +48,7 @@ interface RelatorioQualidade {
       semKmTotal: number;
       semPlaca: number;
       semMotorista: number;
+      kmRotaAlto: number;
     };
   };
 }
@@ -76,6 +85,7 @@ export class QualidadeDadosService {
         problemas: [],
         resumo: {
           registrosValidos: 0,
+          registrosInconsistentesDashboard: 0,
           registrosComAlgumProblema: 0,
           percentualValido: 100,
           categorias: {
@@ -86,6 +96,7 @@ export class QualidadeDadosService {
             semKmTotal: 0,
             semPlaca: 0,
             semMotorista: 0,
+            kmRotaAlto: 0,
           },
         },
       };
@@ -99,56 +110,47 @@ export class QualidadeDadosService {
       .where('c.planilhaUploadId = :uploadId', { uploadId })
       .getRawOne();
 
-    // ─── 1. KM Negativo ───
-    const kmNegativo = await this.coletaRepo
-      .createQueryBuilder('c')
-      .where('c.planilhaUploadId = :uploadId', { uploadId })
-      .andWhere(
-        '(c.kmSaida < 0 OR c.kmChegada < 0 OR c.kmTotal < 0 OR c.kmRota1 < 0 OR c.kmRota2 < 0 OR c.kmRota3 < 0 OR c.kmRota4 < 0)'
-      )
-      .getMany();
+    // ─── Carregar registros e analisar em memória (com enriquecimento de coleta.dados) ───
+    const registros = await this.coletaRepo.find({ where: { planilhaUploadId: uploadId } });
 
-    // ─── 2. Sem Peso ───
-    const semPeso = await this.coletaRepo
-      .createQueryBuilder('c')
-      .where('c.planilhaUploadId = :uploadId', { uploadId })
-      .andWhere('(c.pesoTotal IS NULL OR c.pesoTotal = 0)')
-      .getMany();
+    const kmNegativo: ColetaData[] = [];
+    const semPeso: ColetaData[] = [];
+    const semKmInicial: ColetaData[] = [];
+    const semKmFinal: ColetaData[] = [];
+    const semKmTotal: ColetaData[] = [];
+    const semPlaca: ColetaData[] = [];
+    const semMotorista: ColetaData[] = [];
 
-    // ─── 3. Sem KM Inicial ───
-    const semKmInicial = await this.coletaRepo
-      .createQueryBuilder('c')
-      .where('c.planilhaUploadId = :uploadId', { uploadId })
-      .andWhere('(c.kmSaida IS NULL OR c.kmSaida = 0)')
-      .getMany();
+    for (const reg of registros) {
+      const camposKm = [reg.kmSaida, reg.kmChegada, reg.kmTotal, reg.kmRota1, reg.kmRota2, reg.kmRota3, reg.kmRota4];
+      if (camposKm.some(v => v !== null && v !== undefined && v < 0)) {
+        kmNegativo.push(reg);
+      }
 
-    // ─── 4. Sem KM Final (chegada) ───
-    const semKmFinal = await this.coletaRepo
-      .createQueryBuilder('c')
-      .where('c.planilhaUploadId = :uploadId', { uploadId })
-      .andWhere('(c.kmChegada IS NULL OR c.kmChegada = 0)')
-      .getMany();
+      const enriquecido = Object.assign(new ColetaData(), reg);
+      enriquecerCamposColeta(enriquecido);
 
-    // ─── 5. Sem KM Total ───
-    const semKmTotal = await this.coletaRepo
-      .createQueryBuilder('c')
-      .where('c.planilhaUploadId = :uploadId', { uploadId })
-      .andWhere('(c.kmTotal IS NULL OR c.kmTotal = 0)')
-      .getMany();
+      if (enriquecido.pesoTotal === null || enriquecido.pesoTotal === undefined || enriquecido.pesoTotal <= 0) {
+        semPeso.push(reg);
+      }
+      if (enriquecido.kmSaida === null || enriquecido.kmSaida === undefined || enriquecido.kmSaida <= 0) {
+        semKmInicial.push(reg);
+      }
+      if (enriquecido.kmChegada === null || enriquecido.kmChegada === undefined || enriquecido.kmChegada <= 0) {
+        semKmFinal.push(reg);
+      }
+      if (enriquecido.kmTotal === null || enriquecido.kmTotal === undefined || enriquecido.kmTotal <= 0) {
+        semKmTotal.push(reg);
+      }
+      if (!enriquecido.placa?.trim()) {
+        semPlaca.push(reg);
+      }
+      if (!enriquecido.motorista?.trim()) {
+        semMotorista.push(reg);
+      }
+    }
 
-    // ─── 6. Sem Placa ───
-    const semPlaca = await this.coletaRepo
-      .createQueryBuilder('c')
-      .where('c.planilhaUploadId = :uploadId', { uploadId })
-      .andWhere('(c.placa IS NULL OR c.placa = \'\')')
-      .getMany();
-
-    // ─── 7. Sem Motorista ───
-    const semMotorista = await this.coletaRepo
-      .createQueryBuilder('c')
-      .where('c.planilhaUploadId = :uploadId', { uploadId })
-      .andWhere('(c.motorista IS NULL OR c.motorista = \'\')')
-      .getMany();
+    const kmRotaAlto = filtrarRegistrosKmRotaExcessivo(registros);
 
     // ─── Montar lista de problemas ───
     const problemas: Problema[] = [];
@@ -172,7 +174,7 @@ export class QualidadeDadosService {
           id: r.id,
           placa: r.placa,
           motorista: r.motorista,
-          data: r.dataSaida ? r.dataSaida.toISOString().slice(0, 10) : null,
+          data: formatarDataSaida(r.dataSaida),
           valorAtual: this.extrairValorProblema(tipo, r),
         })),
       };
@@ -234,6 +236,15 @@ export class QualidadeDadosService {
     );
     if (pSemMotorista) problemas.push(pSemMotorista);
 
+    const pKmRotaAlto = criarProblema(
+      'km_rota_alto',
+      `KM da Rota acima de ${MAX_KM_ROTA} km`,
+      `Registros com quilometragem de rota superior a ${MAX_KM_ROTA} km — pode indicar erro de digitação, hodômetro no lugar da distância ou viagem atípica.`,
+      'alto',
+      kmRotaAlto,
+    );
+    if (pKmRotaAlto) problemas.push(pKmRotaAlto);
+
     // Ordenar por gravidade
     const ordemGravidade: Record<string, number> = { crítico: 0, alto: 1, médio: 2, baixo: 3 };
     problemas.sort((a, b) => ordemGravidade[a.gravidade] - ordemGravidade[b.gravidade]);
@@ -248,42 +259,31 @@ export class QualidadeDadosService {
     for (const r of semKmTotal) idsComProblema.add(r.id);
     for (const r of semPlaca) idsComProblema.add(r.id);
     for (const r of semMotorista) idsComProblema.add(r.id);
+    for (const r of kmRotaAlto) idsComProblema.add(r.id);
 
     const totalComProblema = idsComProblema.size;
-    const totalValidos = totalRegistros - totalComProblema;
+
+    const registrosValidosDashboard = registros.filter(r => r.validoDashboard === true).length;
+    const registrosInconsistentesDashboard = totalRegistros - registrosValidosDashboard;
     const percentualValido = totalRegistros > 0
-      ? Math.round((totalValidos / totalRegistros) * 100 * 10) / 10
+      ? Math.round((registrosValidosDashboard / totalRegistros) * 100 * 10) / 10
       : 100;
 
-    // ─── Pontuação de qualidade (0-100) ───
-    // Penalidades por gravidade
-    let pontuacao = 100;
-    for (const p of problemas) {
-      const fatorPenalidade = p.percentual / 100;
-      switch (p.gravidade) {
-        case 'crítico': pontuacao -= 25 * fatorPenalidade; break;
-        case 'alto': pontuacao -= 15 * fatorPenalidade; break;
-        case 'médio': pontuacao -= 8 * fatorPenalidade; break;
-        case 'baixo': pontuacao -= 3 * fatorPenalidade; break;
-      }
-    }
-    pontuacao = Math.max(0, Math.min(100, Math.round(pontuacao)));
+    // Score = % de registros válidos para o dashboard (data + KM Total + Peso Total)
+    const pontuacao = percentualValido;
 
     return {
       uploadId,
       nomeArquivo: upload.nomeArquivo,
       totalRegistros,
       totalProblemas: problemas.length,
-      registroMaisAntigo: rangeData?.minData
-        ? (typeof rangeData.minData === 'string' ? rangeData.minData : rangeData.minData.toISOString().slice(0, 10))
-        : null,
-      registroMaisRecente: rangeData?.maxData
-        ? (typeof rangeData.maxData === 'string' ? rangeData.maxData : rangeData.maxData.toISOString().slice(0, 10))
-        : null,
+      registroMaisAntigo: formatarDataSaida(rangeData?.minData),
+      registroMaisRecente: formatarDataSaida(rangeData?.maxData),
       pontuacaoQualidade: pontuacao,
       problemas,
       resumo: {
-        registrosValidos: totalValidos,
+        registrosValidos: registrosValidosDashboard,
+        registrosInconsistentesDashboard,
         registrosComAlgumProblema: totalComProblema,
         percentualValido,
         categorias: {
@@ -294,6 +294,7 @@ export class QualidadeDadosService {
           semKmTotal: semKmTotal.length,
           semPlaca: semPlaca.length,
           semMotorista: semMotorista.length,
+          kmRotaAlto: kmRotaAlto.length,
         },
       },
     };
@@ -321,6 +322,7 @@ export class QualidadeDadosService {
       case 'sem_km_total': return { kmTotal: registro.kmTotal };
       case 'sem_placa': return { placa: registro.placa };
       case 'sem_motorista': return { motorista: registro.motorista };
+      case 'km_rota_alto': return resumoKmRotaExcesso(registro);
       default: return null;
     }
   }
