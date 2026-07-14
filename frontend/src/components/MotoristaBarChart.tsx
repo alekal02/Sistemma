@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { memo, useEffect, useMemo, useRef } from 'react';
 import type { MotoristaKpi } from '../services/dashboardExecutivoService';
 
 interface Props {
@@ -8,7 +8,12 @@ interface Props {
   topN?: number;
 }
 
-export default function MotoristaBarChart({
+const CORES = [
+  '#22c55e', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6',
+  '#ec4899', '#14b8a6', '#f97316', '#6366f1', '#84cc16',
+];
+
+const MotoristaBarChart = memo(function MotoristaBarChart({
   motoristas,
   campo = 'tonPorViagem',
   titulo = 'Tonelagem por Viagem',
@@ -17,9 +22,23 @@ export default function MotoristaBarChart({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chartRef = useRef<any>(null);
 
+  const chartSeries = useMemo(() => {
+    const top = [...motoristas]
+      .sort((a, b) => (b[campo] ?? 0) - (a[campo] ?? 0))
+      .slice(0, topN);
+
+    return {
+      top,
+      labels: top.map(m => m.motorista.length > 15 ? m.motorista.slice(0, 13) + '...' : m.motorista),
+      valores: top.map(m => m[campo] ?? 0),
+    };
+  }, [motoristas, campo, topN]);
+
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || motoristas.length === 0) return;
+    if (!canvas || chartSeries.top.length === 0) return;
+
+    const { top, labels, valores } = chartSeries;
 
     const carregarErenderizar = () => {
       if ((window as any).Chart) {
@@ -48,19 +67,6 @@ export default function MotoristaBarChart({
         chartRef.current = null;
       }
 
-      const top = [...motoristas]
-        .sort((a, b) => (b[campo] ?? 0) - (a[campo] ?? 0))
-        .slice(0, topN);
-
-      const labels = top.map(m => m.motorista.length > 15 ? m.motorista.slice(0, 13) + '...' : m.motorista);
-      const valores = top.map(m => m[campo] ?? 0);
-
-      // Cores gradientes
-      const cores = [
-        '#22c55e', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6',
-        '#ec4899', '#14b8a6', '#f97316', '#6366f1', '#84cc16',
-      ];
-
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
@@ -73,7 +79,7 @@ export default function MotoristaBarChart({
                     campo === 'kmPorViagem' ? 'KM por Viagem' :
                     campo === 'tonPorHora' ? 't/hora' : 't/viagem',
             data: valores,
-            backgroundColor: cores.slice(0, labels.length),
+            backgroundColor: CORES.slice(0, labels.length),
             borderRadius: 4,
           }]
         },
@@ -118,7 +124,7 @@ export default function MotoristaBarChart({
         chartRef.current = null;
       }
     };
-  }, [motoristas, campo, topN]);
+  }, [chartSeries, campo]);
 
   if (motoristas.length === 0) {
     return (
@@ -144,4 +150,6 @@ export default function MotoristaBarChart({
       </div>
     </div>
   );
-}
+});
+
+export default MotoristaBarChart;

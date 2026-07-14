@@ -77,7 +77,6 @@ export const METRICAS_PESO: LinhaMetricaPeso[] = [
   { secao: 'faixa', label: '>=11.000', tipo: 'faixa', faixaIdx: 4 },
   { secao: 'frota', label: 'MINI', tipo: 'int', getValor: (a) => a.tiposCaminhao.MINI },
   { secao: 'frota', label: 'TOCO', tipo: 'int', getValor: (a) => a.tiposCaminhao.TOCO },
-  { secao: 'frota', label: 'BASCULANTE', tipo: 'int', getValor: (a) => a.tiposCaminhao.BASCULANTE },
   { secao: 'frota', label: 'TRUCK', tipo: 'int', getValor: (a) => a.tiposCaminhao.TRUCK },
   { secao: 'frota', label: 'SOMA', tipo: 'int', getValor: (a) => a.tiposCaminhao.soma },
   { secao: 'frota', label: 'Caminhões (placas únicas)', tipo: 'int', getValor: (a) => a.caminhoesUnicos },

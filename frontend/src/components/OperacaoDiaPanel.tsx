@@ -1,4 +1,5 @@
-import { useMemo, type ReactNode } from 'react';
+import { useMemo, useRef, type ReactNode } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 
 import { FiTruck, FiBarChart2 } from 'react-icons/fi';
 
@@ -29,6 +30,8 @@ interface OperacaoDiaPanelProps {
   linhas: RegistroDiaLinha[];
 
   kpisOperacao: KpiValor[];
+
+  loadingKpis?: boolean;
 
   carregandoRegistros: boolean;
 
@@ -75,6 +78,8 @@ export default function OperacaoDiaPanel({
 
   kpisOperacao,
 
+  loadingKpis = false,
+
   carregandoRegistros,
 
   mostrarRegistros,
@@ -103,8 +108,10 @@ export default function OperacaoDiaPanel({
 
 }: OperacaoDiaPanelProps) {
 
-  const analiseLocal = useMemo(() => analisarOperacaoDia(registros), [registros]);
-  const analise = analiseSql || analiseLocal;
+  const analise = useMemo(() => {
+    if (analiseSql) return analiseSql;
+    return analisarOperacaoDia(registros);
+  }, [analiseSql, registros]);
 
   const { resumo } = analise;
 
@@ -306,21 +313,18 @@ export default function OperacaoDiaPanel({
 
             <KpiCard label="Caminhões (placas únicas)" valor={fmtNum(resumo.caminhoes, 0)} cor="#6366f1" />
 
-            {kpisAvancados.map((kpi, idx) => (
-
-              <KpiCard
-
-                key={kpi.id || kpi.nome}
-
-                label={kpi.nome}
-
-                valor={kpi.formatado || '—'}
-
-                cor={CORES[idx % CORES.length]}
-
-              />
-
-            ))}
+            {loadingKpis && kpisAvancados.length === 0 ? (
+              <KpiCard label="Indicadores" valor="Carregando..." cor="#94a3b8" />
+            ) : (
+              kpisAvancados.map((kpi, idx) => (
+                <KpiCard
+                  key={kpi.id || kpi.nome}
+                  label={kpi.nome}
+                  valor={kpi.formatado || '—'}
+                  cor={CORES[idx % CORES.length]}
+                />
+              ))
+            )}
 
           </div>
 
@@ -478,6 +482,14 @@ function PainelViagens({
 
 }) {
 
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const rowVirtualizer = useVirtualizer({
+    count: linhas.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 40,
+    overscan: 8,
+  });
+
   const totalLabel = totalRegistros ?? resumo.registros;
 
   return (
@@ -580,7 +592,7 @@ function PainelViagens({
 
           ) : (
 
-            <div style={{ overflowX: 'auto' }}>
+            <div ref={scrollRef} style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'min(480px, 55vh)' }}>
 
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.72rem', minWidth: '900px' }}>
 
@@ -612,9 +624,13 @@ function PainelViagens({
 
                 </thead>
 
-                <tbody>
+                <tbody style={{ height: `${rowVirtualizer.getTotalSize()}px`, position: 'relative' }}>
 
-                  {linhas.map((l, idx) => {
+                  {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+
+                    const idx = virtualRow.index;
+
+                    const l = linhas[idx];
 
                     const reg = registros[idx];
 
@@ -622,7 +638,20 @@ function PainelViagens({
 
                     return (
 
-                      <tr key={String(l.id)} style={{ borderTop: '1px solid #e2e8f0', background: idx % 2 === 0 ? '#f8fafc' : '#fff' }}>
+                      <tr
+                        key={String(l.id)}
+                        style={{
+                          position: 'absolute',
+                          top: 0,
+                          left: 0,
+                          width: '100%',
+                          transform: `translateY(${virtualRow.start}px)`,
+                          borderTop: '1px solid #e2e8f0',
+                          background: idx % 2 === 0 ? '#f8fafc' : '#fff',
+                          display: 'table',
+                          tableLayout: 'fixed',
+                        }}
+                      >
 
                         <td style={{ ...td, fontWeight: 700 }}>
                           {l.placa}

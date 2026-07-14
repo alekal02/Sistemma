@@ -59,6 +59,7 @@ import kpiUniversalRoutes from './routes/kpiUniversal';
 import graficosPadraoRoutes from './routes/graficosPadrao';
 import tipoServicoRoutes from './routes/tipoServico';
 import whatsappRoutes from './routes/whatsapp';
+import wuzapiRoutes from './routes/wuzapi';
 import pdfRoutes from './routes/pdf';
 import { pdfController } from './controllers/PdfController';
 import { seedKpisUniversais } from './database/seedKpiUniversal';
@@ -286,8 +287,11 @@ app.use('/api/graficos-padrao', authenticate, graficosPadraoRoutes);
 // PDF unificado
 app.use('/api/pdf', authenticate, pdfRoutes);
 
-// Rotas do WhatsApp Cloud API
+// Rotas do WhatsApp Cloud API (Meta — outbound)
 app.use('/api/whatsapp', authenticate, whatsappRoutes);
+
+// WuzAPI — webhook (público) + mapeamento de grupos (autenticado)
+app.use('/api/wuzapi', wuzapiRoutes);
 
 // Rotas do Catálogo de Tipos de Serviço
 app.use('/api/tipo-servico', authenticate, tipoServicoRoutes);

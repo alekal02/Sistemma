@@ -3,10 +3,15 @@ import { useNavigate } from 'react-router-dom';
 import {
   FiPlus, FiEdit2, FiSave, FiAlertCircle, FiArrowRight, FiTrash2,
   FiCheckCircle, FiAlertTriangle, FiBarChart2, FiDatabase, FiClock, FiRefreshCw,
+  FiDownload,
 } from 'react-icons/fi';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import contractService, { type ContratoSaude } from '../services/contractService';
+import coletaService from '../services/coletaService';
+import pdfService from '../services/pdfService';
+import { gerarHtmlRelatorioUploadsDia } from '../utils/gerarHtmlRelatorioUploadsDia';
+import { gerarNomePdfUploadsDia } from '../utils/gerarNomePdf';
 import { TIPOS_SERVICO_LABELS } from '../types';
 import '../styles/Contratos.css';
 
@@ -19,6 +24,10 @@ const formVazio: FormData = {
   numeroContrato: '',
   diaInicioCiclo: 1,
 };
+
+function hojeIsoSp(): string {
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+}
 
 export default function Contratos() {
   const navigate = useNavigate();
@@ -34,6 +43,8 @@ export default function Contratos() {
   const [salvando, setSalvando] = useState(false);
 
   const [excluindoId, setExcluindoId] = useState<string | null>(null);
+  const [dataUploadsPdf, setDataUploadsPdf] = useState(hojeIsoSp);
+  const [gerandoPdfUploads, setGerandoPdfUploads] = useState(false);
 
   const carregarContratos = useCallback(async () => {
     setCarregando(true);
@@ -160,6 +171,33 @@ export default function Contratos() {
     }
   };
 
+  const gerarPdfUploadsDoDia = async () => {
+    if (!dataUploadsPdf) {
+      adicionarToast('Selecione o dia do relatório', 'warning');
+      return;
+    }
+    setGerandoPdfUploads(true);
+    try {
+      const resultado = await coletaService.listarUploadsPorDia(dataUploadsPdf);
+      const html = gerarHtmlRelatorioUploadsDia(resultado);
+      const nome = gerarNomePdfUploadsDia(resultado.data);
+      await pdfService.gerarEBaixar(html, nome, 'default', false);
+      if (resultado.totalUploads === 0) {
+        adicionarToast(`PDF gerado: nenhum upload em ${resultado.data.split('-').reverse().join('/')}`, 'info');
+      } else {
+        adicionarToast(
+          `PDF gerado: ${resultado.totalContratos} contrato(s), ${resultado.totalUploads} upload(s)`,
+          'success',
+        );
+      }
+    } catch (error: unknown) {
+      const msg = (error as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      adicionarToast(msg || 'Erro ao gerar PDF de uploads do dia', 'error');
+    } finally {
+      setGerandoPdfUploads(false);
+    }
+  };
+
   const totalServicos = contratos.reduce((s, c) => s + c.totalServicos, 0);
   const totalRegistros = contratos.reduce((s, c) => s + c.totalRegistros, 0);
   const totalKpis = contratos.reduce((s, c) => s + c.totalKpisAtivos, 0);
@@ -234,7 +272,33 @@ export default function Contratos() {
 
       {/* ═══ Header ═══ */}
       <div className="contratos-header">
-        <div style={{ flex: 1 }} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+          <label style={{ fontSize: '0.72rem', color: '#64748b', fontWeight: 600 }}>
+            Uploads do dia
+          </label>
+          <input
+            type="date"
+            value={dataUploadsPdf}
+            onChange={(e) => setDataUploadsPdf(e.target.value)}
+            style={{
+              fontSize: '0.78rem',
+              padding: '0.35rem 0.5rem',
+              borderRadius: '6px',
+              border: '1px solid #e2e8f0',
+              color: '#0f172a',
+            }}
+          />
+          <button
+            className="btn-novo-contrato"
+            onClick={gerarPdfUploadsDoDia}
+            disabled={gerandoPdfUploads}
+            title="PDF com contratos que fizeram upload no dia"
+            style={{ background: '#0f172a' }}
+          >
+            <FiDownload size={16} />
+            {gerandoPdfUploads ? 'Gerando…' : 'PDF Uploads'}
+          </button>
+        </div>
         <button className="btn-novo-contrato" onClick={abrirModalNovo}>
           <FiPlus size={16} /> Novo Contrato
         </button>

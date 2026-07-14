@@ -202,6 +202,18 @@ export const GRAFICOS_PADRAO: Record<string, GraficoPadrao[]> = {
   // ═══════════════════════════════════════════════
   [TipoServico.ROCADEIRA]: [
     {
+      key: 'area_por_tipo_execucao',
+      tipo: 'pizza',
+      titulo: 'Área Manual × Mecanizada',
+      placeholderEixoX: ['TIPO', 'TIPO_EXECUCAO', 'Tipo'],
+      placeholderEixoY: ['AREA_ROCADA', 'AREA ROCADA', 'AREA', 'M2', 'METROS QUADRADOS', 'Area m²'],
+      descricao: 'Distribuição da área roçada entre Manual e Mecanizada',
+      ordem: 0,
+      categoria: 'Operacional',
+      isContagem: false,
+      cor: '#0ea5e9',
+    },
+    {
       key: 'area_por_equipamento',
       tipo: 'barra',
       titulo: 'Área Roçada por Equipamento',

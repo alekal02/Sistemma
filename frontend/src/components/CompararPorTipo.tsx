@@ -6,6 +6,7 @@ import {
   FiChevronLeft, FiChevronRight, FiSettings,
 } from 'react-icons/fi';
 import servicoService from '../services/servicoService';
+import { isRequestAborted } from '../services/abortableRequest';
 import api from '../services/api';
 import type {
   CompararPorTipoResponse,
@@ -289,7 +290,8 @@ export default function CompararPorTipo({
         res = await servicoService.compararPorTipo(contratoId, tipoServico, filtrosComparacao());
       }
       setDados(res);
-    } catch {
+    } catch (err) {
+      if (isRequestAborted(err)) return;
       setErro('Erro ao carregar comparacao analitica');
       setDados(null);
     } finally {
@@ -453,10 +455,9 @@ export default function CompararPorTipo({
     [dados],
   );
 
-  const temAnalisePeso = dados?.tipoServico === 'coleta_caminhao'
-    && dados.servicos.some(s => s.analisePeso);
-
+  // Coleta: o comparativo oficial é a análise de peso (como no PDF). Demais tipos usam matriz de KPIs.
   const mostrarComparativoKpis = dados?.tipoServico !== 'coleta_caminhao';
+  const mostrarAnalisePeso = dados?.tipoServico === 'coleta_caminhao';
 
   const renderPainelPeriodo = (
     contratoIdPainel: string,
@@ -831,6 +832,16 @@ export default function CompararPorTipo({
             )}
           </div>
 
+          {mostrarAnalisePeso && (
+            <AnalisePesoPainel
+              servicos={dados.servicos}
+              tipoServicoLabel={dados.tipoServicoLabel}
+              onAbrirServico={(s) =>
+                navigate(`/contratos/${s.contratoId || dados.contratoId}/servicos/${s.id}`)
+              }
+            />
+          )}
+
           {mostrarComparativoKpis && dados.insights && dados.insights.length > 0 && (
             <div className="vg-comparar-insights">
               <h4>Maiores diferencas (por valor numerico)</h4>
@@ -853,16 +864,6 @@ export default function CompararPorTipo({
                 ))}
               </div>
             </div>
-          )}
-
-          {(temAnalisePeso || dados.tipoServico === 'coleta_caminhao') && (
-            <AnalisePesoPainel
-              servicos={dados.servicos}
-              tipoServicoLabel={dados.tipoServicoLabel}
-              onAbrirServico={(s) =>
-                navigate(`/contratos/${s.contratoId || dados.contratoId}/servicos/${s.id}`)
-              }
-            />
           )}
 
           {mostrarComparativoKpis && (

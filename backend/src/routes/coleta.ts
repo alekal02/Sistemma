@@ -33,6 +33,7 @@ router.post('/upload/preview-data', authenticate, upload.single('planilha'), (re
 router.post('/upload/preview-rocada', authenticate, upload.single('planilha'), (req, res) => controller.previewRocada(req, res));
 router.post('/upload/conferencia-diaria', authenticate, upload.single('planilha'), (req, res) => controller.conferenciaDiaria(req, res));
 router.get('/dashboard', authenticate, (req, res) => controller.dashboard(req, res));
+router.get('/uploads/por-dia', authenticate, (req, res) => controller.uploadsPorDia(req, res));
 router.get('/uploads', authenticate, (req, res) => controller.uploads(req, res));
 router.get('/dados', authenticate, (req, res) => controller.dados(req, res));
 router.put('/dados/:id', authenticate, (req, res) => controller.atualizarDado(req, res));

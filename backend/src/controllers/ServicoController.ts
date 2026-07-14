@@ -29,7 +29,8 @@ import {
   extrairOverridesLimites,
 } from '../config/pesoMaximoCaminhao';
 import { calcularHorasProdutivasTotal } from '../services/horasProdutivasService';
-import { isNomeColunaInvalido } from '../services/PadraoPlanilhaDetector';
+import { isNomeColunaInvalido, detectarPadraoDeObjetos } from '../services/PadraoPlanilhaDetector';
+import { ColetaData } from '../entities/ColetaData';
 import ValidacaoViagemService from '../services/validacaoViagemService';
 import { verificarContagemViagens } from '../services/verificarContagemViagensService';
 import {
@@ -75,6 +76,7 @@ import {
   analisarPesoColeta,
   type AnalisePesoColeta,
 } from '../services/analisePesoColetaService';
+import { calcularFaturamentoRocadaPorAreas } from '../utils/rocadaTipoExecucao';
 import {
   getAgregacaoRocada,
   getMetricasRocadaSql,
@@ -88,6 +90,7 @@ import {
   metricaExecutivaDeColetaSql,
   agregarGraficoColetaSql,
 } from '../services/coletaAgregacaoService';
+import { invalidarCacheSaudeContratos } from './ContractController';
 
 /** KPI "Viagens Realizadas" — viagens em rotas (linhas) validadas, não só contagem de linhas */
 function resolverExpressaoKpiViagensRealizadas(
@@ -637,6 +640,7 @@ export class ServicoController {
       }
 
       const novoServico = await this.repository.save(servico);
+      invalidarCacheSaudeContratos(contractId);
       return res.status(201).json(novoServico);
     } catch (error: any) {
       console.error('Erro ao criar serviço:', error);
@@ -739,6 +743,61 @@ export class ServicoController {
         PlanilhaService.getContagemRegistrosPorServico(id),
         PlanilhaService.getPeriodoDadosPorServico(id),
       ]);
+
+      // Import via WhatsApp (ou falha no detector) pode deixar padraoPlanilha null
+      // mesmo com dados válidos — reconstrói a partir de coleta_dados.dados.
+      if (!(servico.padraoPlanilha?.colunas?.length) && contagemRegistros.total > 0) {
+        try {
+          const amostra = await AppDataSource.getRepository(ColetaData)
+            .createQueryBuilder('c')
+            .innerJoin(PlanilhaUpload, 'u', 'u.id = c.planilhaUploadId')
+            .select(['c.id', 'c.dados'])
+            .where('u.servico_id = :id', { id })
+            .andWhere('c.dados IS NOT NULL')
+            .orderBy('c.id', 'DESC')
+            .take(200)
+            .getMany();
+
+          const colunasInferidas = detectarPadraoDeObjetos(
+            amostra.map((r) => r.dados || {}).filter((d) => d && Object.keys(d).length > 0),
+          );
+
+          if (colunasInferidas.length > 0) {
+            const ultimoUpload = uploads[0];
+            const colunasNomes = colunasInferidas.map((c) => c.nome);
+            const graficosAtuais = servico.configDashboard?.graficos || [];
+            const graficosReResolvidos = graficosAtuais.length > 0
+              ? reResolverGraficos(graficosAtuais, colunasNomes)
+              : gerarConfigGraficosPadrao(servico.tipo || 'coleta_caminhao', colunasNomes);
+
+            servico.padraoPlanilha = {
+              colunas: colunasInferidas,
+              totalLinhas: contagemRegistros.total,
+              ultimoUpload: ultimoUpload?.id,
+              ultimoUploadNome: ultimoUpload?.nomeArquivo,
+              detectadoEm: new Date().toISOString(),
+              origem: 'inferido_coleta_dados',
+            };
+
+            const cfgAtual = servico.configDashboard || {};
+            servico.configDashboard = {
+              ...cfgAtual,
+              graficos: graficosReResolvidos,
+              reResolvidoEm: new Date().toISOString(),
+              reResolvido: true,
+              graficosPadraoAplicados: true,
+              graficosPadraoTotal: graficosReResolvidos.length,
+            };
+
+            await this.repository.save(servico);
+            console.log(
+              `[getPadrao] padraoPlanilha reconstruído para serviço ${id} (${colunasInferidas.length} colunas)`,
+            );
+          }
+        } catch (err: any) {
+          console.warn('[getPadrao] Falha ao inferir padraoPlanilha:', err?.message || err);
+        }
+      }
 
                   // ⭐ Buscar KPIs Universais do mesmo tipo de servico
       const kpiUniversalRepo = AppDataSource.getRepository(KpiUniversal);
@@ -952,6 +1011,8 @@ export class ServicoController {
       const dataInicio = typeof req.query.dataInicio === 'string' ? req.query.dataInicio : undefined;
       const dataFim = typeof req.query.dataFim === 'string' ? req.query.dataFim : undefined;
       const topN = req.query.topN ? parseInt(String(req.query.topN), 10) : undefined;
+      const tipoRaw = typeof req.query.tipoExecucao === 'string' ? req.query.tipoExecucao.toLowerCase() : '';
+      const tipoExecucao = tipoRaw === 'manual' || tipoRaw === 'mecanizada' ? tipoRaw : undefined;
 
       if (data && !/^\d{4}-\d{2}-\d{2}$/.test(data)) {
         return res.status(400).json({ error: 'Data inválida. Use YYYY-MM-DD.' });
@@ -964,13 +1025,13 @@ export class ServicoController {
       }
 
       const cacheKey = [
-        'rocada-agregacao', id,
-        data || '', dataInicio || '', dataFim || '', String(topN || ''),
+        'rocada-agregacao-v2', id,
+        data || '', dataInicio || '', dataFim || '', String(topN || ''), tipoExecucao || '',
       ].join(':');
       const cached = getCache<any>(cacheKey);
       if (cached) return res.json(cached);
 
-      const agregacao = await getAgregacaoRocada(id, { data, dataInicio, dataFim, topN });
+      const agregacao = await getAgregacaoRocada(id, { data, dataInicio, dataFim, topN, tipoExecucao });
       const response = { ...agregacao, tipoServico: servico.tipo };
       setCache(cacheKey, response);
       return res.json(response);
@@ -1677,8 +1738,19 @@ export class ServicoController {
                 valor = metricasRocada.equipamentos;
               } else if (/bairro/i.test(nome)) {
                 valor = metricasRocada.bairros;
-              } else if (/faturamento|receita/i.test(nome) && Number(kpiValoresFixos.VALOR_M2 || 0) > 0) {
-                valor = metricasRocada.areaM2 * Number(kpiValoresFixos.VALOR_M2);
+              } else if (/faturamento|receita/i.test(nome) && (
+                Number(kpiValoresFixos.VALOR_M2 || 0) > 0
+                || Number(kpiValoresFixos.VALOR_M2_MANUAL || 0) > 0
+                || Number(kpiValoresFixos.VALOR_M2_MECANIZADA || 0) > 0
+              )) {
+                valor = calcularFaturamentoRocadaPorAreas(
+                  {
+                    manual: metricasRocada.areaManualM2,
+                    mecanizada: metricasRocada.areaMecanizadaM2,
+                    desconhecido: metricasRocada.areaDesconhecidaM2,
+                  },
+                  kpiValoresFixos,
+                );
               } else {
                 valor = 0;
               }
@@ -1703,9 +1775,14 @@ export class ServicoController {
           }
         });
 
-        const faturamentoRocada = Number(valoresFixos.VALOR_M2 || 0) > 0
-          ? metricasRocada.areaM2 * Number(valoresFixos.VALOR_M2)
-          : 0;
+        const faturamentoRocada = calcularFaturamentoRocadaPorAreas(
+          {
+            manual: metricasRocada.areaManualM2,
+            mecanizada: metricasRocada.areaMecanizadaM2,
+            desconhecido: metricasRocada.areaDesconhecidaM2,
+          },
+          valoresFixos,
+        );
 
         const responseRocada = {
           kpis: resultadosKpisRocada,
@@ -2243,13 +2320,34 @@ export class ServicoController {
           };
         }
       });
+
+      // KPIs via SQL; análise de peso ainda precisa das linhas (faixas PESO 1–4, frota, cenário).
+      let analisePesoSql: AnalisePesoColeta | null = null;
+      try {
+        const dadosBrutos = await obterDadosServicoComCache(servico.id);
+        const dadosFiltradosSql = this.aplicarFiltros(dadosBrutos || [], filtros);
+        if (dadosFiltradosSql?.length) {
+          const dadosNormSql = normalizarDados(dadosFiltradosSql);
+          const limitesContratoSql = resolverLimitesDoContrato(contract?.configOperacional);
+          analisePesoSql = analisarPesoColeta(dadosNormSql, servico.id, {
+            colunaTipoCaminhao: cfgFat?.colunaTipoCaminhao
+              || detectarTodasColunas(dadosNormSql, servico.id).colTipo
+              || undefined,
+            limitesPeso: limitesContratoSql.peso,
+            limitesVolume: limitesContratoSql.volume,
+          });
+        }
+      } catch (errAnalise: any) {
+        console.warn('[calcularKpisParaComparacao] analisePeso (SQL path):', errAnalise?.message || errAnalise);
+      }
+
       return {
         id: servico.id,
         nome: servico.nome,
         tipo: servico.tipo,
         totalRegistros: metricasColeta.registros,
         periodo,
-        analisePeso: null,
+        analisePeso: analisePesoSql,
         kpis,
       };
     }
@@ -2855,12 +2953,21 @@ export class ServicoController {
           dataInicio: filtros.dataInicio,
           dataFim: filtros.dataFim,
         });
-        const fat = Number(valoresFixos.VALOR_M2 || 0) > 0 ? m.areaM2 * Number(valoresFixos.VALOR_M2) : 0;
+        const fat = calcularFaturamentoRocadaPorAreas(
+          {
+            manual: m.areaManualM2,
+            mecanizada: m.areaMecanizadaM2,
+            desconhecido: m.areaDesconhecidaM2,
+          },
+          valoresFixos,
+        );
         return res.json({
           viagens: m.registros, qtdColetores: m.operadores, pesoTotalTon: 0, kmTotal: 0,
           horasProdutivas: 0, horasMediaRotas: 0, faturamento: Math.round(fat * 100) / 100,
           fatPorTipo: {}, tonKm: 0, prodColetor: 0, kmMedioViagem: 0, tonMediaColeta: 0,
-          receitaKm: 0, receitaHora: 0, temValor: Number(valoresFixos.VALOR_M2 || 0) > 0,
+          receitaKm: 0, receitaHora: 0, temValor: fat > 0 || Number(valoresFixos.VALOR_M2 || 0) > 0
+            || Number(valoresFixos.VALOR_M2_MANUAL || 0) > 0
+            || Number(valoresFixos.VALOR_M2_MECANIZADA || 0) > 0,
           coletoresList: [], areaM2: m.areaM2, modo: 'rocada-sql',
         });
       }

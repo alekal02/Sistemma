@@ -1,4 +1,9 @@
 import api from './api'
+import { cachedFetch, chaveContrato, invalidateCacheExact } from './requestCache'
+
+export function invalidateContratoCache(id: string): void {
+  invalidateCacheExact(chaveContrato(id))
+}
 
 export interface ContratoSaude {
   id: string
@@ -54,9 +59,15 @@ const contractService = {
     )
   },
 
-  async buscar(id: string): Promise<ContratoDetalhe> {
-    const { data } = await api.get<ContratoDetalhe>(`/contracts/${id}`)
-    return data
+  async buscar(id: string, opts?: { force?: boolean }): Promise<ContratoDetalhe> {
+    return cachedFetch(
+      chaveContrato(id),
+      async () => {
+        const { data } = await api.get<ContratoDetalhe>(`/contracts/${id}`)
+        return data
+      },
+      { force: opts?.force },
+    )
   },
 
   async criar(payload: { numeroContrato: string; diaInicioCiclo?: number }): Promise<ContratoDetalhe> {

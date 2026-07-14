@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react';
+import { memo, useEffect, useState, useMemo } from 'react';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
 } from 'recharts';
@@ -46,7 +46,7 @@ function extrairItens(
   }));
 }
 
-function RankingChart({
+const RankingChart = memo(function RankingChart({
   titulo,
   itens,
   cor,
@@ -107,9 +107,9 @@ function RankingChart({
       </ResponsiveContainer>
     </div>
   );
-}
+});
 
-export default function RankingsOperacionais({ contractId, servicoId, filtros }: Props) {
+const RankingsOperacionais = memo(function RankingsOperacionais({ contractId, servicoId, filtros }: Props) {
   const [dados, setDados] = useState<KpiOperacionalMotoristasResponse | null>(null);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState<string | null>(null);
@@ -139,6 +139,24 @@ export default function RankingsOperacionais({ contractId, servicoId, filtros }:
     return () => { cancelado = true; };
   }, [contractId, servicoId, filtrosKey]);
 
+  const itensPorCategoria = useMemo(() => {
+    if (!dados?.rankings) return null;
+    return {
+      motoristas: {
+        melhores: extrairItens('motoristas', dados.rankings.motoristas, 'melhores'),
+        piores: extrairItens('motoristas', dados.rankings.motoristas, 'piores'),
+      },
+      coletores: {
+        melhores: extrairItens('coletores', dados.rankings.coletores, 'melhores'),
+        piores: extrairItens('coletores', dados.rankings.coletores, 'piores'),
+      },
+      rotas: {
+        melhores: extrairItens('rotas', dados.rankings.rotas, 'melhores'),
+        piores: extrairItens('rotas', dados.rankings.rotas, 'piores'),
+      },
+    };
+  }, [dados]);
+
   if (carregando) {
     return (
       <div className="rankings-operacionais">
@@ -157,7 +175,7 @@ export default function RankingsOperacionais({ contractId, servicoId, filtros }:
     );
   }
 
-  if (!dados?.rankings) return null;
+  if (!dados?.rankings || !itensPorCategoria) return null;
 
   const secoes: { categoria: Categoria; label: string; aviso?: string }[] = [
     { categoria: 'motoristas', label: 'Motoristas' },
@@ -193,13 +211,13 @@ export default function RankingsOperacionais({ contractId, servicoId, filtros }:
           <div className="rankings-grid">
             <RankingChart
               titulo={`Top 20 melhores — ${label.toLowerCase()}`}
-              itens={extrairItens(categoria, dados.rankings![categoria], 'melhores')}
+              itens={itensPorCategoria[categoria].melhores}
               cor="#16a34a"
               icone="melhor"
             />
             <RankingChart
               titulo={`Top 20 piores — ${label.toLowerCase()}`}
-              itens={extrairItens(categoria, dados.rankings![categoria], 'piores')}
+              itens={itensPorCategoria[categoria].piores}
               cor="#dc2626"
               icone="pior"
             />
@@ -208,4 +226,6 @@ export default function RankingsOperacionais({ contractId, servicoId, filtros }:
       ))}
     </div>
   );
-}
+});
+
+export default RankingsOperacionais;

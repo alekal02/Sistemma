@@ -19,6 +19,9 @@ api.interceptors.request.use((config) => {
   if (token) {
     config.headers.Authorization = `Bearer ${token}`
   }
+  // Evita tempestade de 304 lentos no DevTools (revalidação por linha/componente).
+  config.headers['Cache-Control'] = 'no-cache'
+  config.headers.Pragma = 'no-cache'
   return config
 })
 

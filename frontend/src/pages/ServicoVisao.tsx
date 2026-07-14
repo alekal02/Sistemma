@@ -142,11 +142,15 @@ export default function ServicoVisao() {
     carregarDados({ silencioso: true, revalidarInconsistencias: true });
   }, [carregarDados]);
 
+  const handleMiniFlowStatusChange = useCallback((status: { upload: string }) => {
+    if (status.upload === 'done') handleUploadConcluido();
+  }, [handleUploadConcluido]);
+
   useEffect(() => {
     carregarDados();
   }, [contractId, servicoId, token]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const temPlanilha = colunas.length > 0;
+  const temPlanilha = colunas.length > 0 || totalRegistros > 0;
   const ehRocada = tipoServico === 'rocadeira';
   const volumeAlto = totalRegistros > AVISO_VOLUME_ALTO
     || (inconsistencias?.viagensValidas ?? 0) > AVISO_VOLUME_ALTO;
@@ -257,9 +261,7 @@ export default function ServicoVisao() {
                 servicoId={servicoId}
                 servicoNome={servicoNome}
                 tipoServico={tipoServico}
-                onStatusChange={(status) => {
-                  if (status.upload === 'done') handleUploadConcluido();
-                }}
+                onStatusChange={handleMiniFlowStatusChange}
               />
             </div>
           )}

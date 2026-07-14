@@ -10,6 +10,7 @@ import { Servico } from '../entities/Servico';
 import { Contract } from '../entities/Contract';
 import { KpiUniversal } from '../entities/KpiUniversal';
 import { GraficoPadraoConfig } from '../entities/GraficoPadraoConfig';
+import { WhatsappGrupoMapa } from '../entities/WhatsappGrupoMapa';
 const AppDataSource = new DataSource({
   type: 'postgres',
   host: process.env.DATABASE_HOST || 'localhost',
@@ -22,7 +23,7 @@ const AppDataSource = new DataSource({
   synchronize: process.env.TYPEORM_SYNCHRONIZE !== 'false',
   migrationsRun: false,
   logging: process.env.NODE_ENV === 'development',
-  entities: [Abastecimento, User, Caminhao, AbastecimentoLog, ColetaData, PlanilhaUpload, Contract, Servico, KpiUniversal, GraficoPadraoConfig],
+  entities: [Abastecimento, User, Caminhao, AbastecimentoLog, ColetaData, PlanilhaUpload, Contract, Servico, KpiUniversal, GraficoPadraoConfig, WhatsappGrupoMapa],
   extra: {
     max: parseInt(process.env.DB_POOL_MAX || '8', 10),
     idleTimeoutMillis: parseInt(process.env.DB_POOL_IDLE_MS || '10000', 10),

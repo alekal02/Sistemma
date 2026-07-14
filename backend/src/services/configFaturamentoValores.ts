@@ -9,6 +9,10 @@ type ConfigFaturamento = {
   valorBasculante?: number | null;
   valorKmLinear?: number | null;
   valorM2?: number | null;
+  /** Roçada: R$/m² execução manual */
+  valorM2Manual?: number | null;
+  /** Roçada: R$/m² execução mecanizada */
+  valorM2Mecanizada?: number | null;
   valorPorArvore?: number | null;
   valorPorEquipe?: number | null;
   valorPorUnidade?: number | null;
@@ -71,7 +75,26 @@ export function buildValoresFixosFaturamento(
     setIfPositive(valores, 'VALOR_TOCO', configFaturamento.valorToco);
     setIfPositive(valores, 'VALOR_BASCULANTE', configFaturamento.valorBasculante);
     setIfPositive(valores, 'VALOR_KM_LINEAR', configFaturamento.valorKmLinear);
+    setIfPositive(valores, 'VALOR_M2_MANUAL', configFaturamento.valorM2Manual);
+    setIfPositive(valores, 'VALOR_M2_MECANIZADA', configFaturamento.valorM2Mecanizada);
     setIfPositive(valores, 'VALOR_M2', configFaturamento.valorM2);
+    // Fallback: se só houver tarifas por tipo, preenche VALOR_M2 para KPIs legados
+    if (valores.VALOR_M2 === undefined) {
+      const man = valores.VALOR_M2_MANUAL;
+      const mec = valores.VALOR_M2_MECANIZADA;
+      if (man !== undefined && mec !== undefined && man === mec) {
+        valores.VALOR_M2 = man;
+      } else if (mec !== undefined) {
+        valores.VALOR_M2 = mec;
+      } else if (man !== undefined) {
+        valores.VALOR_M2 = man;
+      }
+    }
+    // Se só valorM2 genérico, replica nos dois tipos
+    if (valores.VALOR_M2 !== undefined) {
+      if (valores.VALOR_M2_MANUAL === undefined) valores.VALOR_M2_MANUAL = valores.VALOR_M2;
+      if (valores.VALOR_M2_MECANIZADA === undefined) valores.VALOR_M2_MECANIZADA = valores.VALOR_M2;
+    }
     setIfPositive(valores, 'VALOR_POR_ARVORE', configFaturamento.valorPorArvore);
     setIfPositive(valores, 'VALOR_POR_EQUIPE', configFaturamento.valorPorEquipe);
     setIfPositive(valores, 'VALOR_POR_UNIDADE', configFaturamento.valorPorUnidade);

@@ -6,6 +6,12 @@
 import * as XLSX from 'xlsx';
 import { parseDataPlanilha } from '../utils/formatarDataPlanilha';
 import { parseNumeroBr } from './FormulaEngine';
+import {
+  classificarTipoExecucaoRocada,
+  inferirTipoExecucaoAba,
+  labelTipoExecucao,
+  type TipoExecucaoRocada,
+} from '../utils/rocadaTipoExecucao';
 
 export type ModeloRocadaDetectado =
   | 'londrina'
@@ -25,6 +31,8 @@ export interface LinhaRocadaCanonico {
   operador: string | null;
   equipe: string | null;
   tipo: string | null;
+  /** manual | mecanizada | desconhecido — usado no split de importação/faturamento */
+  tipoExecucao: TipoExecucaoRocada;
   distrito: string | null;
   /** Colunas originais normalizadas para FormulaEngine / KPIs */
   dados: Record<string, unknown>;
@@ -50,6 +58,12 @@ export interface ResultadoParseRocada {
     bairro: string | null;
     motivo: string;
   }>;
+  /** Contagem por tipo de execução (após parse, antes do filtro de serviço) */
+  porTipoExecucao: {
+    manual: { registros: number; areaM2: number };
+    mecanizada: { registros: number; areaM2: number };
+    desconhecido: { registros: number; areaM2: number };
+  };
 }
 
 function norm(s: unknown): string {
@@ -229,10 +243,99 @@ function sheetEhRocada(nome: string): boolean {
   if (n.includes('CRONOGRAMA')) return false;
   if (n.includes('VARRIC') || n.includes('CAPINA') || n.includes('PINTURA') || n.includes('BOCA')) return false;
   if (n.includes('ROCADA') || n.includes('TRATOR')) return true;
-  // abas simples (Londrina/Pinda/QGIS)
+  // abas simples (Londrina/Pinda/QGIS) + split Manual/Mecanizada
   if (n === 'JUNHO' || n === 'JULHO' || n === 'MAIO' || n === 'ABRIL') return true;
-  if (n.includes('ROADA') || n.includes('MANUAL') || n === 'ROCADA') return true;
+  if (n.includes('ROADA') || n.includes('MANUAL') || n.includes('MECANIZ') || n === 'ROCADA') return true;
   return false;
+}
+
+/** Sonda rápida: coluna Tipo tem Manual e/ou Mecanizada? */
+function probeColunaTipo(rows: unknown[][]): {
+  temColunaTipo: boolean;
+  manual: number;
+  mecanizada: number;
+  temAmbos: boolean;
+} {
+  if (!rows.length) {
+    return { temColunaTipo: false, manual: 0, mecanizada: 0, temAmbos: false };
+  }
+  const headerIdx = encontrarLinhaCabecalho(rows);
+  const headerRow = (rows[headerIdx] || []).map((c) => String(c ?? '').trim());
+  const iTipo = acharCol(headerRow, 'TIPO', 'Tipo');
+  if (iTipo < 0) {
+    return { temColunaTipo: false, manual: 0, mecanizada: 0, temAmbos: false };
+  }
+  let manual = 0;
+  let mecanizada = 0;
+  const limite = Math.min(rows.length, headerIdx + 1 + 4000);
+  for (let r = headerIdx + 1; r < limite; r++) {
+    const t = classificarTipoExecucaoRocada(cellStr((rows[r] || [])[iTipo]));
+    if (t === 'manual') manual++;
+    else if (t === 'mecanizada') mecanizada++;
+  }
+  return {
+    temColunaTipo: true,
+    manual,
+    mecanizada,
+    temAmbos: manual > 0 && mecanizada > 0,
+  };
+}
+
+/**
+ * Escolhe abas sem duplicar: se existir aba "mista" (coluna Tipo com Manual+Mecanizada
+ * e nome ambíguo), usa só ela. Caso contrário usa abas dedicadas (Manual / Mecanizada).
+ */
+function selecionarAbasRocada(
+  sheetNames: string[],
+  lerRows: (nome: string) => unknown[][],
+  filtroTipo?: 'manual' | 'mecanizada' | null,
+): { abas: string[]; forcarTipoPorAba: Record<string, TipoExecucaoRocada | null>; aviso?: string } {
+  const probes = sheetNames.map((nome) => {
+    const rows = lerRows(nome);
+    const tipoAba = inferirTipoExecucaoAba(nome);
+    const col = probeColunaTipo(rows);
+    return { nome, tipoAba, ...col, rows };
+  });
+
+  const mistosConfiaveis = probes.filter((p) => p.temAmbos && !p.tipoAba);
+  const dedicadas = probes.filter((p) => p.tipoAba === 'manual' || p.tipoAba === 'mecanizada');
+
+  let escolhidas = probes;
+  let aviso: string | undefined;
+
+  if (mistosConfiaveis.length > 0) {
+    // QGIS típico: aba principal com Tipo + aba "manual" espelhada → evita duplicar
+    escolhidas = mistosConfiaveis;
+    if (dedicadas.length > 0) {
+      aviso =
+        `Usando aba(s) com coluna Tipo (Manual+Mecanizada): ${mistosConfiaveis.map((p) => p.nome).join(', ')}. `
+        + `Ignorada(s) aba(s) espelhada(s): ${dedicadas.map((p) => p.nome).join(', ')}.`;
+    }
+  } else if (dedicadas.length > 0 && probes.some((p) => !p.tipoAba)) {
+    // Tem dedicadas + genéricas sem Tipo misto → preferir dedicadas no split real
+    const soDedicadas = dedicadas;
+    if (filtroTipo === 'manual' || filtroTipo === 'mecanizada') {
+      const match = soDedicadas.filter((p) => p.tipoAba === filtroTipo);
+      escolhidas = match.length > 0 ? match : soDedicadas;
+    } else {
+      escolhidas = soDedicadas;
+    }
+  }
+
+  if (filtroTipo === 'manual' || filtroTipo === 'mecanizada') {
+    const porNome = escolhidas.filter((p) => p.tipoAba === filtroTipo);
+    if (porNome.length > 0 && mistosConfiaveis.length === 0) {
+      escolhidas = porNome;
+    }
+  }
+
+  const forcarTipoPorAba: Record<string, TipoExecucaoRocada | null> = {};
+  for (const p of escolhidas) {
+    // Em aba dedicada (só Manual ou só Mecanizada no nome), o nome manda
+    forcarTipoPorAba[p.nome] = mistosConfiaveis.includes(p) ? null : (p.tipoAba || null);
+  }
+
+  return { abas: escolhidas.map((p) => p.nome), forcarTipoPorAba, aviso };
 }
 
 function encontrarLinhaCabecalho(rows: unknown[][]): number {
@@ -268,6 +371,7 @@ function montarDadosCanonicos(linha: Omit<LinhaRocadaCanonico, 'dados'> & { dado
     LOGRADOURO: linha.logradouro,
     DISTRITO: linha.distrito,
     TIPO: linha.tipo,
+    TIPO_EXECUCAO: linha.tipoExecucao,
     ...(linha.dadosExtra || {}),
   };
 }
@@ -278,6 +382,7 @@ function parseLinhasAba(
   sheetName: string,
   rows: unknown[][],
   avisos: string[],
+  forcarTipoAba: TipoExecucaoRocada | null = null,
 ): {
   modelo: ModeloRocadaDetectado;
   linhas: LinhaRocadaCanonico[];
@@ -394,10 +499,24 @@ function parseLinhasAba(
 
     let equipamento = iEquip >= 0 ? cellStr(row[iEquip]) : null;
     if (!equipamento && /trator/i.test(sheetName)) equipamento = 'TRATOR';
+
+    const tipoColuna = iTipo >= 0 ? cellStr(row[iTipo]) : null;
+    const tipoDaColuna = classificarTipoExecucaoRocada(tipoColuna);
+    const tipoAba = forcarTipoAba || inferirTipoExecucaoAba(sheetName);
+
+    // Aba dedicada (Manual/Mecanizada): nome manda. Aba mista QGIS: coluna Tipo manda.
+    const tipoExecucao: TipoExecucaoRocada = forcarTipoAba
+      || (tipoDaColuna !== 'desconhecido' ? tipoDaColuna : null)
+      || tipoAba
+      || classificarTipoExecucaoRocada(equipamento, sheetName);
+
     if (!equipamento && modelo === 'qgis') {
-      const tipo = iTipo >= 0 ? cellStr(row[iTipo]) : null;
-      equipamento = tipo || 'ROÇADEIRA';
+      equipamento = tipoColuna || labelTipoExecucao(tipoExecucao);
     }
+
+    const tipoLabel = forcarTipoAba
+      ? labelTipoExecucao(forcarTipoAba)
+      : (tipoColuna || labelTipoExecucao(tipoExecucao));
 
     const base = {
       dataSaida,
@@ -407,7 +526,8 @@ function parseLinhasAba(
       equipamento,
       operador: iOp >= 0 ? cellStr(row[iOp]) : null,
       equipe,
-      tipo: iTipo >= 0 ? cellStr(row[iTipo]) : 'ROÇADA',
+      tipo: tipoLabel,
+      tipoExecucao,
       distrito: iDist >= 0 ? cellStr(row[iDist]) : null,
       aba: sheetName,
       modelo,
@@ -424,7 +544,7 @@ function parseLinhasAba(
       `Aba "${sheetName}" (${modelo}): não há coluna de metragem/área (m²). `
       + 'Esperado: METRAGEM, TOTAL (M²), Área, EXECUTADO ou COMPRIMENTO×LARGURA.',
     );
-  } else if (linhas.length === 0 && modelo !== 'desconhecido') {
+  } else if (linhas.length === 0) {
     avisos.push(
       `Aba "${sheetName}" (${modelo}): cabeçalho reconhecido, mas nenhuma linha com área/m² > 0`
       + (linhasSemArea > 0 ? ` (${linhasSemArea} linha(s) sem metragem).` : '.'),
@@ -446,8 +566,12 @@ function parseLinhasAba(
 
 /**
  * Lê buffer XLSX/XLSM e extrai linhas de roçada de todas as abas relevantes.
+ * @param filtroTipo — se informado, mantém só Manual ou só Mecanizada (por aba/coluna Tipo).
  */
-export function parsearPlanilhaRocada(buffer: Buffer): ResultadoParseRocada {
+export function parsearPlanilhaRocada(
+  buffer: Buffer,
+  opts?: { filtroTipo?: 'manual' | 'mecanizada' | null },
+): ResultadoParseRocada {
   const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true, raw: false });
   const avisos: string[] = [];
   const abasUsadas: string[] = [];
@@ -460,21 +584,34 @@ export function parsearPlanilhaRocada(buffer: Buffer): ResultadoParseRocada {
   let abasComModelo = 0;
 
   const abasCandidatas = wb.SheetNames.filter((n) => sheetEhRocada(n));
-  const abas = abasCandidatas.length > 0 ? abasCandidatas : wb.SheetNames.slice(0, 3);
+  const abasBase = abasCandidatas.length > 0 ? abasCandidatas : wb.SheetNames.slice(0, 3);
+
+  const cacheRows = new Map<string, unknown[][]>();
+  const lerRows = (nome: string): unknown[][] => {
+    if (cacheRows.has(nome)) return cacheRows.get(nome)!;
+    const ws = wb.Sheets[nome];
+    const rows = ws
+      ? (XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false }) as unknown[][])
+      : [];
+    cacheRows.set(nome, rows);
+    return rows;
+  };
+
+  const selecao = selecionarAbasRocada(abasBase, lerRows, opts?.filtroTipo || null);
+  if (selecao.aviso) avisos.push(selecao.aviso);
+  const abas = selecao.abas;
 
   for (const sn of abas) {
-    const ws = wb.Sheets[sn];
-    if (!ws) continue;
-    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false }) as unknown[][];
+    const rows = lerRows(sn);
     totalLinhasBrutas += Math.max(0, rows.length - 1);
 
     // Score: só processa se parecer roçada
     const headerIdx = encontrarLinhaCabecalho(rows);
     const headers = (rows[headerIdx] || []).map((c) => String(c ?? ''));
-    const sc = scoreHeader(headers, ['DATA', 'BAIRRO', 'AREA', 'METRAGEM', 'TOTAL', 'OPERADOR', 'LOGRADOURO', 'TRECHO', 'LOCALIZACAO']);
+    const sc = scoreHeader(headers, ['DATA', 'BAIRRO', 'AREA', 'METRAGEM', 'TOTAL', 'OPERADOR', 'LOGRADOURO', 'TRECHO', 'LOCALIZACAO', 'TIPO', 'FID']);
     if (sc < 2 && abasCandidatas.length > 0) continue;
 
-    const parsed = parseLinhasAba(sn, rows, avisos);
+    const parsed = parseLinhasAba(sn, rows, avisos, selecao.forcarTipoPorAba[sn] ?? null);
     if (parsed.modelo === 'desconhecido') continue;
 
     abasComModelo++;
@@ -493,11 +630,44 @@ export function parsearPlanilhaRocada(buffer: Buffer): ResultadoParseRocada {
     todas.push(...parsed.linhas);
   }
 
-  if (todas.length === 0) {
+  const porTipoExecucao = {
+    manual: { registros: 0, areaM2: 0 },
+    mecanizada: { registros: 0, areaM2: 0 },
+    desconhecido: { registros: 0, areaM2: 0 },
+  };
+  for (const l of todas) {
+    const bucket = porTipoExecucao[l.tipoExecucao] || porTipoExecucao.desconhecido;
+    bucket.registros += 1;
+    bucket.areaM2 += l.areaM2;
+  }
+  porTipoExecucao.manual.areaM2 = Math.round(porTipoExecucao.manual.areaM2 * 100) / 100;
+  porTipoExecucao.mecanizada.areaM2 = Math.round(porTipoExecucao.mecanizada.areaM2 * 100) / 100;
+  porTipoExecucao.desconhecido.areaM2 = Math.round(porTipoExecucao.desconhecido.areaM2 * 100) / 100;
+
+  const filtro = opts?.filtroTipo || null;
+  let linhas = todas;
+  if (filtro === 'manual' || filtro === 'mecanizada') {
+    linhas = todas.filter((l) => l.tipoExecucao === filtro);
+    const outro = filtro === 'manual' ? 'mecanizada' : 'manual';
+    const qtdOutro = porTipoExecucao[outro].registros;
+    if (qtdOutro > 0) {
+      avisos.unshift(
+        `Filtro ${filtro}: importando ${linhas.length} registro(s). `
+        + `${qtdOutro} registro(s) de ${outro} foram separados para o outro serviço.`,
+      );
+    }
+  }
+
+  if (linhas.length === 0) {
     if (semColunaArea || (abasComModelo > 0 && linhasSemArea > 0)) {
       avisos.unshift(
         'Importação bloqueada: nenhuma linha com metragem (m²/área) válida. '
         + 'Preencha a coluna de área/metragem e envie novamente.',
+      );
+    } else if (filtro && todas.length > 0) {
+      avisos.unshift(
+        `Nenhuma linha do tipo "${filtro}" encontrada nesta planilha `
+        + `(há ${todas.length} registro(s) de outros tipos).`,
       );
     } else {
       avisos.push(
@@ -508,7 +678,16 @@ export function parsearPlanilhaRocada(buffer: Buffer): ResultadoParseRocada {
   } else if (linhasSemArea > 0) {
     avisos.unshift(
       `${linhasSemArea} linha(s) sem m²/área foram ignoradas. `
-      + `Somente ${todas.length} registro(s) com metragem válida serão importados.`,
+      + `Somente ${linhas.length} registro(s) com metragem válida serão importados.`,
+    );
+  }
+
+  if (porTipoExecucao.manual.registros > 0 || porTipoExecucao.mecanizada.registros > 0) {
+    avisos.push(
+      `Planilha contém Manual: ${porTipoExecucao.manual.registros} reg. `
+      + `(${porTipoExecucao.manual.areaM2.toLocaleString('pt-BR')} m²) · `
+      + `Mecanizada: ${porTipoExecucao.mecanizada.registros} reg. `
+      + `(${porTipoExecucao.mecanizada.areaM2.toLocaleString('pt-BR')} m²).`,
     );
   }
 
@@ -516,11 +695,12 @@ export function parsearPlanilhaRocada(buffer: Buffer): ResultadoParseRocada {
     modelo: modeloPrincipal,
     abasUsadas,
     totalLinhasBrutas,
-    linhas: todas,
+    linhas,
     avisos,
     linhasSemArea,
     semColunaArea,
     amostraSemArea,
+    porTipoExecucao,
   };
 }
 
@@ -534,6 +714,7 @@ export function resumoParseRocada(r: ResultadoParseRocada): {
   linhasSemArea: number;
   semColunaArea: boolean;
   podeImportar: boolean;
+  porTipoExecucao: ResultadoParseRocada['porTipoExecucao'];
 } {
   const dias = new Set(
     r.linhas.map((l) => (l.dataSaida ? l.dataSaida.toISOString().slice(0, 10) : '')).filter(Boolean),
@@ -550,5 +731,6 @@ export function resumoParseRocada(r: ResultadoParseRocada): {
     linhasSemArea: r.linhasSemArea,
     semColunaArea: r.semColunaArea,
     podeImportar: r.linhas.length > 0 && areaTotalM2 > 0,
+    porTipoExecucao: r.porTipoExecucao,
   };
 }

@@ -2,6 +2,7 @@
    COLETA SERVICE — Consome /api/coleta
    ============================================ */
 import api from './api'
+import { nextAbortSignal } from './abortableRequest'
 
 export interface ResumoColeta {
   totalRegistros: number
@@ -54,7 +55,7 @@ export interface DadosPorTurno {
   quantidade: number
   total_peso: number
   media_peso: number
-}
+};
 
 export interface TopMotorista {
   motorista: string
@@ -62,7 +63,7 @@ export interface TopMotorista {
   quantidade: number
   total_km: number
   total_viagens: number
-}
+};
 
 export interface DadosPorDiaSemana {
   diaSemana: number
@@ -70,9 +71,9 @@ export interface DadosPorDiaSemana {
   total_peso: number
   total_km: number
   total_viagens: number
-}
+};
 
-const DIAS_SEMANA = ['', 'Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb']
+const DIAS_SEMANA = ['', 'Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
 
 export function nomeDiaSemana(dia: number): string {
   return DIAS_SEMANA[dia] || `Dia ${dia}`
@@ -127,7 +128,9 @@ const coletaService = {
     if (filtros?.planilhaId) params.set('planilhaId', String(filtros.planilhaId))
     const query = params.toString()
     const url = query ? `/coleta/dashboard?${query}` : '/coleta/dashboard'
-    const response = await api.get<DashboardColeta>(url)
+    const response = await api.get<DashboardColeta>(url, {
+      signal: nextAbortSignal('coleta:dashboard'),
+    })
     return response.data
   },
 
@@ -147,10 +150,11 @@ const coletaService = {
     return response.data
   },
 
-  /** Preview multi-modelo de planilha de roçada */
-  async previewRocada(file: File) {
+  /** Preview multi-modelo de planilha de roçada (filtra Manual/Mecanizada pelo serviço) */
+  async previewRocada(file: File, servicoId?: string) {
     const formData = new FormData()
     formData.append('planilha', file)
+    if (servicoId) formData.append('servico_id', servicoId)
     const { data } = await api.post('/coleta/upload/preview-rocada', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
@@ -164,6 +168,8 @@ const coletaService = {
       podeImportar?: boolean
       linhasSemArea?: number
       semColunaArea?: boolean
+      filtroTipoAplicado?: 'manual' | 'mecanizada' | null
+      servicoNome?: string
       amostraSemArea?: Array<{
         aba: string
         linha: number
@@ -171,6 +177,11 @@ const coletaService = {
         bairro: string | null
         motivo: string
       }>
+      porTipoExecucao?: {
+        manual: { registros: number; areaM2: number }
+        mecanizada: { registros: number; areaM2: number }
+        desconhecido: { registros: number; areaM2: number }
+      }
       resumo: {
         modelo: string
         abas: number
@@ -181,6 +192,11 @@ const coletaService = {
         linhasSemArea?: number
         semColunaArea?: boolean
         podeImportar?: boolean
+        porTipoExecucao?: {
+          manual: { registros: number; areaM2: number }
+          mecanizada: { registros: number; areaM2: number }
+          desconhecido: { registros: number; areaM2: number }
+        }
       }
     }
   },
@@ -236,7 +252,9 @@ const coletaService = {
     if (params?.planilhaId) searchParams.set('planilhaId', String(params.planilhaId))
     const query = searchParams.toString()
     const url = query ? `/coleta/dados?${query}` : '/coleta/dados'
-    const response = await api.get(url)
+    const response = await api.get(url, {
+      signal: nextAbortSignal('coleta:listarDados'),
+    })
     return response.data
   },
 
@@ -333,6 +351,40 @@ const coletaService = {
   async listarUploadsServico(servicoId: string) {
     const response = await api.get('/coleta/uploads', { params: { servico_id: servicoId } })
     return response.data
+  },
+
+  /** Lista uploads do dia agrupados por contrato (data=YYYY-MM-DD, timezone SP) */
+  async listarUploadsPorDia(data?: string) {
+    const response = await api.get('/coleta/uploads/por-dia', {
+      params: data ? { data } : undefined,
+    })
+    return response.data as Promise<{
+      data: string
+      totalUploads: number
+      totalContratos: number
+      contratos: {
+        contratoId: string
+        numeroContrato: string
+        contratoStatus: string
+        totalUploads: number
+        totalLinhasImportadas: number
+        uploads: {
+          uploadId: number
+          nomeArquivo: string
+          criadoEm: string
+          totalLinhas: number
+          linhasImportadas: number
+          usuarioNome: string | null
+          contratoId: string
+          numeroContrato: string
+          contratoStatus: string
+          servicoId: string
+          servicoNome: string
+          servicoTipo: string
+        }[]
+      }[]
+      uploads: unknown[]
+    }>
   },
 }
 

@@ -17,6 +17,7 @@ import BibliotecaKpisUniversais from './pages/BibliotecaKpisUniversais'
 import DashboardExecutivo from './pages/DashboardExecutivo'
 import BibliotecaGraficosPadrao from './pages/BibliotecaGraficosPadrao'
 import Usuarios from './pages/Usuarios'
+import WhatsappGrupos from './pages/WhatsappGrupos'
 
 import './App.css'
 
@@ -146,6 +147,18 @@ function App() {
                 <AdminRoute>
                   <Layout>
                     <Usuarios />
+                  </Layout>
+                </AdminRoute>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/whatsapp-grupos"
+            element={
+              <ProtectedRoute>
+                <AdminRoute>
+                  <Layout>
+                    <WhatsappGrupos />
                   </Layout>
                 </AdminRoute>
               </ProtectedRoute>

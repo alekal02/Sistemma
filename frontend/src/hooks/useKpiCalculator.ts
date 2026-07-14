@@ -15,7 +15,7 @@
    ============================================ */
 
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
-import api from '../services/api';
+import servicoService from '../services/servicoService';
 
 // ─── Tipos ───
 
@@ -201,28 +201,6 @@ interface UseKpiCalculatorResult {
   getKpiValor: (nome: string) => KpiValor | undefined;
 }
 
-// ─── Cache local ───
-
-const cacheLocal = new Map<string, { valor: any; timestamp: number }>();
-const CACHE_TTL = 30000; // 30 segundos
-
-function getFromCache<T>(key: string): T | null {
-  const item = cacheLocal.get(key);
-  if (item && Date.now() - item.timestamp < CACHE_TTL) return item.valor as T;
-  cacheLocal.delete(key);
-  return null;
-}
-
-function setToCache(key: string, valor: any): void {
-  cacheLocal.set(key, { valor, timestamp: Date.now() });
-  if (cacheLocal.size > 50) {
-    const now = Date.now();
-    for (const [k, v] of cacheLocal) {
-      if (now - v.timestamp > CACHE_TTL) cacheLocal.delete(k);
-    }
-  }
-}
-
 // ─── Hook principal ───
 
 export function useKpiCalculator(options: UseKpiCalculatorOptions): UseKpiCalculatorResult {
@@ -245,13 +223,6 @@ export function useKpiCalculator(options: UseKpiCalculatorOptions): UseKpiCalcul
     setConfigResumo(null);
   }, [servicoId]);
 
-  // Cache key inclui filtros para diferenciar caches
-  const cacheKey = useMemo(() => {
-    const f = filtros || {};
-    const dinamicos = f.filtrosDinamicos ? JSON.stringify(f.filtrosDinamicos) : '';
-    return `kpi-valores:${servicoId}:${f.dataInicio || ''}:${f.dataFim || ''}:${f.placa || ''}:${f.regional || ''}:${dinamicos}`;
-  }, [servicoId, filtros]);
-
   const reload = useCallback(async () => {
     if (!contractId || !servicoId) return;
 
@@ -263,40 +234,14 @@ export function useKpiCalculator(options: UseKpiCalculatorOptions): UseKpiCalcul
     const abortController = new AbortController();
     ultimoAbortRef.current = abortController;
 
-    // ⚡ Limpa valores anteriores para evitar flash de dados errados
-    setKpiValores([]);
-    setExecMetrics(null);
     setLoading(true);
     try {
-      cacheLocal.delete(cacheKey);
-
-      const cached = getFromCache<KpiValoresResponse>(cacheKey);
-      if (cached) {
-        if (requestId !== requestIdRef.current) return;
-        setKpiValores(cached.kpis);
-        setExecMetrics(cached.metrica_executiva);
-        setConfigResumo(cached.configResumo || null);
-        loadedRef.current = true;
-        return;
-      }
-
-      const f = filtros || {};
-      const params = new URLSearchParams();
-      if (f.dataInicio) params.append('dataInicio', f.dataInicio);
-      if (f.dataFim) params.append('dataFim', f.dataFim);
-      if (f.placa) params.append('placa', f.placa);
-      if (f.regional) params.append('regional', f.regional);
-      if (f.filtrosDinamicos) {
-        for (const [coluna, valor] of Object.entries(f.filtrosDinamicos)) {
-          if (valor) params.append(`filtro_${coluna}`, valor);
-        }
-      }
-      const qs = params.toString();
-
-      const { data } = await api.get<KpiValoresResponse>(
-        `/contracts/${contractId}/servicos/${servicoId}/kpi-valores${qs ? '?' + qs : ''}`,
-        { signal: abortController.signal }
-      );
+      const data = await servicoService.getKpiValores(
+        contractId,
+        servicoId,
+        filtros,
+        abortController.signal,
+      ) as KpiValoresResponse | null;
 
       if (requestId !== requestIdRef.current) return;
 
@@ -304,7 +249,6 @@ export function useKpiCalculator(options: UseKpiCalculatorOptions): UseKpiCalcul
         setKpiValores(data.kpis || []);
         setExecMetrics(data.metrica_executiva || null);
         setConfigResumo(data.configResumo || null);
-        setToCache(cacheKey, data);
         loadedRef.current = true;
       }
     } catch (err: any) {
@@ -319,13 +263,18 @@ export function useKpiCalculator(options: UseKpiCalculatorOptions): UseKpiCalcul
         setLoading(false);
       }
     }
-  }, [contractId, servicoId, filtros, cacheKey]);
+  }, [contractId, servicoId, filtros]);
 
   const reloadRef = useRef(reload);
   reloadRef.current = reload;
 
+  const filtrosKey = useMemo(() => {
+    const f = filtros || {};
+    const dinamicos = f.filtrosDinamicos ? JSON.stringify(f.filtrosDinamicos) : '';
+    return `${f.dataInicio || ''}:${f.dataFim || ''}:${f.placa || ''}:${f.regional || ''}:${dinamicos}`;
+  }, [filtros]);
+
   useEffect(() => {
-    // ⭐ Usa ref para evitar loop infinito de renderização
     const timer = setTimeout(() => {
       reloadRef.current();
     }, 0);
@@ -333,7 +282,7 @@ export function useKpiCalculator(options: UseKpiCalculatorOptions): UseKpiCalcul
       clearTimeout(timer);
       ultimoAbortRef.current?.abort();
     };
-  }, [contractId, servicoId, cacheKey]);
+  }, [contractId, servicoId, filtrosKey]);
 
   const getKpiValor = useCallback((nome: string): KpiValor | undefined => {
     return kpiValores.find(k => k.nome === nome);

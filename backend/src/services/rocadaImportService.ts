@@ -1,23 +1,40 @@
 /**
  * Importação de planilhas de roçada (multi-modelo) → coleta_dados.
  * Não usa validação de viagem (placa/km/peso).
+ *
+ * Planilha Manual+Mecanizada:
+ * - 1 serviço único → importa os dois tipos no mesmo dashboard
+ * - 2 serviços (Manual + Mecanizada) no contrato → 1 upload distribui para ambos
  */
 import { Repository } from 'typeorm';
 import AppDataSource from '../database/data-source';
 import { ColetaData } from '../entities/ColetaData';
 import { PlanilhaUpload } from '../entities/PlanilhaUpload';
 import { Servico } from '../entities/Servico';
+import { TipoServico } from '../enums/TipoServico';
 import {
   parsearPlanilhaRocada,
   resumoParseRocada,
   type LinhaRocadaCanonico,
   type ResultadoParseRocada,
 } from './rocadaPlanilhaParser';
+import { inferirFiltroExecucaoServico } from '../utils/rocadaTipoExecucao';
 import { obterUploadIdsModificaveis } from './cicloPlanilhaService';
 import { invalidarCacheDadosServico } from './servicoDadosCache';
 import { invalidarCacheDashboardServico } from '../controllers/ServicoController';
 import { dashboardCache } from './DashboardCacheManager';
 import { agendarWarmupPosUpload } from './executivoCacheWarmupService';
+
+export interface ResultadoImportRocadaServico {
+  servicoId: string;
+  servicoNome: string;
+  filtroTipo: 'manual' | 'mecanizada' | null;
+  planilhaUploadId: number;
+  importados: number;
+  areaTotalM2: number;
+  dias: number;
+  bairros: number;
+}
 
 export interface ResultadoImportRocada {
   planilhaUploadId: number;
@@ -38,7 +55,17 @@ export interface ResultadoImportRocada {
   modo: 'rocada';
   viagensValidasDashboard: number;
   viagensInconsistentes: number;
+  filtroTipoExecucao?: 'manual' | 'mecanizada' | null;
+  porTipoExecucao?: ResultadoParseRocada['porTipoExecucao'];
+  /** Quando o upload preencheu Manual e Mecanizada em serviços distintos */
+  splitPorServico?: ResultadoImportRocadaServico[];
 }
+
+type ConfigFat = {
+  valorM2Manual?: number | null;
+  valorM2Mecanizada?: number | null;
+  valorM2?: number | null;
+} | null;
 
 class RocadaImportService {
   private get coletaRepo(): Repository<ColetaData> {
@@ -51,8 +78,11 @@ class RocadaImportService {
     return AppDataSource.getRepository(Servico);
   }
 
-  preview(buffer: Buffer): ResultadoParseRocada & { resumo: ReturnType<typeof resumoParseRocada> } {
-    const parsed = parsearPlanilhaRocada(buffer);
+  preview(
+    buffer: Buffer,
+    opts?: { filtroTipo?: 'manual' | 'mecanizada' | null },
+  ): ResultadoParseRocada & { resumo: ReturnType<typeof resumoParseRocada> } {
+    const parsed = parsearPlanilhaRocada(buffer, opts);
     return { ...parsed, resumo: resumoParseRocada(parsed) };
   }
 
@@ -68,11 +98,10 @@ class RocadaImportService {
     const coleta = new ColetaData();
     coleta.planilhaUploadId = uploadId;
     coleta.dataSaida = linha.dataSaida;
-    // regional/distrito varchar(50), motorista(100), tipoCaminhao(30), turno(20)
     coleta.regional = this.trunc(linha.bairro, 50);
     coleta.distrito = this.trunc(linha.distrito || linha.logradouro, 50);
     coleta.motorista = this.trunc(linha.operador, 100);
-    coleta.tipoCaminhao = this.trunc(linha.equipamento, 30);
+    coleta.tipoCaminhao = this.trunc(linha.tipo || linha.equipamento, 30);
     coleta.turno = this.trunc(linha.equipe, 20);
     coleta.placa = null;
     coleta.pesoTotal = null;
@@ -81,7 +110,6 @@ class RocadaImportService {
     coleta.viagensPorRota = 1;
     coleta.validoDashboard = true;
     coleta.motivosInconsistencia = null;
-    // dados JSONB guarda o texto completo para KPIs/gráficos
     coleta.dados = {
       ...linha.dados,
       BAIRRO: linha.bairro,
@@ -92,9 +120,12 @@ class RocadaImportService {
       OPERADOR: linha.operador,
       Equipe: linha.equipe,
       EQUIPE: linha.equipe,
+      TIPO: linha.tipo,
+      TIPO_EXECUCAO: linha.tipoExecucao,
       _tipoServico: 'rocadeira',
       _modeloPlanilha: linha.modelo,
       _aba: linha.aba,
+      _tipoExecucao: linha.tipoExecucao,
     };
     if (linha.dataSaida) {
       coleta.diaSemana = linha.dataSaida.getUTCDay() + 1;
@@ -102,38 +133,38 @@ class RocadaImportService {
     return coleta;
   }
 
-  async importar(
-    buffer: Buffer,
-    nomeArquivo: string,
-    servicoId: string,
-    usuarioId?: string,
-    substituirPorData = true,
-  ): Promise<ResultadoImportRocada> {
-    const parsed = parsearPlanilhaRocada(buffer);
-    const resumo = resumoParseRocada(parsed);
+  private filtroDoServico(servico: Servico): 'manual' | 'mecanizada' | null {
+    return inferirFiltroExecucaoServico(servico.nome, servico.configFaturamento as ConfigFat);
+  }
 
-    if (!resumo.podeImportar || parsed.linhas.length === 0 || resumo.areaTotalM2 <= 0) {
-      if (parsed.semColunaArea) {
-        throw new Error(
-          'Planilha de roçada sem coluna de metragem/área (m²). '
-          + 'Inclua METRAGEM, TOTAL (M²), Área ou EXECUTADO e envie novamente.',
-        );
-      }
-      if (parsed.linhasSemArea > 0) {
-        throw new Error(
-          `Nenhuma linha com m²/área válida. ${parsed.linhasSemArea} linha(s) sem metragem foram encontradas. `
-          + 'Preencha a área (m²) nas linhas e envie novamente.',
-        );
-      }
-      throw new Error(
-        parsed.avisos[0]
-        || 'Nenhuma linha de roçada válida encontrada na planilha.',
-      );
-    }
+  private resumoLinhas(linhas: LinhaRocadaCanonico[]) {
+    const areaTotalM2 = Math.round(linhas.reduce((s, l) => s + l.areaM2, 0) * 100) / 100;
+    const dias = new Set(
+      linhas.map((l) => (l.dataSaida ? l.dataSaida.toISOString().slice(0, 10) : null)).filter(Boolean),
+    ).size;
+    const bairros = new Set(linhas.map((l) => l.bairro).filter(Boolean)).size;
+    return { areaTotalM2, dias, bairros };
+  }
+
+  private async persistirLinhasEmServico(opts: {
+    servico: Servico;
+    linhas: LinhaRocadaCanonico[];
+    nomeArquivo: string;
+    usuarioId?: string;
+    substituirPorData: boolean;
+    parsedMeta: Pick<ResultadoParseRocada, 'modelo' | 'abasUsadas' | 'totalLinhasBrutas'>;
+    filtroTipo: 'manual' | 'mecanizada' | null;
+  }): Promise<ResultadoImportRocadaServico & {
+    datasApagadas: { data: string; registrosRemovidos: number }[];
+    uploadsRemovidosIds: number[];
+  }> {
+    const { servico, linhas, nomeArquivo, usuarioId, substituirPorData, parsedMeta, filtroTipo } = opts;
+    const servicoId = servico.id;
+    const resumoL = this.resumoLinhas(linhas);
 
     const upload = this.uploadRepo.create({
       nomeArquivo,
-      totalLinhas: parsed.totalLinhasBrutas,
+      totalLinhas: parsedMeta.totalLinhasBrutas,
       linhasImportadas: 0,
       linhasComErro: 0,
       linhasIgnoradas: 0,
@@ -151,7 +182,7 @@ class RocadaImportService {
 
     if (substituirPorData && uploadIds.length > 0) {
       const datas = [...new Set(
-        parsed.linhas
+        linhas
           .map((l) => (l.dataSaida ? l.dataSaida.toISOString().slice(0, 10) : null))
           .filter((d): d is string => !!d),
       )];
@@ -178,7 +209,7 @@ class RocadaImportService {
     const batch: ColetaData[] = [];
     let importados = 0;
     const BATCH = 500;
-    for (const linha of parsed.linhas) {
+    for (const linha of linhas) {
       batch.push(this.montarColeta(linha, uploadSalvo.id));
       importados++;
       if (batch.length >= BATCH) {
@@ -188,7 +219,6 @@ class RocadaImportService {
     }
     if (batch.length) await this.coletaRepo.save(batch);
 
-    // Remover uploads antigos vazios
     const uploadsRemovidosIds: number[] = [];
     for (const oldId of uploadIds) {
       if (oldId === uploadSalvo.id) continue;
@@ -216,27 +246,24 @@ class RocadaImportService {
     };
     await this.uploadRepo.save(uploadSalvo);
 
-    // Garantir padraoPlanilha com colunas canônicas de roçada
-    const servico = await this.servicoRepo.findOne({ where: { id: servicoId } });
-    if (servico) {
-      const colunasCanonicas = [
-        'DATA', 'BAIRRO', 'Area m²', 'Equipamento', 'Operador', 'Equipe', 'LOGRADOURO',
-      ];
-      servico.padraoPlanilha = {
-        colunas: colunasCanonicas.map((nome) => ({
-          nome,
-          tipo: nome === 'DATA' ? 'data' : nome === 'Area m²' ? 'numero' : 'texto',
-          obrigatorio: ['BAIRRO', 'Area m²'].includes(nome),
-        })),
-        totalLinhas: importados,
-        ultimoUpload: uploadSalvo.id,
-        ultimoUploadNome: nomeArquivo,
-        detectadoEm: new Date().toISOString(),
-        modeloRocada: parsed.modelo,
-        abasUsadas: parsed.abasUsadas,
-      } as any;
-      await this.servicoRepo.save(servico);
-    }
+    const colunasCanonicas = [
+      'DATA', 'BAIRRO', 'Area m²', 'Equipamento', 'Operador', 'Equipe', 'LOGRADOURO', 'TIPO',
+    ];
+    servico.padraoPlanilha = {
+      colunas: colunasCanonicas.map((nome) => ({
+        nome,
+        tipo: nome === 'DATA' ? 'data' : nome === 'Area m²' ? 'numero' : 'texto',
+        obrigatorio: ['BAIRRO', 'Area m²'].includes(nome),
+      })),
+      totalLinhas: importados,
+      ultimoUpload: uploadSalvo.id,
+      ultimoUploadNome: nomeArquivo,
+      detectadoEm: new Date().toISOString(),
+      modeloRocada: parsedMeta.modelo,
+      abasUsadas: parsedMeta.abasUsadas,
+      filtroTipoExecucao: filtroTipo,
+    } as any;
+    await this.servicoRepo.save(servico);
 
     invalidarCacheDadosServico(servicoId);
     invalidarCacheDashboardServico(servicoId);
@@ -244,24 +271,220 @@ class RocadaImportService {
     agendarWarmupPosUpload(servicoId);
 
     return {
+      servicoId,
+      servicoNome: servico.nome,
+      filtroTipo,
       planilhaUploadId: uploadSalvo.id,
-      totalLinhas: parsed.totalLinhasBrutas,
       importados,
-      ignorados: Math.max(0, parsed.totalLinhasBrutas - importados),
+      areaTotalM2: resumoL.areaTotalM2,
+      dias: resumoL.dias,
+      bairros: resumoL.bairros,
+      datasApagadas,
+      uploadsRemovidosIds,
+    };
+  }
+
+  /**
+   * No mesmo contrato, localiza o par Manual + Mecanizada (por nome/tarifas).
+   * Retorna null se não houver o par — aí importa tudo no serviço atual.
+   */
+  private async resolverAlvosSplit(
+    servicoAtual: Servico,
+  ): Promise<{ manual: Servico; mecanizada: Servico } | null> {
+    const irmaos = await this.servicoRepo.find({
+      where: { contract_id: servicoAtual.contract_id },
+    });
+    const lista = irmaos.filter(
+      (s) => s.tipo === TipoServico.ROCADEIRA || s.tipo === 'rocadeira',
+    );
+
+    let manual: Servico | undefined;
+    let mecanizada: Servico | undefined;
+    for (const s of lista) {
+      const f = this.filtroDoServico(s);
+      if (f === 'manual' && !manual) manual = s;
+      if (f === 'mecanizada' && !mecanizada) mecanizada = s;
+    }
+    if (manual && mecanizada && manual.id !== mecanizada.id) {
+      return { manual, mecanizada };
+    }
+    return null;
+  }
+
+  async importar(
+    buffer: Buffer,
+    nomeArquivo: string,
+    servicoId: string,
+    usuarioId?: string,
+    substituirPorData = true,
+  ): Promise<ResultadoImportRocada> {
+    const servico = await this.servicoRepo.findOne({ where: { id: servicoId } });
+    if (!servico) {
+      throw new Error('Serviço não encontrado.');
+    }
+
+    // Sempre parseia a planilha inteira (Manual + Mecanizada)
+    const parsed = parsearPlanilhaRocada(buffer);
+    const resumoCompleto = resumoParseRocada(parsed);
+    const porTipo = parsed.porTipoExecucao;
+
+    if (!resumoCompleto.podeImportar || parsed.linhas.length === 0 || resumoCompleto.areaTotalM2 <= 0) {
+      if (parsed.semColunaArea) {
+        throw new Error(
+          'Planilha de roçada sem coluna de metragem/área (m²). '
+          + 'Inclua METRAGEM, TOTAL (M²), Área ou EXECUTADO e envie novamente.',
+        );
+      }
+      if (parsed.linhasSemArea > 0) {
+        throw new Error(
+          `Nenhuma linha com m²/área válida. ${parsed.linhasSemArea} linha(s) sem metragem foram encontradas. `
+          + 'Preencha a área (m²) nas linhas e envie novamente.',
+        );
+      }
+      throw new Error(
+        parsed.avisos[0]
+        || 'Nenhuma linha de roçada válida encontrada na planilha.',
+      );
+    }
+
+    const meta = {
       modelo: parsed.modelo,
       abasUsadas: parsed.abasUsadas,
-      areaTotalM2: resumo.areaTotalM2,
-      dias: resumo.dias,
-      bairros: resumo.bairros,
-      avisos: parsed.avisos,
-      datasApagadas,
+      totalLinhasBrutas: parsed.totalLinhasBrutas,
+    };
+
+    const alvos = await this.resolverAlvosSplit(servico);
+    const temAmbosTiposNaPlanilha =
+      (porTipo?.manual?.registros || 0) > 0 && (porTipo?.mecanizada?.registros || 0) > 0;
+
+    // Par Manual + Mecanizada no contrato e planilha com os dois tipos → 1 upload preenche os 2 dashboards
+    if (alvos && temAmbosTiposNaPlanilha) {
+      const linhasMan = parsed.linhas.filter((l) => l.tipoExecucao === 'manual');
+      const linhasMec = parsed.linhas.filter((l) => l.tipoExecucao === 'mecanizada');
+      if (linhasMan.length === 0 || linhasMec.length === 0) {
+        // fallback: importa tudo no serviço atual
+      } else {
+        const rMan = await this.persistirLinhasEmServico({
+          servico: alvos.manual,
+          linhas: linhasMan,
+          nomeArquivo,
+          usuarioId,
+          substituirPorData,
+          parsedMeta: meta,
+          filtroTipo: 'manual',
+        });
+        const rMec = await this.persistirLinhasEmServico({
+          servico: alvos.mecanizada,
+          linhas: linhasMec,
+          nomeArquivo,
+          usuarioId,
+          substituirPorData,
+          parsedMeta: meta,
+          filtroTipo: 'mecanizada',
+        });
+
+        const splitPorServico: ResultadoImportRocadaServico[] = [
+          {
+            servicoId: rMan.servicoId,
+            servicoNome: rMan.servicoNome,
+            filtroTipo: 'manual',
+            planilhaUploadId: rMan.planilhaUploadId,
+            importados: rMan.importados,
+            areaTotalM2: rMan.areaTotalM2,
+            dias: rMan.dias,
+            bairros: rMan.bairros,
+          },
+          {
+            servicoId: rMec.servicoId,
+            servicoNome: rMec.servicoNome,
+            filtroTipo: 'mecanizada',
+            planilhaUploadId: rMec.planilhaUploadId,
+            importados: rMec.importados,
+            areaTotalM2: rMec.areaTotalM2,
+            dias: rMec.dias,
+            bairros: rMec.bairros,
+          },
+        ];
+
+        const importados = rMan.importados + rMec.importados;
+        const principal = servicoId === alvos.manual.id ? rMan : rMec;
+        const avisos = [
+          ...parsed.avisos,
+          `Upload distribuído: Manual → "${alvos.manual.nome}" (${rMan.importados} reg., `
+            + `${rMan.areaTotalM2.toLocaleString('pt-BR')} m²); `
+            + `Mecanizada → "${alvos.mecanizada.nome}" (${rMec.importados} reg., `
+            + `${rMec.areaTotalM2.toLocaleString('pt-BR')} m²).`,
+        ];
+
+        return {
+          planilhaUploadId: principal.planilhaUploadId,
+          totalLinhas: parsed.totalLinhasBrutas,
+          importados,
+          ignorados: Math.max(0, parsed.totalLinhasBrutas - importados),
+          modelo: parsed.modelo,
+          abasUsadas: parsed.abasUsadas,
+          areaTotalM2: resumoCompleto.areaTotalM2,
+          dias: resumoCompleto.dias,
+          bairros: resumoCompleto.bairros,
+          avisos,
+          datasApagadas: [...rMan.datasApagadas, ...rMec.datasApagadas],
+          consolidacao: {
+            uploadsRemovidos: rMan.uploadsRemovidosIds.length + rMec.uploadsRemovidosIds.length,
+            uploadsRemovidosIds: [...rMan.uploadsRemovidosIds, ...rMec.uploadsRemovidosIds],
+          },
+          modo: 'rocada',
+          viagensValidasDashboard: importados,
+          viagensInconsistentes: 0,
+          filtroTipoExecucao: null,
+          porTipoExecucao: porTipo,
+          splitPorServico,
+        };
+      }
+    }
+
+    // Serviço único (ou sem par): importa Manual + Mecanizada no dashboard deste serviço
+    const filtroTipo = null;
+    const r = await this.persistirLinhasEmServico({
+      servico,
+      linhas: parsed.linhas,
+      nomeArquivo,
+      usuarioId,
+      substituirPorData,
+      parsedMeta: meta,
+      filtroTipo,
+    });
+
+    const avisos = [...parsed.avisos];
+    if (temAmbosTiposNaPlanilha) {
+      avisos.push(
+        `Dashboard atualizado com Manual (${porTipo.manual.registros} reg., `
+          + `${porTipo.manual.areaM2.toLocaleString('pt-BR')} m²) e Mecanizada `
+          + `(${porTipo.mecanizada.registros} reg., `
+          + `${porTipo.mecanizada.areaM2.toLocaleString('pt-BR')} m²).`,
+      );
+    }
+
+    return {
+      planilhaUploadId: r.planilhaUploadId,
+      totalLinhas: parsed.totalLinhasBrutas,
+      importados: r.importados,
+      ignorados: Math.max(0, parsed.totalLinhasBrutas - r.importados),
+      modelo: parsed.modelo,
+      abasUsadas: parsed.abasUsadas,
+      areaTotalM2: r.areaTotalM2,
+      dias: r.dias,
+      bairros: r.bairros,
+      avisos,
+      datasApagadas: r.datasApagadas,
       consolidacao: {
-        uploadsRemovidos: uploadsRemovidosIds.length,
-        uploadsRemovidosIds,
+        uploadsRemovidos: r.uploadsRemovidosIds.length,
+        uploadsRemovidosIds: r.uploadsRemovidosIds,
       },
       modo: 'rocada',
-      viagensValidasDashboard: importados,
+      viagensValidasDashboard: r.importados,
       viagensInconsistentes: 0,
+      filtroTipoExecucao: null,
+      porTipoExecucao: porTipo,
     };
   }
 }

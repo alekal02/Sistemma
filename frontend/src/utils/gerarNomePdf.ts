@@ -65,6 +65,19 @@ export function gerarNomePdfRelatorioRocadaCiclo(opts: {
   ].filter(Boolean).join('_');
 }
 
+/** Nome do PDF diário de roçada. Ex.: Rocada_Diario_Rocada_12-07-2026 */
+export function gerarNomePdfRelatorioRocadaDia(opts: {
+  servicoNome: string;
+  dataIso: string;
+}): string {
+  const dataFmt = sufixoPeriodoPdf({ dataInicio: opts.dataIso, dataFim: opts.dataIso }) || opts.dataIso;
+  return [
+    sanitizarParteNome(opts.servicoNome || 'Rocada'),
+    'Diario_Rocada',
+    sanitizarParteNome(dataFmt),
+  ].join('_');
+}
+
 /** Nome do PDF comparativo de análise de peso. Ex.: Comparativo_Analise_Peso_Coleta_18-06-2026 */
 export function gerarNomePdfAnalisePesoComparativo(opts?: {
   tipoServico?: string;
@@ -88,6 +101,12 @@ export function gerarNomePdfRelatorioDia(opts: {
     tipo,
     sanitizarParteNome(dataFmt),
   ].join('_');
+}
+
+/** Nome do PDF de uploads do dia. Ex.: Uploads_Contratos_13-07-2026 */
+export function gerarNomePdfUploadsDia(dataIso: string): string {
+  const dataFmt = sufixoPeriodoPdf({ dataInicio: dataIso, dataFim: dataIso }) || dataIso;
+  return ['Uploads_Contratos', sanitizarParteNome(dataFmt)].join('_');
 }
 
 /**

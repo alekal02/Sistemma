@@ -85,25 +85,15 @@ function pareceNumeroBrasileiroString(valor: any): boolean {
 }
 
 /**
- * Extrai o padrão (colunas + tipos) de um buffer de planilha XLSX
- * ⚡ HEURÍSTICAS MELHORADAS:
- * - Reconhece números formatados como texto no padrão brasileiro (1.234,56)
- * - Reconhece datas brasileiras em texto (dd/mm/aaaa)
- * - Colunas com >50% nulos recebem tipo da minoria não nula
- * - Analisa todas as linhas disponíveis
+ * Extrai o padrão (colunas + tipos) a partir de linhas já parseadas (objetos chave→valor).
  */
-export function detectarPadraoPlanilha(buffer: Buffer): ColunaDetectada[] {
-  const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: false });
-  const nomeAba = workbook.SheetNames[0];
-  const sheet = workbook.Sheets[nomeAba];
-  const linhas: Record<string, any>[] = XLSX.utils.sheet_to_json(sheet, { defval: null, raw: true });
-
-  if (linhas.length === 0) return [];
+export function detectarPadraoDeObjetos(linhas: Record<string, any>[]): ColunaDetectada[] {
+  if (!linhas.length) return [];
 
   const colunas = new Map<string, { valores: any[]; nulos: number }>();
 
-  // Coletar valores de cada coluna (todas as linhas)
   for (const linha of linhas) {
+    if (!linha || typeof linha !== 'object') continue;
     for (const [chave, valor] of Object.entries(linha)) {
       if (!colunas.has(chave)) {
         colunas.set(chave, { valores: [], nulos: 0 });
@@ -132,7 +122,6 @@ export function detectarPadraoPlanilha(buffer: Buffer): ColunaDetectada[] {
     const nomeUpper = nome.toUpperCase().trim();
 
     if (total > 0) {
-      // ═══ 1. Detecção de HORA ═══
       const nomePareceHora =
         nomeUpper.includes('HORA') ||
         nomeUpper.includes('HORAR') ||
@@ -146,36 +135,24 @@ export function detectarPadraoPlanilha(buffer: Buffer): ColunaDetectada[] {
 
       if (nomePareceHora || horasPorSerial > total * 0.5 || horasPorString > total * 0.5) {
         tipo = 'hora';
-      }
-      // ═══ 2. Detecção de DATA ═══
-      else if (
+      } else if (
         nomeUpper.includes('DATA') ||
         nomeUpper.includes('DIA') ||
         naoNulos.filter(v => pareceDataSerial(v) || pareceDataBrasileira(v)).length > total * 0.5
       ) {
         tipo = 'data';
-      }
-      // ═══ 3. Detecção de NÚMERO ═══
-      else {
-        // Contagem de valores que são números nativamente
+      } else {
         const nativosNumericos = naoNulos.filter(v => typeof v === 'number' || (!isNaN(Number(v)) && String(v).trim() !== '')).length;
-        // Contagem de valores que são números formatados como texto brasileiro
         const brasileirosNumericos = naoNulos.filter(v => typeof v === 'string' && pareceNumeroBrasileiroString(v)).length;
 
-        // Se mais de 50% são números (nativos OU brasileiros)
         if (nativosNumericos > total * 0.5 || brasileirosNumericos > total * 0.3) {
           tipo = 'numero';
-        }
-        // ═══ 4. TEXTO (fallback) ═══
-        else {
+        } else {
           tipo = 'texto';
         }
       }
     }
 
-    // ═══ Tratamento de colunas com muitos nulos ═══
-    // Se >50% dos valores são nulos, mas há valores não nulos,
-    // o tipo é inferido pela minoria não nula
     if (info.nulos > totalLinhas * 0.5 && tipo === 'desconhecido' && total > 0) {
       const apenasValidos = naoNulos;
       if (apenasValidos.length > 0) {
@@ -194,7 +171,6 @@ export function detectarPadraoPlanilha(buffer: Buffer): ColunaDetectada[] {
       }
     }
 
-    // Amostras convertidas para exibição
     const amostras = info.valores.slice(0, 5).map(v => {
       if (v === null || v === undefined) return null;
       if (tipo === 'hora' && pareceHoraSerial(v)) {
@@ -218,4 +194,20 @@ export function detectarPadraoPlanilha(buffer: Buffer): ColunaDetectada[] {
   }
 
   return resultado;
+}
+
+/**
+ * Extrai o padrão (colunas + tipos) de um buffer de planilha XLSX
+ * ⚡ HEURÍSTICAS MELHORADAS:
+ * - Reconhece números formatados como texto no padrão brasileiro (1.234,56)
+ * - Reconhece datas brasileiras em texto (dd/mm/aaaa)
+ * - Colunas com >50% nulos recebem tipo da minoria não nula
+ * - Analisa todas as linhas disponíveis
+ */
+export function detectarPadraoPlanilha(buffer: Buffer): ColunaDetectada[] {
+  const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: false });
+  const nomeAba = workbook.SheetNames[0];
+  const sheet = workbook.Sheets[nomeAba];
+  const linhas: Record<string, any>[] = XLSX.utils.sheet_to_json(sheet, { defval: null, raw: true });
+  return detectarPadraoDeObjetos(linhas);
 }

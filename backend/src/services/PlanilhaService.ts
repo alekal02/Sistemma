@@ -6,6 +6,8 @@ import { PlanilhaUpload } from '../entities/PlanilhaUpload';
 import FileStorageService from './FileStorageService';
 import { detectarPadraoPlanilha, isNomeColunaInvalido } from './PadraoPlanilhaDetector';
 import { Servico } from '../entities/Servico';
+import { Contract } from '../entities/Contract';
+import { User } from '../entities/User';
 import { gerarConfigGraficosPadrao, reResolverGraficos } from './graficosPadrao';
 import {
   aplicarFiltroViagensValidasDashboard,
@@ -1155,6 +1157,94 @@ export class PlanilhaService {
       where: { servico_id: servicoId },
       order: { criadoEm: 'DESC' },
     });
+  }
+
+  /**
+   * Lista uploads realizados em um dia (timezone America/Sao_Paulo),
+   * com contrato e serviço associados.
+   */
+  async listarUploadsPorDia(dataIso: string) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dataIso)) {
+      throw new Error('Data inválida. Use o formato YYYY-MM-DD.');
+    }
+
+    const inicio = new Date(`${dataIso}T00:00:00-03:00`);
+    const fim = new Date(`${dataIso}T00:00:00-03:00`);
+    fim.setUTCDate(fim.getUTCDate() + 1);
+
+    const rows = await this.uploadRepo
+      .createQueryBuilder('u')
+      .innerJoin(Servico, 's', 's.id = u.servico_id')
+      .innerJoin(Contract, 'c', 'c.id = s.contract_id')
+      .leftJoin(User, 'usr', 'usr.id = u.usuarioId')
+      .select('c.id', 'contratoId')
+      .addSelect('c.numeroContrato', 'numeroContrato')
+      .addSelect('c.status', 'contratoStatus')
+      .addSelect('s.id', 'servicoId')
+      .addSelect('s.nome', 'servicoNome')
+      .addSelect('s.tipo', 'servicoTipo')
+      .addSelect('u.id', 'uploadId')
+      .addSelect('u.nomeArquivo', 'nomeArquivo')
+      .addSelect('u.criadoEm', 'criadoEm')
+      .addSelect('u.totalLinhas', 'totalLinhas')
+      .addSelect('u.linhasImportadas', 'linhasImportadas')
+      .addSelect('usr.nome', 'usuarioNome')
+      .where('u.criadoEm >= :inicio AND u.criadoEm < :fim', { inicio, fim })
+      .orderBy('c.numeroContrato', 'ASC')
+      .addOrderBy('u.criadoEm', 'DESC')
+      .getRawMany();
+
+    const uploads = rows.map((r) => ({
+      uploadId: Number(r.uploadId),
+      nomeArquivo: r.nomeArquivo as string,
+      criadoEm: r.criadoEm instanceof Date ? r.criadoEm.toISOString() : String(r.criadoEm),
+      totalLinhas: Number(r.totalLinhas ?? 0),
+      linhasImportadas: Number(r.linhasImportadas ?? 0),
+      usuarioNome: (r.usuarioNome as string) || null,
+      contratoId: r.contratoId as string,
+      numeroContrato: (r.numeroContrato as string) || 'Sem número',
+      contratoStatus: (r.contratoStatus as string) || 'ativo',
+      servicoId: r.servicoId as string,
+      servicoNome: r.servicoNome as string,
+      servicoTipo: r.servicoTipo as string,
+    }));
+
+    const porContratoMap = new Map<string, {
+      contratoId: string;
+      numeroContrato: string;
+      contratoStatus: string;
+      totalUploads: number;
+      totalLinhasImportadas: number;
+      uploads: typeof uploads;
+    }>();
+
+    for (const u of uploads) {
+      let grupo = porContratoMap.get(u.contratoId);
+      if (!grupo) {
+        grupo = {
+          contratoId: u.contratoId,
+          numeroContrato: u.numeroContrato,
+          contratoStatus: u.contratoStatus,
+          totalUploads: 0,
+          totalLinhasImportadas: 0,
+          uploads: [],
+        };
+        porContratoMap.set(u.contratoId, grupo);
+      }
+      grupo.totalUploads += 1;
+      grupo.totalLinhasImportadas += u.linhasImportadas;
+      grupo.uploads.push(u);
+    }
+
+    const contratos = Array.from(porContratoMap.values());
+
+    return {
+      data: dataIso,
+      totalUploads: uploads.length,
+      totalContratos: contratos.length,
+      contratos,
+      uploads,
+    };
   }
 
   /**

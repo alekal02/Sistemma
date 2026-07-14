@@ -1,0 +1,318 @@
+import { Request, Response } from 'express';
+import AppDataSource from '../database/data-source';
+import { WhatsappGrupoMapa } from '../entities/WhatsappGrupoMapa';
+import { Servico } from '../entities/Servico';
+import wuzapiService from '../services/WuzapiService';
+import whatsappPlanilhaPipeline from '../services/WhatsappPlanilhaPipelineService';
+
+export class WuzapiController {
+  /**
+   * POST /api/wuzapi/webhook
+   * Recebe eventos da WuzAPI (sem JWT — validação opcional por secret).
+   */
+  async webhook(req: Request, res: Response): Promise<void> {
+    try {
+      const secret = wuzapiService.webhookSecret;
+      if (secret) {
+        const headerSecret =
+          String(req.headers['x-webhook-secret'] || '') ||
+          String(req.query.secret || '');
+        if (headerSecret !== secret) {
+          res.status(401).json({ sucesso: false, erro: 'Webhook secret inválido' });
+          return;
+        }
+      }
+
+      // Responde rápido para a WuzAPI não reintentar; processa em seguida.
+      res.status(200).json({ sucesso: true, recebido: true });
+
+      const payload = req.body;
+      setImmediate(async () => {
+        try {
+          const resultado = await whatsappPlanilhaPipeline.processarWebhook(payload);
+          console.log('[WuzapiWebhook]', resultado.processado ? 'OK' : 'skip', resultado.motivo || '', resultado.resultado || '');
+        } catch (err: any) {
+          console.error('[WuzapiWebhook] Erro no pipeline:', err?.message || err);
+          try {
+            let chat = payload?.event?.Info?.Chat;
+            if (!chat && typeof payload?.jsonData === 'string') {
+              try {
+                chat = JSON.parse(payload.jsonData)?.event?.Info?.Chat;
+              } catch { /* ignore */ }
+            }
+            if (chat && String(chat).endsWith('@g.us') && wuzapiService.isConfigured) {
+              await wuzapiService.enviarTexto(
+                String(chat),
+                `❌ Falha ao processar planilha: ${err?.message || 'erro desconhecido'}`,
+              );
+            }
+          } catch { /* ignore */ }
+        }
+      });
+    } catch (error: any) {
+      console.error('[WuzapiWebhook] Erro:', error?.message || error);
+      if (!res.headersSent) {
+        res.status(500).json({ sucesso: false, erro: error?.message || 'Erro no webhook' });
+      }
+    }
+  }
+
+  /** GET /api/wuzapi/status — inclui QR quando conectado e ainda não logado */
+  async status(_req: Request, res: Response): Promise<void> {
+    try {
+      const base = {
+        configurado: wuzapiService.isConfigured,
+        url: process.env.WUZAPI_URL || null,
+        tokenExiste: !!process.env.WUZAPI_TOKEN,
+        webhookSecretExiste: !!process.env.WUZAPI_WEBHOOK_SECRET,
+        webhookUrl: wuzapiService.webhookUrl,
+      };
+      if (!wuzapiService.isConfigured) {
+        res.json({
+          ...base,
+          sessao: null,
+          qrCode: null,
+          conectado: false,
+          logado: false,
+          mensagem: 'Configure WUZAPI_URL e WUZAPI_TOKEN',
+        });
+        return;
+      }
+      try {
+        const sessao = await wuzapiService.getStatus();
+        let qrCode: string | null = null;
+        if (sessao.connected && !sessao.loggedIn) {
+          try {
+            const qr = await wuzapiService.getQRCode();
+            qrCode = qr.qrCode || null;
+            // Garante data URI para <img src>
+            if (qrCode && !qrCode.startsWith('data:')) {
+              qrCode = `data:image/png;base64,${qrCode}`;
+            }
+          } catch {
+            qrCode = null;
+          }
+        }
+        res.json({
+          ...base,
+          sessao,
+          qrCode,
+          conectado: sessao.connected,
+          logado: sessao.loggedIn,
+        });
+      } catch (err: any) {
+        res.json({
+          ...base,
+          sessao: null,
+          qrCode: null,
+          conectado: false,
+          logado: false,
+          erroSessao: err?.message || 'Falha ao consultar sessão',
+        });
+      }
+    } catch (error: any) {
+      res.status(500).json({ sucesso: false, erro: error?.message || 'Erro' });
+    }
+  }
+
+  /** POST /api/wuzapi/connect — inicia sessão e prepara QR */
+  async connect(_req: Request, res: Response): Promise<void> {
+    try {
+      if (!wuzapiService.isConfigured) {
+        res.status(400).json({
+          sucesso: false,
+          erro: 'WuzAPI não configurada. Defina WUZAPI_URL e WUZAPI_TOKEN no .env',
+        });
+        return;
+      }
+      const resultado = await wuzapiService.conectarSessao();
+      // Aguarda um pouco e tenta obter QR
+      let qrCode: string | null = null;
+      try {
+        await new Promise((r) => setTimeout(r, 1500));
+        const st = await wuzapiService.getStatus();
+        if (st.connected && !st.loggedIn) {
+          const qr = await wuzapiService.getQRCode();
+          qrCode = qr.qrCode || null;
+          if (qrCode && !qrCode.startsWith('data:')) {
+            qrCode = `data:image/png;base64,${qrCode}`;
+          }
+        }
+      } catch { /* QR pode demorar */ }
+
+      res.json({
+        sucesso: true,
+        message: resultado.message,
+        jid: resultado.jid,
+        qrCode,
+      });
+    } catch (error: any) {
+      res.status(500).json({ sucesso: false, erro: error?.message || 'Erro ao conectar' });
+    }
+  }
+
+  /** GET /api/wuzapi/qr — QR atual */
+  async qr(_req: Request, res: Response): Promise<void> {
+    try {
+      if (!wuzapiService.isConfigured) {
+        res.status(400).json({ sucesso: false, erro: 'WuzAPI não configurada' });
+        return;
+      }
+      const qr = await wuzapiService.getQRCode();
+      let qrCode = qr.qrCode || null;
+      if (qrCode && !qrCode.startsWith('data:')) {
+        qrCode = `data:image/png;base64,${qrCode}`;
+      }
+      res.json({ sucesso: true, qrCode });
+    } catch (error: any) {
+      res.status(500).json({ sucesso: false, erro: error?.message || 'Erro ao obter QR' });
+    }
+  }
+
+  /** GET /api/wuzapi/grupos-whatsapp — grupos reais da conta WhatsApp */
+  async listarGruposWhatsApp(_req: Request, res: Response): Promise<void> {
+    try {
+      if (!wuzapiService.isConfigured) {
+        res.status(400).json({ error: 'WuzAPI não configurada' });
+        return;
+      }
+      const st = await wuzapiService.getStatus();
+      if (!st.loggedIn) {
+        res.status(400).json({ error: 'WhatsApp não está logado. Conecte e escaneie o QR primeiro.' });
+        return;
+      }
+
+      const lista = await wuzapiService.listarGruposWhatsApp();
+      const mapaRepo = AppDataSource.getRepository(WhatsappGrupoMapa);
+      const mapeados = await mapaRepo.find({ select: ['grupoJid'] });
+      const jidsMapeados = new Set(mapeados.map((m) => m.grupoJid));
+
+      res.json({
+        grupos: lista.map((g) => ({
+          ...g,
+          jaMapeado: jidsMapeados.has(g.jid),
+        })),
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error?.message || 'Erro ao listar grupos do WhatsApp' });
+    }
+  }
+
+  /** GET /api/wuzapi/grupos */
+  async listarGrupos(_req: Request, res: Response): Promise<void> {
+    try {
+      const repo = AppDataSource.getRepository(WhatsappGrupoMapa);
+      const lista = await repo.find({
+        relations: ['servico', 'servico.contract'],
+        order: { criadoEm: 'DESC' },
+      });
+      res.json(lista.map((g) => ({
+        id: g.id,
+        grupoJid: g.grupoJid,
+        nomeGrupo: g.nomeGrupo,
+        servicoId: g.servicoId,
+        servicoNome: g.servico?.nome || null,
+        contratoNome: (g.servico as any)?.contract?.numeroContrato || null,
+        ativo: g.ativo,
+        estrategia: g.estrategia,
+        responderPdf: g.responderPdf,
+        criadoEm: g.criadoEm,
+      })));
+    } catch (error: any) {
+      res.status(500).json({ error: error?.message || 'Erro ao listar grupos' });
+    }
+  }
+
+  /** POST /api/wuzapi/grupos */
+  async criarGrupo(req: Request, res: Response): Promise<void> {
+    try {
+      const { grupoJid, nomeGrupo, servicoId, estrategia, responderPdf, ativo } = req.body || {};
+      if (!grupoJid || !servicoId) {
+        res.status(400).json({ error: 'grupoJid e servicoId são obrigatórios' });
+        return;
+      }
+
+      const jid = String(grupoJid).includes('@')
+        ? String(grupoJid).trim()
+        : `${String(grupoJid).trim()}@g.us`;
+
+      const servico = await AppDataSource.getRepository(Servico).findOne({ where: { id: servicoId } });
+      if (!servico) {
+        res.status(404).json({ error: 'Serviço não encontrado' });
+        return;
+      }
+
+      const repo = AppDataSource.getRepository(WhatsappGrupoMapa);
+      const existente = await repo.findOne({ where: { grupoJid: jid } });
+      if (existente) {
+        res.status(409).json({ error: 'Este grupo já está mapeado', id: existente.id });
+        return;
+      }
+
+      const criado = repo.create({
+        grupoJid: jid,
+        nomeGrupo: nomeGrupo || null,
+        servicoId,
+        estrategia: estrategia || 'atualizar_data',
+        responderPdf: responderPdf !== false,
+        ativo: ativo !== false,
+      });
+      const salvo = await repo.save(criado);
+      res.status(201).json(salvo);
+    } catch (error: any) {
+      res.status(500).json({ error: error?.message || 'Erro ao criar mapeamento' });
+    }
+  }
+
+  /** PUT /api/wuzapi/grupos/:id */
+  async atualizarGrupo(req: Request, res: Response): Promise<void> {
+    try {
+      const repo = AppDataSource.getRepository(WhatsappGrupoMapa);
+      const item = await repo.findOne({ where: { id: String(req.params.id) } });
+      if (!item) {
+        res.status(404).json({ error: 'Mapeamento não encontrado' });
+        return;
+      }
+
+      const { nomeGrupo, servicoId, estrategia, responderPdf, ativo, grupoJid } = req.body || {};
+      if (nomeGrupo !== undefined) item.nomeGrupo = nomeGrupo;
+      if (estrategia !== undefined) item.estrategia = estrategia;
+      if (responderPdf !== undefined) item.responderPdf = !!responderPdf;
+      if (ativo !== undefined) item.ativo = !!ativo;
+      if (grupoJid) {
+        item.grupoJid = String(grupoJid).includes('@')
+          ? String(grupoJid).trim()
+          : `${String(grupoJid).trim()}@g.us`;
+      }
+      if (servicoId) {
+        const servico = await AppDataSource.getRepository(Servico).findOne({ where: { id: servicoId } });
+        if (!servico) {
+          res.status(404).json({ error: 'Serviço não encontrado' });
+          return;
+        }
+        item.servicoId = servicoId;
+      }
+
+      const salvo = await repo.save(item);
+      res.json(salvo);
+    } catch (error: any) {
+      res.status(500).json({ error: error?.message || 'Erro ao atualizar' });
+    }
+  }
+
+  /** DELETE /api/wuzapi/grupos/:id */
+  async excluirGrupo(req: Request, res: Response): Promise<void> {
+    try {
+      const repo = AppDataSource.getRepository(WhatsappGrupoMapa);
+      const item = await repo.findOne({ where: { id: String(req.params.id) } });
+      if (!item) {
+        res.status(404).json({ error: 'Mapeamento não encontrado' });
+        return;
+      }
+      await repo.remove(item);
+      res.json({ ok: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error?.message || 'Erro ao excluir' });
+    }
+  }
+}

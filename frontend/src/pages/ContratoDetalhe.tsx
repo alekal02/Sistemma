@@ -171,9 +171,12 @@ function buildConfigFaturamento(
     valorBasculante: string;
     valorKmLinear: string;
     valorM2: string;
+    valorM2Manual: string;
+    valorM2Mecanizada: string;
     valorPorArvore: string;
     valorPorEquipe: string;
-  }
+  },
+  opts?: { dualM2?: boolean },
 ) {
   const parse = parseValorMonetario;
   const base = { ativo: true };
@@ -192,6 +195,21 @@ function buildConfigFaturamento(
     return { ...base, tipoCobranca: 'km_linear', valorKmLinear: parse(valores.valorKmLinear) };
   }
   if (tipoValor === 'm2') {
+    if (opts?.dualM2) {
+      const valorM2Manual = parse(valores.valorM2Manual);
+      const valorM2Mecanizada = parse(valores.valorM2Mecanizada);
+      const valorM2 =
+        valorM2Manual != null && valorM2Mecanizada != null && valorM2Manual === valorM2Mecanizada
+          ? valorM2Manual
+          : valorM2Mecanizada ?? valorM2Manual;
+      return {
+        ...base,
+        tipoCobranca: 'm2',
+        valorM2,
+        valorM2Manual,
+        valorM2Mecanizada,
+      };
+    }
     return { ...base, tipoCobranca: 'm2', valorM2: parse(valores.valorM2) };
   }
   if (tipoValor === 'por_equipe') {
@@ -232,6 +250,8 @@ export default function ContratoDetalhe() {
   const [valorBasculante, setValorBasculante] = useState('');
   const [valorKmLinear, setValorKmLinear] = useState('');
   const [valorM2, setValorM2] = useState('');
+  const [valorM2Manual, setValorM2Manual] = useState('');
+  const [valorM2Mecanizada, setValorM2Mecanizada] = useState('');
   const [valorPorArvore, setValorPorArvore] = useState('');
   const [valorPorEquipe, setValorPorEquipe] = useState('');
 
@@ -243,7 +263,7 @@ export default function ContratoDetalhe() {
   // ═══ CRIAÇÃO — Modal rápido ═══
   const [modalCriacaoAberto, setModalCriacaoAberto] = useState(false);
   const [nomeServico, setNomeServico] = useState('');
-  const [tiposSelecionados, setTiposSelecionados] = useState<string[]>([TIPOS_SERVICO.COLETA_CAMINHAO]);
+  const [tipoSelecionado, setTipoSelecionado] = useState<string>(TIPOS_SERVICO.COLETA_CAMINHAO);
   const [salvandoServico, setSalvandoServico] = useState(false);
 
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -270,13 +290,14 @@ export default function ContratoDetalhe() {
       const resultados = await Promise.allSettled(
         lista.map(async (s: Servico) => {
           try {
-            const padrao = await servicoService.getPadrao(id, s.id);
+            const padrao = await servicoService.getPadrao(id, s.id, { force: true });
               const cols = padrao.servico?.padraoPlanilha?.colunas || [];
               const uploads = normalizarPlanilhasContrato(padrao.uploads?.ultimos || []);
               const config = padrao.servico?.configDashboard;
               const totalRegistros = padrao.uploads?.registrosValidos
                 ?? padrao.uploads?.totalImportados
                 ?? 0;
+              const temDadosUpload = totalRegistros > 0 || uploads.length > 0 || (padrao.uploads?.total || 0) > 0;
 
               return {
                 ...s,
@@ -284,9 +305,9 @@ export default function ContratoDetalhe() {
                 totalRegistros,
                 ultimoUpload: uploads[0]?.criadoEm || null,
                 etapasStatus: {
-                  upload: cols.length > 0 ? 'done' : 'pending',
+                  upload: temDadosUpload || cols.length > 0 ? 'done' : 'pending',
                   indicadoresAuto: config?.indicadoresAutomaticosConfirmados === true ? 'done' : 'pending',
-                  revisao: cols.length > 0 ? 'done' : 'pending',
+                  revisao: temDadosUpload || cols.length > 0 ? 'done' : 'pending',
                   config: (config?.kpis?.length > 0) ? 'done' : 'pending',
                 } satisfies EtapasStatus,
               };
@@ -404,12 +425,11 @@ export default function ContratoDetalhe() {
 
   useEffect(() => {
     if (!modalCriacaoAberto) return;
-    const tipoPrincipal = tiposSelecionados[0] || TIPOS_SERVICO.COLETA_CAMINHAO;
-    const opcoes = opcoesTipoValorDisponiveis(tipoPrincipal);
+    const opcoes = opcoesTipoValorDisponiveis(tipoSelecionado || TIPOS_SERVICO.COLETA_CAMINHAO);
     if (!opcoes.includes(tipoValor)) {
       setTipoValor(opcoes[0]);
     }
-  }, [tiposSelecionados, modalCriacaoAberto, tipoValor]);
+  }, [tipoSelecionado, modalCriacaoAberto, tipoValor]);
 
   /* ═══ Breadcrumbs ═══ */
   useEffect(() => {
@@ -447,6 +467,8 @@ export default function ContratoDetalhe() {
     setValorBasculante('');
     setValorKmLinear('');
     setValorM2('');
+    setValorM2Manual('');
+    setValorM2Mecanizada('');
     setValorPorArvore('');
     setValorPorEquipe('');
   };
@@ -454,7 +476,7 @@ export default function ContratoDetalhe() {
   /* ═══ CRIAÇÃO — Modal rápido ═══ */
   const abrirModalCriacao = () => {
     setNomeServico('');
-    setTiposSelecionados([TIPOS_SERVICO.COLETA_CAMINHAO]);
+    setTipoSelecionado(TIPOS_SERVICO.COLETA_CAMINHAO);
     resetValoresModal(TIPOS_SERVICO.COLETA_CAMINHAO);
     setModalCriacaoAberto(true);
   };
@@ -462,22 +484,13 @@ export default function ContratoDetalhe() {
   const fecharModalCriacao = () => {
     setModalCriacaoAberto(false);
     setNomeServico('');
-    setTiposSelecionados([TIPOS_SERVICO.COLETA_CAMINHAO]);
+    setTipoSelecionado(TIPOS_SERVICO.COLETA_CAMINHAO);
     resetValoresModal(TIPOS_SERVICO.COLETA_CAMINHAO);
   };
 
-  const toggleTipoCriacao = (tipo: string) => {
-    setTiposSelecionados(prev => {
-      let novos: string[];
-      if (prev.includes(tipo)) {
-        novos = prev.filter(t => t !== tipo);
-        if (novos.length === 0) novos = [tipo];
-      } else {
-        novos = [...prev, tipo];
-      }
-      setTipoValor(tipoValorPadrao(novos[0]));
-      return novos;
-    });
+  const selecionarTipoCriacao = (tipo: string) => {
+    setTipoSelecionado(tipo);
+    setTipoValor(tipoValorPadrao(tipo));
   };
 
   const criarServico = async (e: React.FormEvent) => {
@@ -487,90 +500,70 @@ export default function ContratoDetalhe() {
       return;
     }
 
-    const tipos = tiposSelecionados.length > 0 ? tiposSelecionados : [TIPOS_SERVICO.COLETA_CAMINHAO];
-    const multiplo = tipos.length > 1;
+    const tipo = tipoSelecionado || TIPOS_SERVICO.COLETA_CAMINHAO;
+    const dualM2 = tipo === TIPOS_SERVICO.ROCADEIRA && tipoValor === 'm2';
+    const configFaturamento = buildConfigFaturamento(tipoValor, {
+      valorMini, valorTruck, valorToco, valorBasculante, valorKmLinear, valorM2,
+      valorM2Manual, valorM2Mecanizada, valorPorArvore, valorPorEquipe,
+    }, { dualM2 });
 
-    if (!multiplo) {
-      const configFaturamento = buildConfigFaturamento(tipoValor, {
-        valorMini, valorTruck, valorToco, valorBasculante, valorKmLinear, valorM2, valorPorArvore, valorPorEquipe,
-      });
+    const temValor =
+      tipoValor === 'caminhao'
+        ? [valorMini, valorTruck, valorToco, valorBasculante].some(v => v.trim())
+        : tipoValor === 'km_linear'
+          ? valorKmLinear.trim()
+          : tipoValor === 'm2'
+            ? (dualM2
+              ? Boolean(valorM2Manual.trim() || valorM2Mecanizada.trim())
+              : valorM2.trim())
+            : tipoValor === 'por_equipe'
+              ? valorPorEquipe.trim()
+              : valorPorArvore.trim();
 
-      const temValor =
-        tipoValor === 'caminhao'
-          ? [valorMini, valorTruck, valorToco, valorBasculante].some(v => v.trim())
-          : tipoValor === 'km_linear'
-            ? valorKmLinear.trim()
-            : tipoValor === 'm2'
-              ? valorM2.trim()
-              : tipoValor === 'por_equipe'
-                ? valorPorEquipe.trim()
-                : valorPorArvore.trim();
+    if (!temValor) {
+      adicionarToast(
+        dualM2
+          ? 'Informe o valor por m² da roçada Manual e/ou Mecanizada'
+          : 'Informe pelo menos um valor de receita para o serviço',
+        'warning',
+      );
+      return;
+    }
 
-      if (!temValor) {
-        adicionarToast('Informe pelo menos um valor de receita para o serviço', 'warning');
-        return;
-      }
+    const valorPrincipal =
+      tipoValor === 'caminhao'
+        ? [configFaturamento.valorMini, configFaturamento.valorTruck, configFaturamento.valorToco, configFaturamento.valorBasculante]
+            .find(v => v != null && v > 0)
+        : tipoValor === 'km_linear'
+          ? configFaturamento.valorKmLinear
+          : tipoValor === 'm2'
+            ? (
+              (configFaturamento as any).valorM2Manual
+              ?? (configFaturamento as any).valorM2Mecanizada
+              ?? configFaturamento.valorM2
+            )
+            : tipoValor === 'por_equipe'
+              ? configFaturamento.valorPorEquipe
+              : configFaturamento.valorPorArvore;
 
-      const valorPrincipal =
-        tipoValor === 'caminhao'
-          ? [configFaturamento.valorMini, configFaturamento.valorTruck, configFaturamento.valorToco, configFaturamento.valorBasculante]
-              .find(v => v != null && v > 0)
-          : tipoValor === 'km_linear'
-            ? configFaturamento.valorKmLinear
-            : tipoValor === 'm2'
-              ? configFaturamento.valorM2
-              : tipoValor === 'por_equipe'
-                ? configFaturamento.valorPorEquipe
-                : configFaturamento.valorPorArvore;
-
-      if (valorPrincipal == null || Number(valorPrincipal) <= 0) {
-        adicionarToast('Valor inválido. Use formato 0,43 ou 0.43', 'warning');
-        return;
-      }
-
-      setSalvandoServico(true);
-      try {
-        await servicoService.criarServico(id!, {
-          nome: nomeServico.trim(),
-          tipo: tipos[0],
-          configFaturamento,
-        });
-        adicionarToast('Serviço criado!', 'success');
-        fecharModalCriacao();
-        await carregarDados();
-      } catch (err: any) {
-        const msg = err?.response?.data?.error || err?.message || 'Erro ao criar serviço';
-        adicionarToast(msg, 'error');
-      } finally {
-        setSalvandoServico(false);
-      }
+    if (valorPrincipal == null || Number(valorPrincipal) <= 0) {
+      adicionarToast('Valor inválido. Use formato 0,43 ou 0.43', 'warning');
       return;
     }
 
     setSalvandoServico(true);
-    let criados = 0;
     try {
-      for (const tipo of tipos) {
-        const label = TIPOS_SERVICO_LABELS[tipo as TipoServico] || tipo;
-        const nomeTipo = label.replace(/^[^\s]+\s/, '').trim();
-        await servicoService.criarServico(id!, {
-          nome: `${nomeServico.trim()} — ${nomeTipo}`,
-          tipo,
-          configFaturamento: { ativo: false },
-        });
-        criados++;
-      }
-      adicionarToast(`${tipos.length} serviços criados! Configure a receita de cada um.`, 'success');
+      await servicoService.criarServico(id!, {
+        nome: nomeServico.trim(),
+        tipo,
+        configFaturamento,
+      });
+      adicionarToast('Serviço criado!', 'success');
       fecharModalCriacao();
       await carregarDados();
-    } catch {
-      if (criados > 0) {
-        adicionarToast(`${criados} de ${tipos.length} serviços criados. Configure o restante manualmente.`, 'warning');
-        fecharModalCriacao();
-        await carregarDados();
-      } else {
-        adicionarToast('Erro ao criar serviços', 'error');
-      }
+    } catch (err: any) {
+      const msg = err?.response?.data?.error || err?.message || 'Erro ao criar serviço';
+      adicionarToast(msg, 'error');
     } finally {
       setSalvandoServico(false);
     }
@@ -1057,7 +1050,7 @@ export default function ContratoDetalhe() {
           {servicos.map(servico => {
             const etapas = servico.etapasStatus || { upload: 'pending', indicadoresAuto: 'pending', revisao: 'pending', config: 'pending' };
             const expandido = servicoExpandidoId === servico.id;
-            const temUpload = (servico.totalRegistros || 0) > 0;
+            const temUpload = (servico.totalRegistros || 0) > 0 || (servico.planilhas?.length || 0) > 0;
             const temKpi = etapas.config === 'done';
             const desatualizado = servico.ultimoUpload
               ? Date.now() - new Date(servico.ultimoUpload).getTime() > 7 * 24 * 60 * 60 * 1000
@@ -1211,6 +1204,7 @@ export default function ContratoDetalhe() {
                       contractId={id!}
                       servicoId={servico.id}
                       servicoNome={servico.nome}
+                      tipoServico={servico.tipo}
                       onStatusChange={(status) => handleStatusChange(servico.id, status)}
                       onPlanilhasChange={(info) => handlePlanilhasChange(servico.id, info)}
                     />
@@ -1247,12 +1241,14 @@ export default function ContratoDetalhe() {
                 <label>Tipo de serviço</label>
                 <div className="criacao-tipos-grid">
                   {TIPOS_SERVICO_OPCOES.map(op => {
-                    const ativo = tiposSelecionados.includes(op.value);
+                    const ativo = tipoSelecionado === op.value;
                     return (
                       <div
                         key={op.value}
                         className={'criacao-tipo-card' + (ativo ? ' selecionado' : '')}
-                        onClick={() => toggleTipoCriacao(op.value)}
+                        onClick={() => selecionarTipoCriacao(op.value)}
+                        role="radio"
+                        aria-checked={ativo}
                       >
                         <div className="check">
                           {ativo && <FiCheck size={10} />}
@@ -1262,35 +1258,24 @@ export default function ContratoDetalhe() {
                     );
                   })}
                 </div>
-                {tiposSelecionados.length > 1 && (
-                  <div style={{
-                    marginTop: '0.4rem', padding: '0.5rem 0.6rem',
-                    background: '#eff6ff', borderRadius: '6px',
-                    border: '1px solid #bfdbfe', fontSize: '0.72rem', color: '#1d4ed8',
-                  }}>
-                    Será criado um serviço para cada tipo selecionado. Configure a receita de cada um após a criação.
-                  </div>
-                )}
-                {tiposSelecionados.length === 1 && TIPOS_SERVICO_META[tiposSelecionados[0] as TipoServico] && (
+                {TIPOS_SERVICO_META[tipoSelecionado as TipoServico] && (
                   <div style={{
                     marginTop: '0.4rem', padding: '0.5rem 0.6rem',
                     background: '#f8fafc', borderRadius: '6px',
                     border: '1px solid #e2e8f0', fontSize: '0.72rem', color: '#475569',
                   }}>
-                    {TIPOS_SERVICO_META[tiposSelecionados[0] as TipoServico].descricao}
+                    {TIPOS_SERVICO_META[tipoSelecionado as TipoServico].descricao}
                   </div>
                 )}
               </div>
 
-              {tiposSelecionados.length === 1 && (
               <div className="form-group modal-valores-servico">
                 <label>
                   <FiDollarSign size={12} style={{ marginRight: '0.25rem', verticalAlign: '-2px' }} />
                   Tipo de Valor
                 </label>
                 {(() => {
-                  const tipoPrincipal = tiposSelecionados[0] || TIPOS_SERVICO.COLETA_CAMINHAO;
-                  const opcoes = opcoesTipoValorDisponiveis(tipoPrincipal);
+                  const opcoes = opcoesTipoValorDisponiveis(tipoSelecionado || TIPOS_SERVICO.COLETA_CAMINHAO);
                   if (opcoes.length === 1) {
                     return (
                       <div className="modal-valor-fixo">
@@ -1351,7 +1336,35 @@ export default function ContratoDetalhe() {
                   </div>
                 )}
 
-                {tipoValor === 'm2' && (
+                {tipoValor === 'm2' && tipoSelecionado === TIPOS_SERVICO.ROCADEIRA && (
+                  <div className="valores-form-linha modal-valores-form">
+                    <div className="valor-input-group">
+                      <label style={{ color: '#16a34a' }}>Manual (R$/m²)</label>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={valorM2Manual}
+                        onChange={e => setValorM2Manual(e.target.value.replace(/[^\d.,]/g, ''))}
+                        placeholder="0,43"
+                      />
+                    </div>
+                    <div className="valor-input-group">
+                      <label style={{ color: '#ea580c' }}>Mecanizada (R$/m²)</label>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={valorM2Mecanizada}
+                        onChange={e => setValorM2Mecanizada(e.target.value.replace(/[^\d.,]/g, ''))}
+                        placeholder="0,43"
+                      />
+                    </div>
+                    <p style={{ fontSize: '0.68rem', color: '#64748b', margin: '0.35rem 0 0', lineHeight: 1.4, flexBasis: '100%' }}>
+                      Informe o valor por m² de cada tipo da planilha (Manual e Mecanizada). Podem ser iguais ou diferentes.
+                    </p>
+                  </div>
+                )}
+
+                {tipoValor === 'm2' && tipoSelecionado !== TIPOS_SERVICO.ROCADEIRA && (
                   <div className="modal-valores-form">
                     <div className="valor-input-group">
                       <label style={{ color: '#f97316' }}>Valor por m² (R$)</label>
@@ -1399,7 +1412,6 @@ export default function ContratoDetalhe() {
                   </div>
                 )}
               </div>
-              )}
 
               <div className="modal-actions" style={{ marginTop: '1rem' }}>
                 <button type="submit" className="btn btn-primary" disabled={salvandoServico} style={{
@@ -1407,11 +1419,7 @@ export default function ContratoDetalhe() {
                   background: 'linear-gradient(135deg, #6366f1, #818cf8)',
                   fontSize: '0.85rem',
                 }}>
-                  {salvandoServico
-                    ? 'Criando...'
-                    : tiposSelecionados.length > 1
-                      ? `Criar ${tiposSelecionados.length} Serviços`
-                      : 'Criar Serviço'}
+                  {salvandoServico ? 'Criando...' : 'Criar Serviço'}
                 </button>
                 <button type="button" className="btn btn-secondary" onClick={fecharModalCriacao}>
                   Cancelar

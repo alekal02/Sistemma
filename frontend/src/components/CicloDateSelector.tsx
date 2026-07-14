@@ -132,6 +132,12 @@ export default function CicloDateSelector({
   const cicloInicializadoRef = useRef(false);
   const [relatorioApi, setRelatorioApi] = useState<ReturnType<typeof agruparCicloPorDiaFromApi> | null>(null);
   const [carregandoResumo, setCarregandoResumo] = useState(false);
+  const [rocadaSplit, setRocadaSplit] = useState<{
+    areaManualM2: number;
+    areaMecanizadaM2: number;
+    registrosManual: number;
+    registrosMecanizada: number;
+  } | null>(null);
 
   useEffect(() => {
     cicloInicializadoRef.current = false;
@@ -182,30 +188,54 @@ export default function CicloDateSelector({
   useEffect(() => {
     if (!contractId || !servicoId) {
       setRelatorioApi(null);
+      setRocadaSplit(null);
       return;
     }
     let cancelado = false;
     setCarregandoResumo(true);
-    servicoService.getResumoCicloPorDia(contractId, servicoId, {
-      dataInicio: ciclo.dataInicio,
-      dataFim: ciclo.dataFim,
-    }).then((resp) => {
-      if (cancelado) return;
-      setRelatorioApi(agruparCicloPorDiaFromApi(
-        resp.dias,
-        ciclo.dataInicio,
-        ciclo.dataFim,
-        tarifas.valorTonelada,
-        tarifas.valorMini,
-        tarifas.valorTruck,
-        tarifas.valorToco,
-        tarifas.valorBasculante,
-        {
-          modo: ehRocada ? 'rocada' : 'coleta',
-          valorM2: configFaturamento?.valorM2 ?? null,
-        },
-      ));
-    }).catch(() => {
+    const promises: Promise<unknown>[] = [
+      servicoService.getResumoCicloPorDia(contractId, servicoId, {
+        dataInicio: ciclo.dataInicio,
+        dataFim: ciclo.dataFim,
+      }).then((resp) => {
+        if (cancelado) return;
+        setRelatorioApi(agruparCicloPorDiaFromApi(
+          resp.dias,
+          ciclo.dataInicio,
+          ciclo.dataFim,
+          tarifas.valorTonelada,
+          tarifas.valorMini,
+          tarifas.valorTruck,
+          tarifas.valorToco,
+          tarifas.valorBasculante,
+          {
+            modo: ehRocada ? 'rocada' : 'coleta',
+            valorM2: configFaturamento?.valorM2 ?? null,
+          },
+        ));
+      }),
+    ];
+    if (ehRocada) {
+      promises.push(
+        servicoService.getRocadaAgregacao(contractId, servicoId, {
+          dataInicio: ciclo.dataInicio,
+          dataFim: ciclo.dataFim,
+        }).then((agg) => {
+          if (cancelado) return;
+          setRocadaSplit({
+            areaManualM2: agg.resumo.areaManualM2 || 0,
+            areaMecanizadaM2: agg.resumo.areaMecanizadaM2 || 0,
+            registrosManual: agg.resumo.registrosManual || 0,
+            registrosMecanizada: agg.resumo.registrosMecanizada || 0,
+          });
+        }).catch(() => {
+          if (!cancelado) setRocadaSplit(null);
+        }),
+      );
+    } else {
+      setRocadaSplit(null);
+    }
+    Promise.all(promises).catch(() => {
       if (!cancelado) setRelatorioApi(null);
     }).finally(() => {
       if (!cancelado) setCarregandoResumo(false);
@@ -641,6 +671,22 @@ export default function CicloDateSelector({
                 cor="#22c55e"
                 icone={<FiTrendingUp size={11} />}
               />
+              {(rocadaSplit?.areaManualM2 || 0) > 0 && (
+                <KpiCard
+                  label={`Manual (${fmtNum(rocadaSplit?.registrosManual || 0, 0)})`}
+                  valor={`${fmtNum(rocadaSplit?.areaManualM2 || 0, 0)} m²`}
+                  cor="#0ea5e9"
+                  icone={<FiTrendingUp size={11} />}
+                />
+              )}
+              {(rocadaSplit?.areaMecanizadaM2 || 0) > 0 && (
+                <KpiCard
+                  label={`Mecanizada (${fmtNum(rocadaSplit?.registrosMecanizada || 0, 0)})`}
+                  valor={`${fmtNum(rocadaSplit?.areaMecanizadaM2 || 0, 0)} m²`}
+                  cor="#f59e0b"
+                  icone={<FiTruck size={11} />}
+                />
+              )}
               <KpiCard
                 label="Média m² / dia"
                 valor={relatorio.diasComDados > 0 ? fmtNum((totais.areaM2 || 0) / relatorio.diasComDados, 0) : '—'}
@@ -694,7 +740,7 @@ export default function CicloDateSelector({
           {' '}
           <span style={{ color: '#6366f1' }}>
             {ehRocada
-              ? 'Registros = linhas da planilha; Área = soma de m² roçados no dia.'
+              ? 'Registros = linhas da planilha; Área total e cards Manual/Mecanizada mostram a separação por tipo.'
               : 'Rotas = linhas da planilha; Viagens = soma do CONTADOR DE VIAGENS (1–4 por rota).'}
           </span>
         </span>

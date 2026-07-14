@@ -12,6 +12,7 @@ import {
   FiUsers,
   FiPieChart,
   FiLogOut,
+  FiMessageSquare,
 } from 'react-icons/fi'
 import './Layout.css'
 import { useAppVersion } from '../hooks/useAppVersion'
@@ -26,6 +27,7 @@ const MAPA_TITULOS: Record<string, string> = {
   '/kpis-universais': 'Biblioteca de KPIs',
   '/graficos-padrao': 'Gráficos padrão',
   '/usuarios': 'Usuários',
+  '/whatsapp-grupos': 'Grupos WhatsApp',
   '/dashboard/executivo': 'Relatórios executivos',
 }
 
@@ -186,6 +188,15 @@ function Layout({ children }: LayoutProps) {
               >
                 <span className="sidebar-icon"><FiUsers size={18} /></span>
                 <span className={sidebarAberta ? '' : 'hidden-text'}>Usuários</span>
+              </Link>
+
+              <Link
+                to="/whatsapp-grupos"
+                className={`sidebar-link ${location.pathname === '/whatsapp-grupos' ? 'active' : ''}`}
+                onClick={fecharSidebarMobile}
+              >
+                <span className="sidebar-icon"><FiMessageSquare size={18} /></span>
+                <span className={sidebarAberta ? '' : 'hidden-text'}>Grupos WhatsApp</span>
               </Link>
             </>
           )}

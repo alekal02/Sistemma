@@ -280,6 +280,37 @@ export function analisarViagensPlanilha(
     coletor4: encontrarColuna(cabecalho, ['COLETOR 04', 'COLETOR 4']),
   };
 
+  // Planilha sem colunas de coleta (ex.: roçada enviada no serviço errado)
+  const temColunasColeta = idx.placa >= 0
+    && (idx.kmTotal >= 0 || (idx.kmSaida >= 0 && idx.kmChegada >= 0) || idx.pesoTotal >= 0);
+  if (!temColunasColeta) {
+    const faltantes: string[] = [];
+    if (idx.placa < 0) faltantes.push('PLACA');
+    if (idx.kmTotal < 0 && (idx.kmSaida < 0 || idx.kmChegada < 0)) faltantes.push('KM TOTAL (ou KM SAIDA + KM CHEGADA)');
+    if (idx.pesoTotal < 0) faltantes.push('PESO TOTAL');
+    return {
+      sucesso: false,
+      nomeArquivo,
+      aba: nomeAba,
+      viagens: [],
+      viagensCompletas: 0,
+      viagensIncompletas: 0,
+      viagensComValorNegativo: 0,
+      viagensValidasDashboard: 0,
+      viagensInconsistentesTotal: 0,
+      totalViagens: 0,
+      podeImportar: false,
+      avisoDashboard: null,
+      percentualCompleto: 0,
+      problemasAgrupados: [],
+      mensagem:
+        'Esta planilha não parece ser de coleta (faltam colunas como PLACA, KM e PESO). '
+        + 'Se for roçada, envie no serviço do tipo Roçadeira. '
+        + (faltantes.length ? `Colunas não encontradas: ${faltantes.join(', ')}.` : ''),
+    };
+  }
+
+  const MAX_DETALHE_VIAGENS = 500;
   const placasPlanilha = new Set<string>();
   const motoristasPlanilha = new Set<string>();
   const coletoresPlanilha = new Set<string>();
@@ -424,7 +455,7 @@ export function analisarViagensPlanilha(
       problemas,
     };
 
-    const incluirNoDetalhe = !completa && temIdentificacao;
+    const incluirNoDetalhe = !completa && temIdentificacao && viagens.length < MAX_DETALHE_VIAGENS;
 
     if (incluirNoDetalhe) {
       viagens.push(item);
@@ -472,7 +503,7 @@ export function analisarViagensPlanilha(
     problemasDashboard,
     regrasSaude: [...REGRAS_VIAGEM_DASHBOARD],
     resumoPlacas,
-    viagens: viagens.slice(0, 500),
+    viagens,
     somaContadorViagens,
     viagensCalculadasDashboard,
     linhasSemContador,

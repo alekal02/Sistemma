@@ -36,6 +36,10 @@ function areaDoRegistro(r: Record<string, unknown>): number {
 export interface ResumoRocadaDia {
   registros: number;
   areaM2: number;
+  areaManualM2?: number;
+  areaMecanizadaM2?: number;
+  registrosManual?: number;
+  registrosMecanizada?: number;
   bairros: number;
   operadores: number;
   equipes: number;
@@ -73,8 +77,33 @@ function agregar(
   return [...mapa.values()].sort((a, b) => b.areaM2 - a.areaM2);
 }
 
+function tipoExecucaoDoRegistro(r: Record<string, unknown>): 'manual' | 'mecanizada' | 'desconhecido' {
+  const bruto = String(
+    r.TIPO_EXECUCAO ?? r._tipoExecucao ?? r.TIPO ?? r.Tipo ?? r.tipo ?? '',
+  ).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
+  if (/\bMANUAL\b/.test(bruto) || bruto.includes('MAO DE OBRA') || bruto.includes('ENXADA')) return 'manual';
+  if (
+    bruto.includes('MECAN')
+    || bruto.includes('TRATOR')
+    || bruto.includes('ROCADEIRA')
+    || bruto.includes('GIRO')
+    || bruto.includes('MAQUINA')
+  ) {
+    return 'mecanizada';
+  }
+  return 'desconhecido';
+}
+
 export function analisarRocadaDia(registros: Record<string, unknown>[]): AnaliseRocadaDia {
   const areaM2 = registros.reduce((s, r) => s + areaDoRegistro(r), 0);
+  let areaManualM2 = 0;
+  let areaMecanizadaM2 = 0;
+  for (const r of registros) {
+    const a = areaDoRegistro(r);
+    const t = tipoExecucaoDoRegistro(r);
+    if (t === 'manual') areaManualM2 += a;
+    else if (t === 'mecanizada') areaMecanizadaM2 += a;
+  }
   const bairros = new Set(registros.map((r) => str(r.BAIRRO ?? r.bairro ?? r.regional ?? r.REGIONAL)).filter(Boolean));
   const operadores = new Set(registros.map((r) => str(r.Operador ?? r.OPERADOR ?? r.motorista ?? r.MOTORISTA)).filter(Boolean));
   const equipes = new Set(registros.map((r) => str(r.Equipe ?? r.EQUIPE ?? r.turno ?? r.TURNO)).filter(Boolean));
@@ -84,6 +113,10 @@ export function analisarRocadaDia(registros: Record<string, unknown>[]): Analise
     resumo: {
       registros: registros.length,
       areaM2,
+      areaManualM2: Math.round(areaManualM2 * 100) / 100,
+      areaMecanizadaM2: Math.round(areaMecanizadaM2 * 100) / 100,
+      registrosManual: registros.filter((r) => tipoExecucaoDoRegistro(r) === 'manual').length,
+      registrosMecanizada: registros.filter((r) => tipoExecucaoDoRegistro(r) === 'mecanizada').length,
       bairros: bairros.size,
       operadores: operadores.size,
       equipes: equipes.size,

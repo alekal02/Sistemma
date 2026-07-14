@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { FiDownload, FiSearch, FiChevronLeft, FiChevronRight, FiCheck, FiX } from 'react-icons/fi';
 import ConfirmModal from './ConfirmModal';
 import coletaService from '../services/coletaService';
-import servicoService from '../services/servicoService';
+import servicoService, { invalidateCachesServico } from '../services/servicoService';
+import { isRequestAborted } from '../services/abortableRequest';
 
 interface ColunaDetectada {
   nome: string;
@@ -53,8 +55,11 @@ export default function DataTable({ servicoId, contractId, token, adicionarToast
   const [confirmExcluir, setConfirmExcluir] = useState<{ id: number } | null>(null);
   const [excluindo, setExcluindo] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const adicionarToastRef = useRef(adicionarToast);
+  adicionarToastRef.current = adicionarToast;
 
-  // Buscar planilhas
+  // Buscar planilhas (uma vez)
   useEffect(() => {
     (async () => {
       try {
@@ -67,17 +72,19 @@ export default function DataTable({ servicoId, contractId, token, adicionarToast
   const carregar = useCallback(async (p: number) => {
     setCarregando(true);
     try {
-      const d = await servicoService.getDadosPaginados(contractId, servicoId, {
-        page: p,
-        limit,
+      const d = await servicoService.buscarDadosPlanilha(contractId, servicoId, {
+        pagina: p,
+        limite: limit,
         uploadId: filtroPlanilha || undefined,
       });
       setDados(d.dados || []);
       setTotalPaginas(d.totalPaginas || 1);
       setTotalRegistros(d.total || d.dados?.length || 0);
-    } catch { adicionarToast('Erro ao carregar dados', 'error'); }
+    } catch (err) {
+      if (!isRequestAborted(err)) adicionarToastRef.current('Erro ao carregar dados', 'error');
+    }
     finally { setCarregando(false); }
-  }, [servicoId, contractId, token, filtroPlanilha, limit, adicionarToast]);
+  }, [servicoId, contractId, filtroPlanilha, limit]);
 
   useEffect(() => { carregar(pagina); }, [pagina, carregar]);
 
@@ -118,7 +125,14 @@ export default function DataTable({ servicoId, contractId, token, adicionarToast
     if (dados.length > 0 && colunasVisiveis.size === 0) {
       setColunasVisiveis(new Set(todasColunas.map(c => c.key)));
     }
-  }, [dados]);
+  }, [dados.length, todasColunas, colunasVisiveis.size]);
+
+  const rowVirtualizer = useVirtualizer({
+    count: dados.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 36,
+    overscan: 10,
+  });
 
   // Fechar dropdown ao clicar fora
   useEffect(() => {
@@ -159,6 +173,7 @@ export default function DataTable({ servicoId, contractId, token, adicionarToast
       adicionarToast('Registro atualizado!', 'success');
       setEditandoId(null);
       setEditandoDados({});
+      invalidateCachesServico(contractId, servicoId);
       carregar(pagina);
     } catch { adicionarToast('Erro ao atualizar', 'error'); }
   };
@@ -176,6 +191,7 @@ export default function DataTable({ servicoId, contractId, token, adicionarToast
       await coletaService.excluirDado(confirmExcluir.id);
       adicionarToast('Registro excluído!', 'success');
       setConfirmExcluir(null);
+      invalidateCachesServico(contractId, servicoId);
       carregar(pagina);
     } catch { adicionarToast('Erro ao excluir', 'error'); }
     finally { setExcluindo(false); }
@@ -299,8 +315,8 @@ export default function DataTable({ servicoId, contractId, token, adicionarToast
         </button>
       </div>
 
-      {/* Tabela */}
-      <div className="table-container">
+      {/* Tabela virtualizada (só renderiza linhas visíveis) */}
+      <div ref={scrollRef} className="table-container" style={{ maxHeight: 'min(70vh, 520px)', overflow: 'auto' }}>
         <table className="table" style={{ minWidth: '500px', fontSize: '0.78rem' }}>
           <thead>
             <tr>
@@ -312,12 +328,24 @@ export default function DataTable({ servicoId, contractId, token, adicionarToast
               <th style={{ textAlign: 'center', width: '110px' }}>Ações</th>
             </tr>
           </thead>
-          <tbody>
-            {dados.map(dado => {
+          <tbody style={{ height: `${rowVirtualizer.getTotalSize()}px`, position: 'relative' }}>
+            {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+              const dado = dados[virtualRow.index];
               const editandoAtivo = editandoId === dado.id;
               return (
-                <tr key={dado.id} className={editandoAtivo ? 'table-row-editing' : ''}
-                  style={{ borderBottom: '1px solid var(--color-border-light)', background: editandoAtivo ? '#fefce8' : undefined }}>
+                <tr
+                  key={dado.id}
+                  className={editandoAtivo ? 'table-row-editing' : ''}
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    transform: `translateY(${virtualRow.start}px)`,
+                    borderBottom: '1px solid var(--color-border-light)',
+                    background: editandoAtivo ? '#fefce8' : undefined,
+                  }}
+                >
                   {colunas.map(col => {
                     const valBruto = dado.dados?.[col.key];
                     const valEntidade = col.entidadeField ? (dado as any)[col.entidadeField] : undefined;

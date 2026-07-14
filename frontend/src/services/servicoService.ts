@@ -2,6 +2,26 @@
    SERVICO SERVICE — Consome /api/contracts e /api/dashboard
    ============================================ */
 import api from './api';
+import { nextAbortSignal, resolveAbortSignal } from './abortableRequest';
+import {
+  cachedFetch,
+  chavePadraoServico,
+  invalidateCacheExact,
+  invalidateCachePrefix,
+} from './requestCache';
+
+export function invalidatePadraoServico(contractId: string, servicoId: string): void {
+  invalidateCacheExact(chavePadraoServico(contractId, servicoId));
+}
+
+export function invalidateCachesServico(contractId: string, servicoId: string): void {
+  invalidatePadraoServico(contractId, servicoId);
+  invalidateCachePrefix(`planilha:${contractId}:${servicoId}`);
+  invalidateCachePrefix(`dia:${contractId}:${servicoId}`);
+  invalidateCachePrefix(`brutos:${contractId}:${servicoId}`);
+  invalidateCachePrefix(`coleta-agg:${contractId}:${servicoId}`);
+  invalidateCachePrefix(`kpi-valores:${contractId}:${servicoId}`);
+}
 
 export interface KpiConsolidadoItem {
   id: string;
@@ -182,7 +202,9 @@ const servicoService = {
     }
     const query = params.toString();
     const url = query ? `/dashboard/kpis-consolidado?${query}` : '/dashboard/kpis-consolidado';
-    const { data } = await api.get<KpisConsolidadoResponse>(url);
+    const { data } = await api.get<KpisConsolidadoResponse>(url, {
+      signal: nextAbortSignal('servico:getKpisConsolidado'),
+    });
     return data;
   },
 
@@ -210,6 +232,7 @@ const servicoService = {
     if (filtros?.dataFim) params.set('dataFim', filtros.dataFim);
     const { data } = await api.get<CompararPorTipoResponse>(
       `/contracts/${contratoId}/servicos/comparar-por-tipo?${params.toString()}`,
+      { signal: nextAbortSignal('servico:compararPorTipo') },
     );
     return data;
   },
@@ -243,20 +266,67 @@ const servicoService = {
     if (filtros?.dataFim) params.set('dataFim', filtros.dataFim);
     const { data } = await api.get<CompararPorTipoResponse>(
       `/dashboard/comparar-por-tipo?${params.toString()}`,
+      { signal: nextAbortSignal('servico:compararGlobal') },
     );
     return data;
   },
 
-  async getPadrao(contractId: string, servicoId: string) {
-    const { data } = await api.get(`/contracts/${contractId}/servicos/${servicoId}/padrao`);
-    return data;
+  async getPadrao(contractId: string, servicoId: string, opts?: { force?: boolean }) {
+    return cachedFetch(
+      chavePadraoServico(contractId, servicoId),
+      async () => {
+        const { data } = await api.get(`/contracts/${contractId}/servicos/${servicoId}/padrao`);
+        return data;
+      },
+      { force: opts?.force },
+    );
+  },
+
+  /** Busca paginada da planilha — uma requisição por página (sem fetch por linha). */
+  async buscarDadosPlanilha(
+    contractId: string,
+    servicoId: string,
+    opts?: { pagina?: number; limite?: number; uploadId?: string },
+  ) {
+    const pagina = opts?.pagina ?? 1;
+    const limite = opts?.limite ?? 100;
+    const uploadId = opts?.uploadId;
+    const chave = `planilha:${contractId}:${servicoId}:${pagina}:${limite}:${uploadId || ''}`;
+
+    return cachedFetch(chave, () => this.getDadosPaginados(contractId, servicoId, {
+      page: pagina,
+      limit: limite,
+      uploadId,
+    }), { ttlMs: 60_000 });
   },
 
   async getDadosBrutos(contractId: string, servicoId: string, limite = 500) {
-    const { data } = await api.get(`/contracts/${contractId}/servicos/${servicoId}/dados-brutos`, {
-      params: { limite },
-    });
-    return data;
+    const chave = `brutos:${contractId}:${servicoId}:${limite}`;
+    return cachedFetch(chave, async () => {
+      const { data } = await api.get(`/contracts/${contractId}/servicos/${servicoId}/dados-brutos`, {
+        params: { limite },
+        signal: nextAbortSignal('servico:getDadosBrutos'),
+      });
+      return data;
+    }, { ttlMs: 120_000 });
+  },
+
+  /** Registros paginados de um dia — uma requisição por página. */
+  async buscarRegistrosDia(
+    contractId: string,
+    servicoId: string,
+    data: string,
+    opts?: { pagina?: number; limite?: number; incluirInconsistentes?: boolean },
+  ) {
+    const pagina = opts?.pagina ?? 1;
+    const limite = opts?.limite ?? 100;
+    const inc = opts?.incluirInconsistentes ? '1' : '0';
+    const chave = `dia:${contractId}:${servicoId}:${data}:${pagina}:${limite}:${inc}`;
+    return cachedFetch(chave, () => this.getDadosDia(contractId, servicoId, data, {
+      page: pagina,
+      limit: limite,
+      incluirInconsistentes: opts?.incluirInconsistentes,
+    }), { ttlMs: 60_000 });
   },
 
   async getDadosDia(
@@ -301,11 +371,14 @@ const servicoService = {
     servicoId: string,
     opts?: { data?: string; dataInicio?: string; dataFim?: string; topN?: number },
   ) {
-    const { data } = await api.get(
-      `/contracts/${contractId}/servicos/${servicoId}/coleta/agregacao`,
-      { params: opts },
-    );
-    return data as {
+    const chave = `coleta-agg:${contractId}:${servicoId}:${opts?.data || ''}:${opts?.dataInicio || ''}:${opts?.dataFim || ''}:${opts?.topN ?? ''}`;
+    return cachedFetch(chave, async () => {
+      const { data } = await api.get(
+        `/contracts/${contractId}/servicos/${servicoId}/coleta/agregacao`,
+        { params: opts, signal: nextAbortSignal('servico:getColetaAgregacao') },
+      );
+      return data;
+    }, { ttlMs: 120_000 }) as Promise<{
       resumo: {
         registros: number;
         viagens: number;
@@ -335,7 +408,43 @@ const servicoService = {
       dataFim: string | null;
       tipoServico?: string;
       modo?: string;
-    };
+    }>;
+  },
+
+  /** KPIs calculados no backend — cache + deduplicação. */
+  async getKpiValores(
+    contractId: string,
+    servicoId: string,
+    filtros?: {
+      dataInicio?: string;
+      dataFim?: string;
+      placa?: string;
+      regional?: string;
+      filtrosDinamicos?: Record<string, string>;
+    },
+    signal?: AbortSignal,
+  ) {
+    const f = filtros || {};
+    const dinamicos = f.filtrosDinamicos ? JSON.stringify(f.filtrosDinamicos) : '';
+    const chave = `kpi-valores:${contractId}:${servicoId}:${f.dataInicio || ''}:${f.dataFim || ''}:${f.placa || ''}:${f.regional || ''}:${dinamicos}`;
+    return cachedFetch(chave, async () => {
+      const params = new URLSearchParams();
+      if (f.dataInicio) params.append('dataInicio', f.dataInicio);
+      if (f.dataFim) params.append('dataFim', f.dataFim);
+      if (f.placa) params.append('placa', f.placa);
+      if (f.regional) params.append('regional', f.regional);
+      if (f.filtrosDinamicos) {
+        for (const [coluna, valor] of Object.entries(f.filtrosDinamicos)) {
+          if (valor) params.append(`filtro_${coluna}`, valor);
+        }
+      }
+      const qs = params.toString();
+      const { data } = await api.get(
+        `/contracts/${contractId}/servicos/${servicoId}/kpi-valores${qs ? '?' + qs : ''}`,
+        { signal: signal ?? nextAbortSignal('servico:getKpiValores') },
+      );
+      return data;
+    }, { ttlMs: 60_000 });
   },
 
   /**
@@ -344,21 +453,61 @@ const servicoService = {
   async getRocadaAgregacao(
     contractId: string,
     servicoId: string,
-    opts?: { data?: string; dataInicio?: string; dataFim?: string; topN?: number },
+    opts?: {
+      data?: string;
+      dataInicio?: string;
+      dataFim?: string;
+      topN?: number;
+      tipoExecucao?: 'manual' | 'mecanizada';
+    },
   ) {
     const { data } = await api.get(
       `/contracts/${contractId}/servicos/${servicoId}/rocada/agregacao`,
-      { params: opts },
+      { params: opts, signal: nextAbortSignal('servico:getRocadaAgregacao') },
     );
     return data as {
       resumo: {
+        registros: number;
+        areaM2: number;
+        areaManualM2?: number;
+        areaMecanizadaM2?: number;
+        areaDesconhecidaM2?: number;
+        registrosManual?: number;
+        registrosMecanizada?: number;
+        bairros: number;
+        operadores: number;
+        equipes: number;
+        equipamentos: number;
+      };
+      porTipo?: { chave: string; label: string; registros: number; areaM2: number }[];
+      manual?: {
+        tipo: 'manual';
+        label: string;
         registros: number;
         areaM2: number;
         bairros: number;
         operadores: number;
         equipes: number;
         equipamentos: number;
-      };
+        porBairro: { chave: string; label: string; registros: number; areaM2: number }[];
+        porOperador: { chave: string; label: string; registros: number; areaM2: number }[];
+        porEquipe: { chave: string; label: string; registros: number; areaM2: number }[];
+        porEquipamento: { chave: string; label: string; registros: number; areaM2: number }[];
+      } | null;
+      mecanizada?: {
+        tipo: 'mecanizada';
+        label: string;
+        registros: number;
+        areaM2: number;
+        bairros: number;
+        operadores: number;
+        equipes: number;
+        equipamentos: number;
+        porBairro: { chave: string; label: string; registros: number; areaM2: number }[];
+        porOperador: { chave: string; label: string; registros: number; areaM2: number }[];
+        porEquipe: { chave: string; label: string; registros: number; areaM2: number }[];
+        porEquipamento: { chave: string; label: string; registros: number; areaM2: number }[];
+      } | null;
       porBairro: { chave: string; label: string; registros: number; areaM2: number }[];
       porOperador: { chave: string; label: string; registros: number; areaM2: number }[];
       porEquipe: { chave: string; label: string; registros: number; areaM2: number }[];
@@ -406,7 +555,10 @@ const servicoService = {
     servicoId: string,
     params?: { page?: number; limit?: number; uploadId?: string },
   ) {
-    const { data } = await api.get(`/contracts/${contractId}/servicos/${servicoId}/dados`, { params });
+    const { data } = await api.get(`/contracts/${contractId}/servicos/${servicoId}/dados`, {
+      params,
+      signal: nextAbortSignal('servico:getDadosPaginados'),
+    });
     return data;
   },
 
@@ -425,7 +577,7 @@ const servicoService = {
   ) {
     const { data } = await api.get(
       `/contracts/${contractId}/servicos/${servicoId}/verificacao-viagens`,
-      { params },
+      { params, signal: nextAbortSignal('servico:getVerificacaoViagens') },
     );
     return data;
   },
@@ -437,7 +589,7 @@ const servicoService = {
   ) {
     const { data } = await api.get(
       `/contracts/${contractId}/servicos/${servicoId}/resumo-ciclo-por-dia`,
-      { params },
+      { params, signal: nextAbortSignal('servico:getResumoCicloPorDia') },
     );
     return data as {
       dias: Array<{ data: string; rotas: number; viagens: number; pesoTotalKg: number; kmTotal: number; areaM2?: number }>;
@@ -498,7 +650,7 @@ const servicoService = {
   async getKpiExecMetrics(contractId: string, servicoId: string, params?: Record<string, string>) {
     const { data } = await api.get(
       `/contracts/${contractId}/servicos/${servicoId}/kpi-exec-metrics`,
-      { params },
+      { params, signal: nextAbortSignal('servico:getKpiExecMetrics') },
     );
     return data;
   },
@@ -551,7 +703,7 @@ const servicoService = {
     const { data } = await api.post(
       `/contracts/${contractId}/servicos/${servicoId}/graficos-agregados`,
       body,
-      { signal },
+      { signal: resolveAbortSignal('servico:getGraficosAgregados', signal) },
     );
     return data;
   },

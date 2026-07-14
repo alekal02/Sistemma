@@ -9,6 +9,7 @@ import { User } from '../entities/User';
 import { TipoServico } from '../enums/TipoServico';
 import { buildConfigDashboardPadraoColeta } from '../config/dashboardPadraoColeta';
 import { Servico } from '../entities/Servico';
+import { inferirFiltroExecucaoServico } from '../utils/rocadaTipoExecucao';
 import { PlanilhaUpload } from '../entities/PlanilhaUpload';
 import { invalidarCacheDashboardServico } from './ServicoController';
 import { invalidarCacheDadosServico } from '../services/servicoDadosCache';
@@ -112,15 +113,26 @@ export class ColetaController {
             console.warn('[ColetaController] Erro ao aplicar gráficos roçada:', err);
           }
 
+          const split = resultadoRocada.splitPorServico;
+          let mensagem = `Roçada importada (${resultadoRocada.modelo}): ${resultadoRocada.importados} registro(s), `
+            + `${resultadoRocada.areaTotalM2.toLocaleString('pt-BR')} m² em ${resultadoRocada.dias} dia(s).`;
+          if (split && split.length >= 2) {
+            mensagem += ' Dashboards Manual e Mecanizada atualizados neste upload.';
+          } else if (resultadoRocada.porTipoExecucao) {
+            const p = resultadoRocada.porTipoExecucao;
+            if (p.manual.registros > 0 && p.mecanizada.registros > 0) {
+              mensagem += ` Manual ${p.manual.registros} · Mecanizada ${p.mecanizada.registros}.`;
+            }
+          }
+          if (resultadoRocada.consolidacao?.uploadsRemovidos) {
+            mensagem += ` ${resultadoRocada.consolidacao.uploadsRemovidos} planilha(s) antiga(s) removida(s).`;
+          }
+
           res.json({
             sucesso: true,
             ...resultadoRocada,
             importadas: resultadoRocada.importados,
-            mensagem: `Roçada importada (${resultadoRocada.modelo}): ${resultadoRocada.importados} registro(s), `
-              + `${resultadoRocada.areaTotalM2.toLocaleString('pt-BR')} m² em ${resultadoRocada.dias} dia(s).`
-              + (resultadoRocada.consolidacao?.uploadsRemovidos
-                ? ` ${resultadoRocada.consolidacao.uploadsRemovidos} planilha(s) antiga(s) removida(s).`
-                : ''),
+            mensagem,
           });
           return;
         }
@@ -256,13 +268,37 @@ export class ColetaController {
         res.status(400).json({ error: 'Formato inválido. Envie .xlsx, .xls ou .xlsm.' });
         return;
       }
+
+      const servicoId = (req.body?.servico_id as string | undefined) || undefined;
+      let servicoNome: string | undefined;
+      let filtroServico: 'manual' | 'mecanizada' | null = null;
+      if (servicoId) {
+        const servico = await AppDataSource.getRepository(Servico).findOne({ where: { id: servicoId } });
+        if (servico) {
+          servicoNome = servico.nome;
+          filtroServico = inferirFiltroExecucaoServico(
+            servico.nome,
+            servico.configFaturamento as {
+              valorM2Manual?: number | null;
+              valorM2Mecanizada?: number | null;
+              valorM2?: number | null;
+            } | null,
+          );
+        }
+      }
+
+      // Preview da planilha completa (Manual + Mecanizada) — o import decide distribuição
       const preview = RocadaImportService.preview(file.buffer);
       const podeImportar = preview.resumo.podeImportar;
+      const porTipo = preview.porTipoExecucao || preview.resumo.porTipoExecucao;
       let mensagem: string;
       if (podeImportar) {
         mensagem = `Modelo ${preview.resumo.modelo}: ${preview.resumo.registros} registro(s), `
           + `${preview.resumo.areaTotalM2.toLocaleString('pt-BR')} m², `
           + `${preview.resumo.dias} dia(s), ${preview.resumo.bairros} bairro(s).`;
+        if (porTipo && (porTipo.manual.registros > 0 || porTipo.mecanizada.registros > 0)) {
+          mensagem += ` Manual ${porTipo.manual.registros} · Mecanizada ${porTipo.mecanizada.registros}.`;
+        }
         if (preview.resumo.linhasSemArea > 0) {
           mensagem += ` ${preview.resumo.linhasSemArea} linha(s) sem m² serão ignoradas.`;
         }
@@ -280,6 +316,9 @@ export class ColetaController {
         ...preview,
         mensagem,
         podeImportar,
+        filtroTipoAplicado: null,
+        filtroServicoDetectado: filtroServico,
+        servicoNome,
       });
     } catch (error: any) {
       console.error('Erro preview roçada:', error);
@@ -528,6 +567,22 @@ export class ColetaController {
       res.json(uploads);
     } catch (error: any) {
       res.status(500).json({ error: error.message || 'Erro ao listar uploads.' });
+    }
+  }
+
+  /**
+   * GET /api/coleta/uploads/por-dia?data=YYYY-MM-DD
+   * Lista uploads do dia agrupados por contrato
+   */
+  async uploadsPorDia(req: Request, res: Response): Promise<void> {
+    try {
+      const dataRaw = String(req.query.data || '').trim();
+      const data = dataRaw || new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+      const resultado = await PlanilhaService.listarUploadsPorDia(data);
+      res.json(resultado);
+    } catch (error: any) {
+      const status = error.message?.includes('Data inválida') ? 400 : 500;
+      res.status(status).json({ error: error.message || 'Erro ao listar uploads do dia.' });
     }
   }
 

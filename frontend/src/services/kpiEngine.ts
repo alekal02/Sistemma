@@ -66,6 +66,8 @@ export interface ConfigFaturamentoValores {
   valorBasculante?: number | null;
   valorKmLinear?: number | null;
   valorM2?: number | null;
+  valorM2Manual?: number | null;
+  valorM2Mecanizada?: number | null;
   valorPorArvore?: number | null;
   valorPorEquipe?: number | null;
   valorPorUnidade?: number | null;
@@ -89,7 +91,22 @@ export function buildValoresFixosFromConfigFaturamento(
   set('VALOR_TOCO', cfg.valorToco);
   set('VALOR_BASCULANTE', cfg.valorBasculante);
   set('VALOR_KM_LINEAR', cfg.valorKmLinear);
+  set('VALOR_M2_MANUAL', cfg.valorM2Manual);
+  set('VALOR_M2_MECANIZADA', cfg.valorM2Mecanizada);
   set('VALOR_M2', cfg.valorM2);
+  if (v.VALOR_M2 === undefined) {
+    if (v.VALOR_M2_MANUAL !== undefined && v.VALOR_M2_MECANIZADA !== undefined && v.VALOR_M2_MANUAL === v.VALOR_M2_MECANIZADA) {
+      v.VALOR_M2 = v.VALOR_M2_MANUAL;
+    } else if (v.VALOR_M2_MECANIZADA !== undefined) {
+      v.VALOR_M2 = v.VALOR_M2_MECANIZADA;
+    } else if (v.VALOR_M2_MANUAL !== undefined) {
+      v.VALOR_M2 = v.VALOR_M2_MANUAL;
+    }
+  }
+  if (v.VALOR_M2 !== undefined) {
+    if (v.VALOR_M2_MANUAL === undefined) v.VALOR_M2_MANUAL = v.VALOR_M2;
+    if (v.VALOR_M2_MECANIZADA === undefined) v.VALOR_M2_MECANIZADA = v.VALOR_M2;
+  }
   set('VALOR_POR_ARVORE', cfg.valorPorArvore);
   set('VALOR_POR_EQUIPE', cfg.valorPorEquipe);
   set('VALOR_POR_UNIDADE', cfg.valorPorUnidade);

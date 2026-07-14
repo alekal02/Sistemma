@@ -8,6 +8,7 @@ import {
 import { useToast } from '../contexts/ToastContext';
 import { useBreadcrumbs } from '../contexts/BreadcrumbContext';
 import servicoService from '../services/servicoService';
+import { isRequestAborted } from '../services/abortableRequest';
 import api from '../services/api';
 import type { ServicoConsolidado, KpiConsolidadoItem } from '../services/servicoService';
 import CompararPorTipo from '../components/CompararPorTipo';
@@ -205,7 +206,8 @@ export default function VisaoGeral() {
     try {
       const resumo = await servicoService.getKpisConsolidado({ modo: 'resumo' });
       setServicos(resumo.servicos || []);
-    } catch {
+    } catch (err) {
+      if (isRequestAborted(err)) return;
       setErro('Erro ao carregar dados dos servicos');
       adicionarToast('Erro ao carregar dashboard', 'error');
     } finally {
@@ -219,7 +221,8 @@ export default function VisaoGeral() {
     try {
       const completo = await servicoService.getKpisConsolidado({ modo: 'completo' });
       setServicos(completo.servicos || []);
-    } catch {
+    } catch (err) {
+      if (isRequestAborted(err)) return;
       adicionarToast('Erro ao carregar KPIs detalhados', 'error');
     } finally {
       setCarregandoKpis(false);

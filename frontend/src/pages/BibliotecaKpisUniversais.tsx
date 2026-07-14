@@ -13,13 +13,15 @@ import kpiUniversalService from '../services/kpiUniversalService';
 import graficosPadraoService from '../services/graficosPadraoService';
 import contractService from '../services/contractService';
 import servicoService from '../services/servicoService';
+import { isRequestAborted } from '../services/abortableRequest';
 import type { KpiUniversal } from '../services/kpiUniversalService';
 import type { GraficoPadraoConfig } from '../services/graficosPadraoService';
 import { TIPOS_SERVICO_LABELS, TIPOS_SERVICO_META, type TipoServico } from '../types';
 import {
-  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell, LineChart, Line, CartesianGrid,
-} from 'recharts';
+  BibliotecaKpiMediaChart,
+  BibliotecaKpiTotalChart,
+  BibliotecaRegistrosPieChart,
+} from '../components/BibliotecaTipoCharts';
 import '../styles/ContratoDetalhe.css';
 
 // Helper: label do tipo
@@ -158,8 +160,8 @@ export default function BibliotecaKpisUniversais() {
         .sort((a, b) => b.total - a.total);
 
       setKpisAgregadosPorTipo(agregados);
-    } catch {
-      adicionarToast('Erro ao carregar dados dos gráficos', 'error');
+    } catch (err) {
+      if (!isRequestAborted(err)) adicionarToast('Erro ao carregar dados dos gráficos', 'error');
     } finally {
       setCarregandoIndicadores(false);
     }
@@ -1347,33 +1349,10 @@ export default function BibliotecaKpisUniversais() {
                     <h4 style={{ margin: '0 0 0.75rem', fontSize: '0.85rem', color: '#1e293b' }}>
                       📊 Indicadores — Média por Serviço
                     </h4>
-                    {(() => {
-                      const kpisArr = kpisAgregadosPorTipo[tipoSelecionado || '__todos__'] || [];
-                      const dados = kpisArr.slice(0, 10).map(k => ({
-                        name: k.nome.length > 16 ? k.nome.substring(0, 16) + '...' : k.nome,
-                        nomeCompleto: k.nome,
-                        media: Math.round(k.media * 100) / 100,
-                        total: Math.round(k.total * 100) / 100,
-                      }));
-                      return dados.length > 0 ? (
-                        <ResponsiveContainer width="100%" height={260}>
-                          <BarChart data={dados} layout="vertical">
-                            <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                            <XAxis type="number" tick={{ fontSize: 10 }} />
-                            <YAxis type="category" dataKey="name" tick={{ fontSize: 9 }} width={110} />
-                            <Tooltip
-                              formatter={(value: number) => value.toLocaleString('pt-BR')}
-                              labelFormatter={(label) => `KPI: ${label}`}
-                            />
-                            <Bar dataKey="media" name="Média" fill={getTipoCor(tipoSelecionado || '')} radius={[0, 4, 4, 0]} />
-                          </BarChart>
-                        </ResponsiveContainer>
-                      ) : (
-                        <div style={{ textAlign: 'center', padding: '50px 0', color: '#94a3b8', fontSize: '0.8rem' }}>
-                          Nenhum indicador com dados
-                        </div>
-                      );
-                    })()}
+                    <BibliotecaKpiMediaChart
+                      kpis={kpisAgregadosPorTipo[tipoSelecionado || '__todos__'] || []}
+                      tipoCor={getTipoCor(tipoSelecionado || '')}
+                    />
                   </div>
 
                   {/* Gráfico 2: Distribuição de registros entre serviços (pizza) */}
@@ -1384,73 +1363,14 @@ export default function BibliotecaKpisUniversais() {
                     <h4 style={{ margin: '0 0 0.75rem', fontSize: '0.85rem', color: '#1e293b' }}>
                       🥧 Registros por Serviço
                     </h4>
-                    {(() => {
-                      const dadosPizza = servicosIndicadores
-                        .map(sv => ({
-                          name: sv.nome.length > 14 ? sv.nome.substring(0, 14) + '...' : sv.nome,
-                          nomeCompleto: sv.nome,
-                          value: sv.totalRegistros,
-                        }))
-                        .sort((a: any, b: any) => b.value - a.value);
-
-                      return dadosPizza.length > 0 ? (
-                        <ResponsiveContainer width="100%" height={260}>
-                          <PieChart>
-                            <Pie
-                              data={dadosPizza}
-                              dataKey="value"
-                              nameKey="name"
-                              cx="50%"
-                              cy="50%"
-                              outerRadius={85}
-                              innerRadius={35}
-                              label={({ name, percent }: any) => `${name} (${((percent ?? 0) * 100).toFixed(0)}%)`}
-                            >
-                              {dadosPizza.map((_: any, i: number) => (
-                                <Cell key={i} fill={CORES_GRAFICOS[i % CORES_GRAFICOS.length]} />
-                              ))}
-                            </Pie>
-                            <Tooltip formatter={(value: number) => value.toLocaleString('pt-BR')} />
-                          </PieChart>
-                        </ResponsiveContainer>
-                      ) : (
-                        <div style={{ textAlign: 'center', padding: '50px 0', color: '#94a3b8', fontSize: '0.8rem' }}>
-                          Sem dados de registro
-                        </div>
-                      );
-                    })()}
+                    <BibliotecaRegistrosPieChart servicos={servicosIndicadores} />
                   </div>
                 </div>
 
-                {/* Gráfico 3: Top KPIs (barras horizontais de total) */}
-                {(() => {
-                  const kpisArr = kpisAgregadosPorTipo[tipoSelecionado || '__todos__'] || [];
-                  const dadosTotal = kpisArr.slice(0, 8).map(k => ({
-                    name: k.nome.length > 16 ? k.nome.substring(0, 16) + '...' : k.nome,
-                    nomeCompleto: k.nome,
-                    total: Math.round(k.total * 100) / 100,
-                  }));
-                  return dadosTotal.length > 0 ? (
-                    <div style={{
-                      background: 'white', borderRadius: '10px', padding: '1rem',
-                      border: '1px solid #e2e8f0', boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
-                      marginBottom: '1rem',
-                    }}>
-                      <h4 style={{ margin: '0 0 0.75rem', fontSize: '0.85rem', color: '#1e293b' }}>
-                        📈 Top Indicadores — Total Acumulado
-                      </h4>
-                      <ResponsiveContainer width="100%" height={220}>
-                        <BarChart data={dadosTotal}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                          <XAxis dataKey="name" tick={{ fontSize: 9 }} />
-                          <YAxis tick={{ fontSize: 10 }} />
-                          <Tooltip formatter={(value: number) => value.toLocaleString('pt-BR')} />
-                          <Bar dataKey="total" name="Total" fill={getTipoCor(tipoSelecionado || '')} radius={[4, 4, 0, 0]} />
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
-                  ) : null;
-                })()}
+                <BibliotecaKpiTotalChart
+                  kpis={kpisAgregadosPorTipo[tipoSelecionado || '__todos__'] || []}
+                  tipoCor={getTipoCor(tipoSelecionado || '')}
+                />
 
                 {/* Lista de Indicadores com valores */}
                 {(() => {

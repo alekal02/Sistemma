@@ -35,6 +35,12 @@ function setCacheSaude(key: string, data: any): void {
   }
 }
 
+/** Invalida lista/detalhe de saúde para refletir create/update/delete imediatamente. */
+export function invalidarCacheSaudeContratos(contractId?: string): void {
+  cacheSaude.delete('contracts-saude-lista');
+  if (contractId) cacheSaude.delete(`contracts-saude:${contractId}`);
+}
+
 function compareContratoNome(a: string | null | undefined, b: string | null | undefined): number {
   return (a ?? '').localeCompare(b ?? '', 'pt-BR', { sensitivity: 'base' });
 }
@@ -91,6 +97,7 @@ export class ContractController {
       });
 
       const novoContract = await this.repository.save(contract);
+      invalidarCacheSaudeContratos(novoContract.id);
 
       return res.status(201).json(novoContract);
     } catch (error: any) {
@@ -164,6 +171,7 @@ export class ContractController {
       // Invalidar cache do dashboard e PDF ao salvar valores do contrato
       invalidarPdfCache(id);
       invalidarPdfCache(); // limpar cache geral também
+      invalidarCacheSaudeContratos(id);
       // CAIXA MÉDIA / análise de peso usam volumeL e pesoMaximoKg do contrato
       if (configOperacional !== undefined) {
         invalidarCacheComparacaoContrato(id);
@@ -187,6 +195,7 @@ export class ContractController {
       }
 
       await this.repository.remove(contract);
+      invalidarCacheSaudeContratos(id);
       return res.json({ message: 'Contrato excluído com sucesso' });
     } catch (error: any) {
       console.error('Erro ao excluir contrato:', error?.message || error);

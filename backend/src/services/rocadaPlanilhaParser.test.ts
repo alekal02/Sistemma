@@ -30,6 +30,24 @@ describe('parsearPlanilhaRocada — modelos reais', () => {
     assert.ok(r.linhas[0].areaM2 > 100);
     assert.ok(r.linhas[0].operador);
     assert.ok(r.linhas[0].dataSaida);
+    // Aba principal com Tipo; não duplica a aba "manual" espelhada
+    assert.equal(r.abasUsadas.length, 1);
+    assert.ok(r.porTipoExecucao.manual.registros > 0);
+    assert.ok(r.porTipoExecucao.mecanizada.registros > 0);
+  });
+
+  it('QGIS: filtro Manual vs Mecanizada pelo serviço', () => {
+    if (!fs.existsSync(DIR)) return;
+    const man = parsearPlanilhaRocada(ler('Planilha de roçada - modelo QGIS.xlsx'), { filtroTipo: 'manual' });
+    const mec = parsearPlanilhaRocada(ler('Planilha de roçada - modelo QGIS.xlsx'), { filtroTipo: 'mecanizada' });
+    assert.ok(man.linhas.length > 0);
+    assert.ok(mec.linhas.length > 0);
+    assert.ok(man.linhas.every((l) => l.tipoExecucao === 'manual'));
+    assert.ok(mec.linhas.every((l) => l.tipoExecucao === 'mecanizada'));
+    assert.equal(
+      man.linhas.length + mec.linhas.length,
+      man.porTipoExecucao.manual.registros + man.porTipoExecucao.mecanizada.registros,
+    );
   });
 
   it('Pinda: TOTAL m² e data dd\\mm\\yyyy', () => {
