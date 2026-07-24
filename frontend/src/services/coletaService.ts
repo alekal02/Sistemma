@@ -150,6 +150,90 @@ const coletaService = {
     return response.data
   },
 
+  /** Upload no contrato: detecta tipo (CONSOLIDADO / coleta / roçada) e envia ao serviço certo. */
+  async uploadPlanilhaContrato(
+    file: File,
+    contractId: string,
+    estrategia: 'ignorar' | 'substituir' | 'atualizar_data' | 'inserir_data' = 'atualizar_data',
+  ) {
+    const formData = new FormData()
+    formData.append('planilha', file)
+    formData.append('contract_id', contractId)
+    formData.append('estrategia', estrategia)
+    const { data } = await api.post('/coleta/upload/contrato', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    return data as ResultadoUpload & {
+      modo?: string
+      tipoDetectado?: 'unificado' | 'coleta' | 'rocada' | 'desconhecido'
+      tipoDetectadoLabel?: string
+      servicoId?: string
+      servicoNome?: string
+      splitPorServico?: Array<{
+        servicoId: string
+        servicoNome: string
+        tipoSistema: string
+        importados: number
+        quantitativoTotal: number
+      }>
+      porTipo?: Array<{
+        tipoSistema: string
+        tipoLabel: string
+        registros: number
+        quantitativoTotal: number
+        undPrincipal: string | null
+      }>
+      avisos?: string[]
+      mensagem?: string
+    }
+  },
+
+  /** Preview do layout unificado (DATA|UND|QUANTITATIVO|TIPO DE SERVIÇO) */
+  async previewServicosUnificados(file: File, servicoId?: string) {
+    const formData = new FormData()
+    formData.append('planilha', file)
+    if (servicoId) formData.append('servico_id', servicoId)
+    const { data } = await api.post('/coleta/upload/preview-servicos-unificados', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    return data as {
+      sucesso: boolean
+      ehUnificado: boolean
+      arquivo?: string
+      mensagem: string
+      modelo?: string
+      abasUsadas?: string[]
+      avisos?: string[]
+      podeImportar?: boolean
+      porTipo?: Array<{
+        tipoSistema: string
+        tipoLabel: string
+        registros: number
+        quantitativoTotal: number
+        undPrincipal: string | null
+        dias: number
+        bairros: number
+      }>
+      resumo?: {
+        modelo: string
+        modeloLabel?: string
+        abas: number
+        registros: number
+        porTipo?: Array<{
+          tipoSistema: string
+          tipoLabel: string
+          registros: number
+          quantitativoTotal: number
+          undPrincipal: string | null
+          dias: number
+          bairros: number
+        }>
+        podeImportar?: boolean
+        avisos?: string[]
+      }
+    }
+  },
+
   /** Preview multi-modelo de planilha de roçada (filtra Manual/Mecanizada pelo serviço) */
   async previewRocada(file: File, servicoId?: string) {
     const formData = new FormData()
@@ -184,6 +268,7 @@ const coletaService = {
       }
       resumo: {
         modelo: string
+        modeloLabel?: string
         abas: number
         registros: number
         areaTotalM2: number

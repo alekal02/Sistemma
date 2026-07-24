@@ -7,6 +7,10 @@ export interface ConfigOperacionalContrato {
   coletores?: string[];
   pesoMaximoKg?: { MINI?: number; TOCO?: number; BASCULANTE?: number; TRUCK?: number };
   volumeL?: { MINI?: number; TOCO?: number; BASCULANTE?: number; TRUCK?: number };
+  /** Densidade do resíduo (kg/L) padrão do contrato (fallback). */
+  densidadeResiduoKgL?: number | null;
+  /** Densidade (kg/L) por tipo de caminhão. */
+  densidadeKgL?: { MINI?: number; TOCO?: number; BASCULANTE?: number; TRUCK?: number };
 }
 
 const VALORES_IGNORADOS = new Set([

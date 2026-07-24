@@ -1,16 +1,34 @@
 /**
- * Estudo de rotas do dia — métricas e gargalos a partir das colunas da planilha.
+ * Estudo de rotas do dia — métricas e gargalos por rota e por tipo de caminhão.
  * Cada linha = 1 rota; CONTADOR DE VIAGENS / PESO 1–4 = viagens dentro da rota.
+ *
+ * Pesos de viagem usam só PESO 1–4 seguros (nunca PESO TOTAL da rota como 1 viagem).
+ * Médias de rendimento (t/viagem, peso) são por tipo: Mini vs Mini, Truck vs Truck.
  */
 import {
   detectarColunasCardViagem,
   extrairMetricasCardViagem,
-  obterValorRegistro,
-  paraNumero,
 } from './viagemCardDados';
-import { contarViagensPorRotaRegistro } from './viagensPorRota';
+import { contarViagensPorRotaRegistro, extrairPesosViagemKgSeguros } from './viagensPorRota';
 import { fmtNum } from './relatorioDiario';
 import { normalizarPlaca } from './normalizarPlaca';
+import {
+  LABEL_TIPO_CAMINHAO,
+  PCT_IDEAL_ATENCAO,
+  PCT_IDEAL_MAX,
+  PCT_IDEAL_MIN,
+  PCT_IDEAL_OK,
+  pctIdealForaDaMargem,
+  statusPctVsMargemIdeal,
+  normalizarTipoCaminhaoPeso,
+  type TipoLimiteCaminhao,
+} from './limitesCaminhaoContrato';
+import {
+  analisarCapacidadeViagensDia,
+  obterTipoCaminhaoRegistro,
+  type OptsCapacidadeDia,
+  type ResumoCapacidadeDia,
+} from './capacidadeViagemDia';
 
 export type SeveridadeGargaloRota = 'critico' | 'atencao' | 'info';
 
@@ -36,9 +54,33 @@ export interface LinhaEstudoRota {
   placas: string[];
   motoristas: string[];
   turnos: string[];
+  tipos: string[];
+  /** Tipo predominante (mais viagens tipadas na rota). */
+  tipoPredominante: TipoLimiteCaminhao | null;
+  tipoPredominanteLabel: string;
+  /** Média t/viagem do tipo predominante no dia (não a média geral). */
+  mediaTipoTonViagem: number | null;
+  /** Peso ideal do tipo predominante (kg) — volume × densidade. */
+  pesoIdealKg: number | null;
+  /** % do peso médio da rota vs ideal do tipo. */
+  pctIdeal: number | null;
   pctTonDia: number;
   pctMediaTonViag: number;
   status: 'bom' | 'medio' | 'ruim';
+}
+
+export interface MediaTipoDia {
+  tipo: TipoLimiteCaminhao;
+  label: string;
+  viagens: number;
+  toneladas: number;
+  tonMediaViagem: number;
+  kmMedioViagem: number;
+  mediaPesoKg: number | null;
+  limiteKg: number | null;
+  pesoIdealKg: number | null;
+  /** % média do tipo vs ideal. */
+  pctIdeal: number | null;
 }
 
 export interface EstudoRotasDia {
@@ -52,8 +94,10 @@ export interface EstudoRotasDia {
     viagens: number;
     rotasAtivas: number;
   };
+  mediaPorTipo: MediaTipoDia[];
   rotas: LinhaEstudoRota[];
   gargalos: GargaloRota[];
+  capacidade: ResumoCapacidadeDia | null;
   destaques: {
     maiorVolume: LinhaEstudoRota | null;
     menorRendimento: LinhaEstudoRota | null;
@@ -86,25 +130,6 @@ function encontrarValor(dado: Record<string, unknown>, nomeColuna: string): unkn
     return encontrarValor(nested as Record<string, unknown>, nomeColuna);
   }
   return undefined;
-}
-
-function extrairPesosViagemKg(reg: Record<string, unknown>): number[] {
-  const pesos: number[] = [];
-  for (let i = 1; i <= 4; i++) {
-    const n = paraNumero(encontrarValor(reg, `PESO ${i}`) ?? reg[`peso${i}`]);
-    if (n > 0) pesos.push(n);
-  }
-  if (pesos.length > 0) return pesos;
-
-  const total = paraNumero(
-    obterValorRegistro(reg, undefined, 'pesoTotal') ?? encontrarValor(reg, 'PESO TOTAL'),
-  );
-  const vg = contarViagensPorRotaRegistro(reg);
-  if (total > 0 && vg > 0) {
-    return Array(vg).fill(total / vg);
-  }
-  if (total > 0) return [total];
-  return [];
 }
 
 function isColunaInterna(chaveNorm: string): boolean {
@@ -150,7 +175,6 @@ export function detectarColunaRotaPlanilha(dados: Record<string, unknown>[]): st
     }
   }
 
-  // Fallback: colunas já detectadas no card de viagem
   if (!melhor) {
     const cols = detectarColunasCardViagem(dados);
     if (cols.colDistrito) return cols.colDistrito;
@@ -160,9 +184,15 @@ export function detectarColunaRotaPlanilha(dados: Record<string, unknown>[]): st
 }
 
 function statusVsMedia(pct: number): 'bom' | 'medio' | 'ruim' {
-  if (pct >= 90) return 'bom';
-  if (pct >= 75) return 'medio';
+  // Fallback sem ideal: usa mesmos limiares legados de proximidade da média
+  if (pct >= PCT_IDEAL_OK) return 'bom';
+  if (pct >= PCT_IDEAL_ATENCAO) return 'medio';
   return 'ruim';
+}
+
+function statusVsIdeal(pctIdeal: number | null, pctMediaFallback: number): 'bom' | 'medio' | 'ruim' {
+  if (pctIdeal != null) return statusPctVsMargemIdeal(pctIdeal);
+  return statusVsMedia(pctMediaFallback);
 }
 
 function nomeRotaRegistro(reg: Record<string, unknown>, colRota: string): string {
@@ -172,7 +202,10 @@ function nomeRotaRegistro(reg: Record<string, unknown>, colRota: string): string
   return v;
 }
 
-export function analisarEstudoRotasDia(registros: Record<string, unknown>[]): EstudoRotasDia | null {
+export function analisarEstudoRotasDia(
+  registros: Record<string, unknown>[],
+  opts?: OptsCapacidadeDia,
+): EstudoRotasDia | null {
   const validos = registros.filter((r) => r._validoDashboard !== false);
   const fonte = validos.length > 0 ? validos : registros;
   if (!fonte.length) return null;
@@ -191,9 +224,19 @@ export function analisarEstudoRotasDia(registros: Record<string, unknown>[]): Es
     placas: Set<string>;
     motoristas: Set<string>;
     turnos: Set<string>;
+    tiposCount: Map<TipoLimiteCaminhao, number>;
+    tiposRaw: Set<string>;
+  };
+
+  type AccTipo = {
+    viagens: number;
+    toneladas: number;
+    km: number;
+    pesos: number[];
   };
 
   const map = new Map<string, Acc>();
+  const mapTipo = new Map<TipoLimiteCaminhao, AccTipo>();
   let totalTon = 0;
   let totalVg = 0;
   let totalKm = 0;
@@ -218,6 +261,8 @@ export function analisarEstudoRotasDia(registros: Record<string, unknown>[]): Es
         placas: new Set(),
         motoristas: new Set(),
         turnos: new Set(),
+        tiposCount: new Map(),
+        tiposRaw: new Set(),
       });
     }
     const g = map.get(rota)!;
@@ -226,12 +271,25 @@ export function analisarEstudoRotasDia(registros: Record<string, unknown>[]): Es
     g.toneladas += m.toneladas;
     g.km += m.kmFinal;
     g.horas += m.horasTrabalhadas;
-    g.pesos.push(...extrairPesosViagemKg(reg));
+    g.pesos.push(...extrairPesosViagemKgSeguros(reg));
 
     const placa = normalizarPlaca(m.placa);
     if (placa) g.placas.add(placa);
     if (m.motorista && m.motorista !== '—') g.motoristas.add(m.motorista);
     if (m.turno && m.turno !== '—') g.turnos.add(m.turno);
+
+    const tipoRaw = obterTipoCaminhaoRegistro(reg);
+    const tipo = normalizarTipoCaminhaoPeso(tipoRaw);
+    if (tipoRaw) g.tiposRaw.add(tipoRaw);
+    if (tipo) {
+      g.tiposCount.set(tipo, (g.tiposCount.get(tipo) || 0) + vg);
+      const at = mapTipo.get(tipo) || { viagens: 0, toneladas: 0, km: 0, pesos: [] };
+      at.viagens += vg;
+      at.toneladas += m.toneladas;
+      at.km += m.kmFinal;
+      at.pesos.push(...extrairPesosViagemKgSeguros(reg));
+      mapTipo.set(tipo, at);
+    }
 
     totalTon += m.toneladas;
     totalVg += vg;
@@ -240,6 +298,50 @@ export function analisarEstudoRotasDia(registros: Record<string, unknown>[]): Es
   }
 
   if (map.size === 0) return null;
+
+  const capOpts: OptsCapacidadeDia = {
+    limitesPesoKg: opts?.limitesPesoKg,
+    volumeL: opts?.volumeL,
+    densidadeResiduoKgL: opts?.densidadeResiduoKgL,
+    densidadeKgL: opts?.densidadeKgL,
+    colunaRota,
+  };
+  const capacidade = analisarCapacidadeViagensDia(fonte, capOpts);
+  const limitePorTipo = capacidade.limitesAplicados;
+  const idealPorTipo = capacidade.pesosIdeaisAplicados;
+  const mediaPesoPorTipo = new Map(
+    capacidade.porTipo.map((t) => [t.tipo, t.mediaPesoKg] as const),
+  );
+
+  const mediaPorTipo: MediaTipoDia[] = (['MINI', 'TOCO', 'BASCULANTE', 'TRUCK'] as TipoLimiteCaminhao[])
+    .filter((t) => mapTipo.has(t))
+    .map((tipo) => {
+      const a = mapTipo.get(tipo)!;
+      const pesosOk = a.pesos.filter((p) => p > 0);
+      const mediaPesoKg = mediaPesoPorTipo.get(tipo)
+        ?? (pesosOk.length
+          ? Math.round((pesosOk.reduce((s, p) => s + p, 0) / pesosOk.length) * 100) / 100
+          : null);
+      const pesoIdealKg = idealPorTipo[tipo] > 0 ? idealPorTipo[tipo] : null;
+      const pctIdeal = mediaPesoKg != null && pesoIdealKg != null && pesoIdealKg > 0
+        ? Math.round((mediaPesoKg / pesoIdealKg) * 1000) / 10
+        : null;
+      return {
+        tipo,
+        label: LABEL_TIPO_CAMINHAO[tipo],
+        viagens: a.viagens,
+        toneladas: Math.round(a.toneladas * 1000) / 1000,
+        tonMediaViagem: a.viagens > 0 ? Math.round((a.toneladas / a.viagens) * 1000) / 1000 : 0,
+        kmMedioViagem: a.viagens > 0 ? Math.round((a.km / a.viagens) * 100) / 100 : 0,
+        mediaPesoKg,
+        limiteKg: limitePorTipo[tipo] ?? null,
+        pesoIdealKg,
+        pctIdeal,
+      };
+    });
+
+  const mediaTipoTon = new Map(mediaPorTipo.map((t) => [t.tipo, t.tonMediaViagem] as const));
+  const idealKgTipo = new Map(mediaPorTipo.map((t) => [t.tipo, t.pesoIdealKg] as const));
 
   const tonMediaDia = totalVg > 0 ? totalTon / totalVg : 0;
   const kmMediaDia = totalVg > 0 ? totalKm / totalVg : 0;
@@ -250,8 +352,33 @@ export function analisarEstudoRotasDia(registros: Record<string, unknown>[]): Es
       const tonMediaViagem = g.viagens > 0 ? g.toneladas / g.viagens : 0;
       const kmMedioViagem = g.viagens > 0 ? g.km / g.viagens : 0;
       const tonHora = g.horas > 0 ? g.toneladas / g.horas : 0;
-      const pct = tonMediaDia > 0 ? (tonMediaViagem / tonMediaDia) * 100 : 100;
       const pesosOk = g.pesos.filter((p) => p > 0);
+
+      let tipoPredominante: TipoLimiteCaminhao | null = null;
+      let maxVgTipo = 0;
+      for (const [t, n] of g.tiposCount) {
+        if (n > maxVgTipo) {
+          maxVgTipo = n;
+          tipoPredominante = t;
+        }
+      }
+
+      const mediaTipoTonViagem = tipoPredominante
+        ? (mediaTipoTon.get(tipoPredominante) ?? null)
+        : null;
+      const pesoIdealKg = tipoPredominante
+        ? (idealKgTipo.get(tipoPredominante) ?? null)
+        : null;
+      const pesoMedioRotaKg = tonMediaViagem * 1000;
+      const pctIdeal = pesoIdealKg != null && pesoIdealKg > 0
+        ? Math.round((pesoMedioRotaKg / pesoIdealKg) * 1000) / 10
+        : null;
+      // Preferência: vs peso ideal do tipo; fallback média do tipo / dia
+      const refMedia = mediaTipoTonViagem != null && mediaTipoTonViagem > 0
+        ? mediaTipoTonViagem
+        : tonMediaDia;
+      const pct = refMedia > 0 ? (tonMediaViagem / refMedia) * 100 : 100;
+
       return {
         rota,
         registros: g.registros,
@@ -267,9 +394,17 @@ export function analisarEstudoRotasDia(registros: Record<string, unknown>[]): Es
         placas: [...g.placas].sort(),
         motoristas: [...g.motoristas].sort(),
         turnos: [...g.turnos].sort(),
+        tipos: [...g.tiposRaw].sort(),
+        tipoPredominante,
+        tipoPredominanteLabel: tipoPredominante
+          ? LABEL_TIPO_CAMINHAO[tipoPredominante]
+          : ([...g.tiposRaw][0] || '—'),
+        mediaTipoTonViagem,
+        pesoIdealKg,
+        pctIdeal,
         pctTonDia: totalTon > 0 ? (g.toneladas / totalTon) * 100 : 0,
         pctMediaTonViag: pct,
-        status: statusVsMedia(pct),
+        status: statusVsIdeal(pctIdeal, pct),
       };
     })
     .sort((a, b) => b.toneladas - a.toneladas || b.viagens - a.viagens);
@@ -277,13 +412,47 @@ export function analisarEstudoRotasDia(registros: Record<string, unknown>[]): Es
   const gargalos: GargaloRota[] = [];
 
   for (const r of rotas) {
-    if (r.viagens >= 1 && tonMediaDia > 0 && r.tonMediaViagem < tonMediaDia * 0.75) {
+    // Gargalo principal: rota fora da margem ±% do ideal do tipo predominante
+    if (
+      r.viagens >= 1
+      && r.pesoIdealKg != null
+      && r.pesoIdealKg > 0
+      && r.pctIdeal != null
+      && pctIdealForaDaMargem(r.pctIdeal)
+    ) {
+      const abaixo = r.pctIdeal < 100;
+      const nota = statusPctVsMargemIdeal(r.pctIdeal);
       gargalos.push({
-        severidade: r.tonMediaViagem < tonMediaDia * 0.6 ? 'critico' : 'atencao',
+        severidade: nota === 'ruim' ? 'critico' : 'atencao',
         rota: r.rota,
-        titulo: 'Rendimento abaixo da média do dia',
-        texto: `${fmtNum(r.tonMediaViagem, 2)} t/viagem vs média ${fmtNum(tonMediaDia, 2)} t (${fmtNum(r.pctMediaTonViag, 0)}% da média) em ${fmtNum(r.viagens, 0)} viagem(ns).`,
+        titulo: abaixo
+          ? `Abaixo da faixa ótima (${r.tipoPredominanteLabel})`
+          : `Acima da faixa ótima — risco à frota (${r.tipoPredominanteLabel})`,
+        texto: `${fmtNum(r.tonMediaViagem * 1000, 0)} kg/viagem vs ideal ${fmtNum(r.pesoIdealKg, 0)} kg`
+          + ` (${fmtNum(r.pctIdeal, 0)}%) · ${r.tipoPredominanteLabel}`
+          + ` · ${fmtNum(r.viagens, 0)} viagem(ns).`,
       });
+    } else if (
+      r.viagens >= 1
+      && (r.pesoIdealKg == null || !(r.pesoIdealKg > 0))
+    ) {
+      const refTon = r.mediaTipoTonViagem != null && r.mediaTipoTonViagem > 0
+        ? r.mediaTipoTonViagem
+        : tonMediaDia;
+      const refLabel = r.tipoPredominante
+        ? `média do ${r.tipoPredominanteLabel}`
+        : 'média do dia';
+      if (refTon > 0 && r.tonMediaViagem < refTon * (PCT_IDEAL_ATENCAO / 100)) {
+        gargalos.push({
+          severidade: r.tonMediaViagem < refTon * 0.6 ? 'critico' : 'atencao',
+          rota: r.rota,
+          titulo: r.tipoPredominante
+            ? `Rendimento abaixo da média do ${r.tipoPredominanteLabel}`
+            : 'Rendimento abaixo da média do dia',
+          texto: `${fmtNum(r.tonMediaViagem, 2)} t/viagem vs ${refLabel} ${fmtNum(refTon, 2)} t`
+            + ` (${fmtNum(r.pctMediaTonViag, 0)}%) em ${fmtNum(r.viagens, 0)} viagem(ns).`,
+        });
+      }
     }
     if (r.viagens >= 1 && kmMediaDia > 0 && r.kmMedioViagem > kmMediaDia * 1.35) {
       gargalos.push({
@@ -311,16 +480,53 @@ export function analisarEstudoRotasDia(registros: Record<string, unknown>[]): Es
     }
   }
 
-  if (gargalos.length === 0 && rotas.length > 0) {
+  if (capacidade.viagensComPeso > 0 && capacidade.sobrecarga > 0) {
+    const tipTxt = capacidade.porTipo
+      .filter((t) => t.sobrecarga > 0)
+      .map((t) => `${t.label}: ${t.sobrecarga}`)
+      .join(' · ');
     gargalos.push({
-      severidade: 'info',
+      severidade: 'critico',
       rota: '—',
-      titulo: 'Rotas dentro dos parâmetros',
-      texto: `Nenhum gargalo crítico. Média do dia: ${fmtNum(tonMediaDia, 2)} t/viagem · ${fmtNum(kmMediaDia, 1)} km/viagem em ${rotas.length} rota(s).`,
+      titulo: 'Sobrecarga vs peso máx. do tipo',
+      texto: `${fmtNum(capacidade.sobrecarga, 0)} viagem(ns) acima do peso máximo do tipo`
+        + (tipTxt ? ` (${tipTxt})` : '')
+        + '.',
     });
   }
 
-  // Prioriza críticos, depois atenção; no máximo 10
+  // Tipos com média do dia fora da margem ±% do ideal
+  const tiposAbaixoIdeal = mediaPorTipo.filter(
+    (t) => t.pctIdeal != null && pctIdealForaDaMargem(t.pctIdeal),
+  );
+  if (tiposAbaixoIdeal.length > 0) {
+    gargalos.push({
+      severidade: tiposAbaixoIdeal.some((t) => Math.abs((t.pctIdeal ?? 100) - 100) > 25) ? 'critico' : 'atencao',
+      rota: '—',
+      titulo: `Tipos fora da faixa ótima do ideal (${PCT_IDEAL_MIN}–${PCT_IDEAL_MAX}%)`,
+      texto: tiposAbaixoIdeal
+        .map((t) => `${t.label}: ${fmtNum(t.mediaPesoKg ?? 0, 0)} kg vs ideal ${fmtNum(t.pesoIdealKg ?? 0, 0)} kg (${fmtNum(t.pctIdeal ?? 0, 0)}%)`)
+        .join(' · '),
+    });
+  }
+
+  if (gargalos.length === 0 && rotas.length > 0) {
+    const tiposTxt = mediaPorTipo.length
+      ? mediaPorTipo.map((t) => {
+        const idealTxt = t.pesoIdealKg != null
+          ? ` / ideal ${fmtNum(t.pesoIdealKg, 0)} kg (${t.pctIdeal != null ? `${fmtNum(t.pctIdeal, 0)}%` : '—'})`
+          : '';
+        return `${t.label} ${fmtNum(t.tonMediaViagem, 2)} t/v${idealTxt}`;
+      }).join(' · ')
+      : `${fmtNum(tonMediaDia, 2)} t/viagem`;
+    gargalos.push({
+      severidade: 'info',
+      rota: '—',
+      titulo: 'Rotas dentro do peso ideal por tipo',
+      texto: `Nenhum gargalo vs ideal do contrato. ${tiposTxt} · ${rotas.length} rota(s).`,
+    });
+  }
+
   const ordemSev = { critico: 0, atencao: 1, info: 2 };
   gargalos.sort((a, b) => ordemSev[a.severidade] - ordemSev[b.severidade]);
 
@@ -348,12 +554,18 @@ export function analisarEstudoRotasDia(registros: Record<string, unknown>[]): Es
       viagens: totalVg,
       rotasAtivas: rotas.length,
     },
+    mediaPorTipo,
     rotas,
-    gargalos: gargalos.slice(0, 10),
+    gargalos: gargalos.slice(0, 12),
+    capacidade: capacidade.viagensComPeso > 0 ? capacidade : null,
     destaques: {
       maiorVolume: comViagem[0] || null,
       menorRendimento: comViagem.length
-        ? [...comViagem].sort((a, b) => a.tonMediaViagem - b.tonMediaViagem)[0]
+        ? [...comViagem].sort((a, b) => {
+          const pa = a.pctIdeal ?? a.pctMediaTonViag;
+          const pb = b.pctIdeal ?? b.pctMediaTonViag;
+          return pa - pb;
+        })[0]
         : null,
       maiorKm: comViagem.length
         ? [...comViagem].sort((a, b) => b.kmMedioViagem - a.kmMedioViagem)[0]

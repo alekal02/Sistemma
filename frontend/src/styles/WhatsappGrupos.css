@@ -54,7 +54,49 @@
 .btn-conectar:hover { background: #1e293b; }
 .btn-conectar:disabled { opacity: 0.6; cursor: not-allowed; }
 
-.wa-connect-row { margin-top: 0.25rem; }
+.btn-desconectar {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.65rem;
+  padding: 0.5rem 0.9rem;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  background: #fff;
+  color: #b91c1c;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-desconectar:hover { background: #fef2f2; }
+.btn-desconectar:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.wa-connect-row {
+  margin-top: 0.25rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.btn-desconectar-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-left: auto;
+  padding: 0.35rem 0.7rem;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  background: #fff;
+  color: #b91c1c;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-desconectar-inline:hover { background: #fef2f2; }
+.btn-desconectar-inline:disabled { opacity: 0.6; cursor: not-allowed; }
 
 .wa-qr-box {
   text-align: center;
@@ -99,6 +141,7 @@
 .wa-ok-banner {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 0.5rem;
   padding: 0.65rem 0.9rem;
   margin-bottom: 1rem;

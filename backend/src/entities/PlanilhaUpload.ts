@@ -46,6 +46,8 @@ export class PlanilhaUpload {
     viagensValidasDashboard?: number;
     linhasDescartadasSemDados?: number;
     viagensCorrigidas?: number;
+    /** Ex.: servicos_unificados, rocada, coleta */
+    modelo?: string;
     consolidacao?: {
       registrosPreservados: number;
       uploadsRemovidos: number;

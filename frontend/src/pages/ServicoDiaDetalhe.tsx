@@ -20,15 +20,28 @@ import {
 } from '../utils/dadosPorDia';
 import { analisarOperacaoDia, analiseOperacaoDeAgregacaoSql, isKpiMetricaBaseOperacao, type OperacaoDiaAnalise } from '../utils/operacaoDia';
 import { analisarEstudoRotasDia } from '../utils/estudoRotasDia';
+import { analisarCenarioCaixaMediaDia } from '../utils/cenarioCaixaMediaDia';
 import { gerarHtmlRelatorioDia } from '../utils/gerarHtmlRelatorioDia';
 import { gerarHtmlRelatorioRocadaDia } from '../utils/gerarHtmlRelatorioRocadaDia';
-import { gerarNomePdfRelatorioDia, gerarNomePdfRelatorioRocadaDia } from '../utils/gerarNomePdf';
+import { gerarHtmlRelatorioUnidadeDia } from '../utils/gerarHtmlRelatorioUnidadeDia';
+import {
+  gerarNomePdfRelatorioDia,
+  gerarNomePdfRelatorioRocadaDia,
+  gerarNomePdfRelatorioUnidadeDia,
+} from '../utils/gerarNomePdf';
 import { extrairPlacasReservaContrato } from '../utils/placasReserva';
+import type { MapaLimiteCaminhao } from '../utils/limitesCaminhaoContrato';
 import SkeletonLoader from '../components/SkeletonLoader';
 import OperacaoDiaPanel from '../components/OperacaoDiaPanel';
 import RocadaDiaPanel, { type BlocoTipoRocadaUi } from '../components/RocadaDiaPanel';
+import ServicoUnidadeDiaPanel from '../components/ServicoUnidadeDiaPanel';
 import VerificacaoViagensPanel, { type VerificacaoViagensData } from '../components/VerificacaoViagensPanel';
 import type { AnaliseRocadaDia, LinhaRocadaAgrupada } from '../utils/operacaoRocada';
+import {
+  ehServicoPorUnidade,
+  metricaPrincipalDoDia,
+  unidadeOperacionalDoTipo,
+} from '../utils/unidadeServico';
 
 const DIAS_SEM = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
 const PAGE_SIZE = 100;
@@ -65,6 +78,10 @@ export default function ServicoDiaDetalhe() {
     valorM2Mecanizada?: number | null;
   } | null>(null);
   const [placasReserva, setPlacasReserva] = useState<string[]>([]);
+  const [limitesPesoKg, setLimitesPesoKg] = useState<MapaLimiteCaminhao | null>(null);
+  const [volumeL, setVolumeL] = useState<MapaLimiteCaminhao | null>(null);
+  const [densidadeResiduoKgL, setDensidadeResiduoKgL] = useState<number | null>(null);
+  const [densidadeKgL, setDensidadeKgL] = useState<MapaLimiteCaminhao | null>(null);
   const [registros, setRegistros] = useState<Record<string, unknown>[]>([]);
   const [analiseRocada, setAnaliseRocada] = useState<AnaliseRocadaDia | null>(null);
   const [blocoManualRocada, setBlocoManualRocada] = useState<BlocoTipoRocadaUi | null>(null);
@@ -72,6 +89,14 @@ export default function ServicoDiaDetalhe() {
   const [porTipoRocada, setPorTipoRocada] = useState<LinhaRocadaAgrupada[]>([]);
   const [analiseColeta, setAnaliseColeta] = useState<OperacaoDiaAnalise | null>(null);
   const [totalRegistrosDia, setTotalRegistrosDia] = useState(0);
+  const [agregacaoUnidadeDia, setAgregacaoUnidadeDia] = useState<{
+    areaM2?: number;
+    metroLinear?: number;
+    kmLinear?: number;
+    qtdArvore?: number;
+    quantitativo?: number;
+    rotas?: number;
+  } | null>(null);
   const [paginaRegistros, setPaginaRegistros] = useState(1);
   const [totalPaginasRegistros, setTotalPaginasRegistros] = useState(1);
   const [incluirTodos, setIncluirTodos] = useState(false);
@@ -80,6 +105,9 @@ export default function ServicoDiaDetalhe() {
   const [exportandoPdf, setExportandoPdf] = useState(false);
   const [verificacaoViagens, setVerificacaoViagens] = useState<VerificacaoViagensData | null>(null);
   const ehRocada = tipoServico === 'rocadeira';
+  const ehPorUnidade = ehServicoPorUnidade(tipoServico);
+  const unidade = unidadeOperacionalDoTipo(tipoServico);
+  const ehUnidadeNaoRocada = ehPorUnidade && !ehRocada;
 
   const dataIso = data ?? '';
   const dataValida = isDataIsoValida(dataIso);
@@ -144,6 +172,24 @@ export default function ServicoDiaDetalhe() {
         || null,
       );
       setPlacasReserva(extrairPlacasReservaContrato(contrato));
+      {
+        const cfg = (contrato as {
+          configOperacional?: {
+            pesoMaximoKg?: MapaLimiteCaminhao;
+            volumeL?: MapaLimiteCaminhao;
+            densidadeResiduoKgL?: number | null;
+            densidadeKgL?: MapaLimiteCaminhao | null;
+          };
+        })?.configOperacional;
+        setLimitesPesoKg(cfg?.pesoMaximoKg || null);
+        setVolumeL(cfg?.volumeL || null);
+        setDensidadeResiduoKgL(
+          cfg?.densidadeResiduoKgL != null && cfg.densidadeResiduoKgL > 0
+            ? cfg.densidadeResiduoKgL
+            : null,
+        );
+        setDensidadeKgL(cfg?.densidadeKgL || null);
+      }
 
       if (tipo === 'rocadeira') {
         const agg = await servicoService.getRocadaAgregacao(contractId, servicoId, { data: dataIso });
@@ -164,15 +210,56 @@ export default function ServicoDiaDetalhe() {
         setBlocoMecanizadaRocada(agg.mecanizada || null);
         setPorTipoRocada(agg.porTipo || []);
         setAnaliseColeta(null);
+        setAgregacaoUnidadeDia(null);
         setTotalRegistrosDia(agg.resumo.registros);
         setRegistros([]);
         setPaginaRegistros(1);
         setTotalPaginasRegistros(1);
+      } else if (
+        tipo === 'capina' || tipo === 'varricao' || tipo === 'poda'
+        || tipo === 'pintura_meio_fio'
+      ) {
+        // Capina / varrição / poda: métricas da planilha (não usa agregação de coleta)
+        setAnaliseRocada(null);
+        setBlocoManualRocada(null);
+        setBlocoMecanizadaRocada(null);
+        setPorTipoRocada([]);
+        setAnaliseColeta(null);
+        const [resumoApi, pagina1] = await Promise.all([
+          servicoService.getResumoCicloPorDia(contractId, servicoId, {
+            dataInicio: dataIso,
+            dataFim: dataIso,
+          }),
+          servicoService.buscarRegistrosDia(contractId, servicoId, dataIso, {
+            pagina: 1,
+            limite: PAGE_SIZE,
+            incluirInconsistentes: true,
+          }),
+        ]);
+        const dia = (resumoApi.dias || []).find((d) => d.data === dataIso) || resumoApi.dias?.[0];
+        const regs = Math.max(
+          Number(dia?.rotas || 0),
+          Number(pagina1.total || 0),
+          (pagina1.dados || []).length,
+        );
+        setAgregacaoUnidadeDia({
+          areaM2: Number(dia?.areaM2 || 0),
+          metroLinear: Number(dia?.metroLinear || 0),
+          kmLinear: Number(dia?.kmLinear || 0),
+          qtdArvore: Number(dia?.qtdArvore || 0),
+          quantitativo: Number(dia?.quantitativo || 0),
+          rotas: regs,
+        });
+        setTotalRegistrosDia(regs);
+        setRegistros(pagina1.dados || []);
+        setPaginaRegistros(1);
+        setTotalPaginasRegistros(Math.max(1, pagina1.totalPaginas || Math.ceil(regs / PAGE_SIZE) || 1));
       } else {
         setAnaliseRocada(null);
         setBlocoManualRocada(null);
         setBlocoMecanizadaRocada(null);
         setPorTipoRocada([]);
+        setAgregacaoUnidadeDia(null);
         const agg = await servicoService.getColetaAgregacao(contractId, servicoId, { data: dataIso });
         setAnaliseColeta(analiseOperacaoDeAgregacaoSql(agg));
         setTotalRegistrosDia(agg.resumo.registros);
@@ -189,6 +276,7 @@ export default function ServicoDiaDetalhe() {
       setBlocoMecanizadaRocada(null);
       setPorTipoRocada([]);
       setAnaliseColeta(null);
+      setAgregacaoUnidadeDia(null);
     } finally {
       setCarregandoRegistros(false);
     }
@@ -201,18 +289,21 @@ export default function ServicoDiaDetalhe() {
       const resultado = await servicoService.buscarRegistrosDia(contractId, servicoId, dataIso, {
         pagina,
         limite: PAGE_SIZE,
-        incluirInconsistentes: incluirTodos,
+        // Serviços por unidade não passam por validação de viagem de coleta
+        incluirInconsistentes: incluirTodos || ehServicoPorUnidade(tipoServico),
       });
       setRegistros(resultado.dados || []);
       setPaginaRegistros(resultado.pagina || pagina);
       setTotalPaginasRegistros(resultado.totalPaginas || 1);
-      setTotalRegistrosDia(resultado.total || 0);
+      if (!ehServicoPorUnidade(tipoServico) || !agregacaoUnidadeDia) {
+        setTotalRegistrosDia(resultado.total || 0);
+      }
     } catch {
       adicionarToast('Erro ao carregar página de registros', 'error');
     } finally {
       setCarregandoRegistros(false);
     }
-  }, [contractId, servicoId, dataIso, dataValida, incluirTodos, adicionarToast]);
+  }, [contractId, servicoId, dataIso, dataValida, incluirTodos, adicionarToast, tipoServico, agregacaoUnidadeDia]);
 
   useEffect(() => {
     carregarMeta();
@@ -220,11 +311,13 @@ export default function ServicoDiaDetalhe() {
 
   useEffect(() => {
     if (!mostrarRegistros) return;
+    // Capina/varrição/poda já carregam a 1ª página no meta; só busca de novo se mudar a página
+    if (ehUnidadeNaoRocada && paginaRegistros === 1 && registros.length > 0) return;
     carregarPaginaRegistros(paginaRegistros);
-  }, [mostrarRegistros, paginaRegistros, carregarPaginaRegistros]);
+  }, [mostrarRegistros, paginaRegistros, carregarPaginaRegistros, ehUnidadeNaoRocada, registros.length]);
 
   useEffect(() => {
-    if (!contractId || !servicoId || !dataValida || ehRocada) {
+    if (!contractId || !servicoId || !dataValida || ehPorUnidade) {
       setVerificacaoViagens(null);
       return;
     }
@@ -240,18 +333,33 @@ export default function ServicoDiaDetalhe() {
       cancelado = true;
       window.clearTimeout(timer);
     };
-  }, [contractId, servicoId, dataIso, dataValida, ehRocada]);
+  }, [contractId, servicoId, dataIso, dataValida, ehPorUnidade]);
 
+  // dados-dia já vem filtrado pela data; para unidade não refiltrar (evita perder linhas)
   const registrosDia = useMemo(
-    () => filtrarRegistrosPorDia(registros, dataIso),
-    [registros, dataIso],
+    () => (ehUnidadeNaoRocada ? registros : filtrarRegistrosPorDia(registros, dataIso)),
+    [registros, dataIso, ehUnidadeNaoRocada],
   );
 
   const linhas = useMemo(() => listarLinhasDia(registrosDia), [registrosDia]);
   const validacao = useMemo(
-    () => (dataValida && registrosDia.length > 0 ? validarDadosDia(registrosDia, dataIso, resumoCiclo) : null),
-    [registrosDia, dataIso, dataValida, resumoCiclo],
+    () => (dataValida && registrosDia.length > 0 && !ehPorUnidade
+      ? validarDadosDia(registrosDia, dataIso, resumoCiclo)
+      : null),
+    [registrosDia, dataIso, dataValida, resumoCiclo, ehPorUnidade],
   );
+
+  const cenarioCaixaMedia = useMemo(() => {
+    if (ehPorUnidade) return null;
+    const op = analiseColeta || (registrosDia.length ? analisarOperacaoDia(registrosDia) : null);
+    if (!op || op.resumo.viagens <= 0) return null;
+    return analisarCenarioCaixaMediaDia(op, {
+      registros: registrosDia,
+      volumeL,
+      densidadeResiduoKgL,
+      densidadeKgL,
+    });
+  }, [ehPorUnidade, analiseColeta, registrosDia, volumeL, densidadeResiduoKgL, densidadeKgL]);
 
   const exportarPdfDia = useCallback(async () => {
     if (ehRocada) {
@@ -288,27 +396,106 @@ export default function ServicoDiaDetalhe() {
       return;
     }
 
+    if (ehUnidadeNaoRocada) {
+      const agreg = agregacaoUnidadeDia || {
+        metroLinear: 0,
+        kmLinear: 0,
+        qtdArvore: 0,
+        quantitativo: 0,
+        rotas: totalRegistrosDia,
+      };
+      const metrica = metricaPrincipalDoDia(tipoServico, agreg);
+      if (metrica.valor <= 0 && totalRegistrosDia <= 0) {
+        adicionarToast('Nenhum dado da planilha para exportar neste dia', 'warning');
+        return;
+      }
+      setExportandoPdf(true);
+      try {
+        let regsExport = registrosDia;
+        if (
+          contractId && servicoId
+          && (regsExport.length < totalRegistrosDia || totalRegistrosDia > regsExport.length)
+        ) {
+          const full = await servicoService.getDadosDia(contractId, servicoId, dataIso, {
+            all: true,
+            incluirInconsistentes: true,
+          });
+          regsExport = full?.dados || regsExport;
+        }
+        const html = gerarHtmlRelatorioUnidadeDia({
+          servicoNome,
+          contratoNome: contratoNome || undefined,
+          dataIso,
+          diaSemana,
+          tipoServico,
+          agregacao: agreg,
+          registros: regsExport,
+          totalRegistros: totalRegistrosDia || regsExport.length,
+          kpisOperacao: kpisOperacao.slice(0, 8),
+        });
+        const nomeArquivo = gerarNomePdfRelatorioUnidadeDia({ servicoNome, dataIso });
+        await pdfService.gerarEBaixar(html, nomeArquivo, 'default', false);
+        adicionarToast('PDF diário exportado', 'success');
+      } catch {
+        adicionarToast('Erro ao gerar PDF do dia', 'error');
+      } finally {
+        setExportandoPdf(false);
+      }
+      return;
+    }
+
     const operacao = analiseColeta || (registrosDia.length ? analisarOperacaoDia(registrosDia) : null);
     if (!operacao || operacao.resumo.viagens <= 0) {
       adicionarToast('Nenhum dado operacional para exportar', 'warning');
       return;
     }
 
-    const estudoRotas = registrosDia.length ? analisarEstudoRotasDia(registrosDia) : null;
-
     setExportandoPdf(true);
     try {
+      // Para capacidade/gargalos por tipo, precisa das linhas do dia (agregação SQL não traz peso por viagem)
+      let regsExport = registrosDia;
+      if ((!regsExport.length || regsExport.length < operacao.resumo.registros) && contractId && servicoId) {
+        const full = await servicoService.getDadosDia(contractId, servicoId, dataIso, { all: true });
+        regsExport = full?.dados || regsExport;
+      }
+
+      // Reanalisa com linhas do dia para tipar placas (Mini/Toco/…) — agregação SQL não traz tipo por placa
+      const operacaoPdf = regsExport.length
+        ? analisarOperacaoDia(regsExport)
+        : operacao;
+
+      const estudoRotas = regsExport.length
+        ? analisarEstudoRotasDia(regsExport, {
+          limitesPesoKg,
+          volumeL,
+          densidadeResiduoKgL,
+          densidadeKgL,
+        })
+        : null;
+
+      const cenarioPdf = analisarCenarioCaixaMediaDia(operacaoPdf, {
+        registros: regsExport,
+        volumeL,
+        densidadeResiduoKgL,
+        densidadeKgL,
+      }) || cenarioCaixaMedia;
+
       const html = gerarHtmlRelatorioDia({
         aba: 'operacao',
         servicoNome,
         dataIso,
         diaSemana,
-        operacao,
+        operacao: operacaoPdf,
         receita: null,
-        linhas,
+        linhas: regsExport.length ? listarLinhasDia(regsExport) : linhas,
         kpisOperacao: kpisOperacaoAvancados.slice(0, 8),
         placasReserva,
         estudoRotas,
+        cenarioCaixaMedia: cenarioPdf,
+        limitesPesoKg,
+        volumeL,
+        densidadeResiduoKgL,
+        densidadeKgL,
       });
       const nomeArquivo = gerarNomePdfRelatorioDia({
         servicoNome,
@@ -323,14 +510,18 @@ export default function ServicoDiaDetalhe() {
       setExportandoPdf(false);
     }
   }, [
-    registrosDia, linhas, adicionarToast, ehRocada, analiseRocada, analiseColeta,
-    servicoNome, contratoNome, dataIso, diaSemana, kpisOperacaoAvancados, placasReserva,
-    porTipoRocada, blocoManualRocada, blocoMecanizadaRocada, configFaturamento,
+    registrosDia, linhas, adicionarToast, ehRocada, ehUnidadeNaoRocada, analiseRocada, analiseColeta,
+    servicoNome, contratoNome, dataIso, diaSemana, kpisOperacao, kpisOperacaoAvancados, placasReserva,
+    porTipoRocada, blocoManualRocada, blocoMecanizadaRocada, configFaturamento, limitesPesoKg,
+    volumeL, densidadeResiduoKgL, densidadeKgL, cenarioCaixaMedia, agregacaoUnidadeDia, totalRegistrosDia, tipoServico,
+    contractId, servicoId,
   ]);
 
   const carregandoPainel = ehRocada
     ? (!analiseRocada && carregandoRegistros)
-    : (!analiseColeta && carregandoRegistros);
+    : ehUnidadeNaoRocada
+      ? carregandoRegistros && registros.length === 0
+      : (!analiseColeta && carregandoRegistros);
 
   if (!dataValida) {
     return (
@@ -370,37 +561,50 @@ export default function ServicoDiaDetalhe() {
               <span style={{ fontSize: '0.8rem', color: '#94a3b8' }}>{diaSemana}</span>
             </div>
             <div style={{ fontSize: '0.75rem', color: '#94a3b8' }}>
-              {servicoNome} · {ehRocada ? 'roçada do dia' : 'operação do dia'}
+              {servicoNome} · {ehRocada ? 'roçada do dia' : ehUnidadeNaoRocada ? `${unidade.labelMetrica.toLowerCase()} do dia` : 'operação do dia'}
             </div>
           </div>
-          <button
-            type="button"
-            onClick={exportarPdfDia}
-            disabled={
-              exportandoPdf
-              || carregandoPainel
-              || (ehRocada
-                ? !(analiseRocada?.resumo.areaM2)
-                : !(analiseColeta?.resumo.viagens))
-            }
-            title={ehRocada ? 'Exportar PDF diário de roçada' : 'Exportar PDF da operação do dia'}
-            style={{
-              display: 'inline-flex', alignItems: 'center', gap: '0.35rem',
-              fontSize: '0.72rem', fontWeight: 600, padding: '0.45rem 0.75rem',
-              borderRadius: '8px', border: '1px solid rgba(255,255,255,0.2)',
-              background: exportandoPdf ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.12)',
-              color: (ehRocada ? !(analiseRocada?.resumo.areaM2) : !(analiseColeta?.resumo.viagens))
-                ? '#64748b'
-                : '#fff',
-              cursor: exportandoPdf || carregandoPainel
-                || (ehRocada ? !(analiseRocada?.resumo.areaM2) : !(analiseColeta?.resumo.viagens))
-                ? 'not-allowed'
-                : 'pointer',
-            }}
-          >
-            <FiDownload size={14} />
-            {exportandoPdf ? 'Gerando...' : (ehRocada ? 'PDF Roçada' : 'PDF Operação')}
-          </button>
+          {(() => {
+            const semDadosPdf = ehRocada
+              ? !(analiseRocada?.resumo.areaM2)
+              : ehUnidadeNaoRocada
+                ? !(
+                  totalRegistrosDia > 0
+                  || metricaPrincipalDoDia(tipoServico, agregacaoUnidadeDia || {}).valor > 0
+                )
+                : !(analiseColeta?.resumo.viagens);
+            const tituloPdf = ehRocada
+              ? 'Exportar PDF diário de roçada'
+              : ehUnidadeNaoRocada
+                ? `Exportar PDF diário de ${unidade.labelMetrica.toLowerCase()}`
+                : 'Exportar PDF da operação do dia';
+            const labelPdf = ehRocada
+              ? 'PDF Roçada'
+              : ehUnidadeNaoRocada
+                ? 'PDF do Dia'
+                : 'PDF Operação';
+            return (
+              <button
+                type="button"
+                onClick={exportarPdfDia}
+                disabled={exportandoPdf || carregandoPainel || semDadosPdf}
+                title={tituloPdf}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: '0.35rem',
+                  fontSize: '0.72rem', fontWeight: 600, padding: '0.45rem 0.75rem',
+                  borderRadius: '8px', border: '1px solid rgba(255,255,255,0.2)',
+                  background: exportandoPdf ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.12)',
+                  color: semDadosPdf ? '#64748b' : '#fff',
+                  cursor: exportandoPdf || carregandoPainel || semDadosPdf
+                    ? 'not-allowed'
+                    : 'pointer',
+                }}
+              >
+                <FiDownload size={14} />
+                {exportandoPdf ? 'Gerando...' : labelPdf}
+              </button>
+            );
+          })()}
         </div>
       </div>
 
@@ -413,6 +617,9 @@ export default function ServicoDiaDetalhe() {
           blocoManual={blocoManualRocada}
           blocoMecanizada={blocoMecanizadaRocada}
           porTipo={porTipoRocada}
+          valorM2={configFaturamento?.valorM2 ?? null}
+          valorM2Manual={configFaturamento?.valorM2Manual ?? null}
+          valorM2Mecanizada={configFaturamento?.valorM2Mecanizada ?? null}
           registros={registros}
           totalRegistros={totalRegistrosDia}
           carregandoRegistros={carregandoRegistros}
@@ -426,6 +633,24 @@ export default function ServicoDiaDetalhe() {
           pagina={paginaRegistros}
           totalPaginas={totalPaginasRegistros}
           onPaginaChange={setPaginaRegistros}
+        />
+      ) : ehUnidadeNaoRocada ? (
+        <ServicoUnidadeDiaPanel
+          dataIso={dataIso}
+          tipoServico={tipoServico}
+          registros={registrosDia}
+          totalRegistros={totalRegistrosDia || registrosDia.length}
+          agregacaoDia={agregacaoUnidadeDia || resumoCiclo || null}
+          carregandoRegistros={carregandoRegistros}
+          mostrarRegistros={mostrarRegistros}
+          onToggleRegistros={() => {
+            setMostrarRegistros((v) => {
+              if (!v) setPaginaRegistros(1);
+              return !v;
+            });
+          }}
+          kpisOperacao={kpisOperacao}
+          loadingKpis={loadingKpis}
         />
       ) : (
         <>
@@ -459,6 +684,11 @@ export default function ServicoDiaDetalhe() {
             pagina={paginaRegistros}
             totalPaginas={totalPaginasRegistros}
             onPaginaChange={setPaginaRegistros}
+            cenarioCaixaMedia={cenarioCaixaMedia}
+            volumeL={volumeL}
+            densidadeResiduoKgL={densidadeResiduoKgL}
+            densidadeKgL={densidadeKgL}
+            limitesPesoKg={limitesPesoKg}
           />
         </>
       )}

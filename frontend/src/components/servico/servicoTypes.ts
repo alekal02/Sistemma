@@ -57,6 +57,10 @@ export interface ResumoImportacao {
   inconsistentes: number;
   uploadsRemovidos?: number;
   registrosPreservados?: number;
+  /** Modelo de planilha de roçada detectado (ex.: qgis, betim_trator) */
+  modeloRocada?: string | null;
+  modeloRocadaLabel?: string | null;
+  areaTotalM2?: number | null;
 }
 
 export interface ConfigFaturamentoState {

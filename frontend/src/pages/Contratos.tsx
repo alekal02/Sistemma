@@ -63,6 +63,20 @@ export default function Contratos() {
     carregarContratos();
   }, [carregarContratos]);
 
+  // Ao voltar da tela do contrato (após upload), atualiza a contagem
+  useEffect(() => {
+    const onFocus = () => { void carregarContratos(); };
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') onFocus();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [carregarContratos]);
+
   function formatarUltimoUpload(data: string | null): string {
     if (!data) return 'Nunca';
     const d = new Date(data);

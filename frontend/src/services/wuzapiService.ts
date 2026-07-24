@@ -18,6 +18,8 @@ export interface WuzapiStatus {
   } | null
   mensagem?: string
   erroSessao?: string
+  wuzapiOffline?: boolean
+  wuzapiOnline?: boolean
 }
 
 export interface WhatsappGrupoMapaItem {
@@ -57,6 +59,11 @@ const wuzapiService = {
 
   async connect(): Promise<{ sucesso: boolean; message?: string; qrCode?: string | null; erro?: string }> {
     const { data } = await api.post('/wuzapi/connect', {})
+    return data
+  },
+
+  async disconnect(): Promise<{ sucesso: boolean; message?: string; erro?: string }> {
+    const { data } = await api.post('/wuzapi/disconnect', {})
     return data
   },
 

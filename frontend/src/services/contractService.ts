@@ -39,6 +39,8 @@ export interface ContratoDetalhe {
     coletores?: string[];
     pesoMaximoKg?: { MINI?: number; TOCO?: number; BASCULANTE?: number; TRUCK?: number };
     volumeL?: { MINI?: number; TOCO?: number; BASCULANTE?: number; TRUCK?: number };
+    densidadeResiduoKgL?: number | null;
+    densidadeKgL?: { MINI?: number; TOCO?: number; BASCULANTE?: number; TRUCK?: number };
   } | null
 }
 
@@ -87,10 +89,13 @@ const contractService = {
         coletores?: string[];
         pesoMaximoKg?: { MINI?: number; TOCO?: number; BASCULANTE?: number; TRUCK?: number };
         volumeL?: { MINI?: number; TOCO?: number; BASCULANTE?: number; TRUCK?: number };
+        densidadeResiduoKgL?: number | null;
+        densidadeKgL?: { MINI?: number; TOCO?: number; BASCULANTE?: number; TRUCK?: number };
       }
     }>,
   ): Promise<ContratoDetalhe> {
     const { data } = await api.put<ContratoDetalhe>(`/contracts/${id}`, payload)
+    invalidateContratoCache(id)
     return data
   },
 

@@ -7,6 +7,8 @@ export interface ConfigOperacionalContrato {
   coletores?: string[];
   pesoMaximoKg?: { MINI?: number; TOCO?: number; BASCULANTE?: number; TRUCK?: number };
   volumeL?: { MINI?: number; TOCO?: number; BASCULANTE?: number; TRUCK?: number };
+  densidadeResiduoKgL?: number | null;
+  densidadeKgL?: { MINI?: number; TOCO?: number; BASCULANTE?: number; TRUCK?: number };
 }
 
 export function normalizarListaPlacasReserva(raw: unknown): string[] {

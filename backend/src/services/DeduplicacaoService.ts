@@ -24,6 +24,7 @@ import {
 import { normalizarDiaInicioCiclo } from '../utils/periodoCicloContrato';
 import { invalidarCacheDadosServico } from './servicoDadosCache';
 import { invalidarCacheDashboardServico } from '../controllers/ServicoController';
+import { invalidarCacheSaudeContratos } from '../controllers/ContractController';
 import { dashboardCache } from './DashboardCacheManager';
 import { agendarWarmupPosUpload } from './executivoCacheWarmupService';
 import { normalizarTextoTipoCaminhao } from '../config/pesoMaximoCaminhao';
@@ -908,6 +909,7 @@ export class DeduplicacaoService {
       invalidarCacheDashboardServico(servicoId);
       dashboardCache.invalidar(servicoId);
       agendarWarmupPosUpload(servicoId);
+      invalidarCacheSaudeContratos();
     }
 
     return {
@@ -1468,6 +1470,7 @@ export class DeduplicacaoService {
       invalidarCacheDashboardServico(servicoId);
       dashboardCache.invalidar(servicoId);
       agendarWarmupPosUpload(servicoId);
+      invalidarCacheSaudeContratos();
     }
 
     return {

@@ -142,13 +142,19 @@ function cardsHtml(items: { label: string; valor: string; cor: string }[]): stri
   return `<table class="cards-tbl">${rows.join('')}</table>`;
 }
 
+function filtrarLinhasPdf(linhas: LinhaRocadaAgrupada[] | undefined): LinhaRocadaAgrupada[] {
+  return (linhas || []).filter(
+    (l) => l.areaM2 > 0 && l.label && l.label !== 'Não informado',
+  );
+}
+
 function tabelaGrupoHtml(
   titulo: string,
   linhas: LinhaRocadaAgrupada[],
   maxArea: number,
   thColor = '#166534',
 ): string {
-  const top = linhas.filter((l) => l.areaM2 > 0).slice(0, 12);
+  const top = filtrarLinhasPdf(linhas).slice(0, 12);
   if (!top.length) return '';
   const max = Math.max(maxArea, 0.01);
   return `
@@ -185,6 +191,10 @@ function tabelaGrupoHtml(
 
 function secaoTipoHtml(bloco: BlocoTipoRocadaPdf, cor: string): string {
   if (!bloco.registros && bloco.areaM2 <= 0) return '';
+  const locais = filtrarLinhasPdf(bloco.porBairro);
+  const segmentos = filtrarLinhasPdf(bloco.porOperador);
+  const equipes = filtrarLinhasPdf(bloco.porEquipe);
+  const equips = filtrarLinhasPdf(bloco.porEquipamento);
   return `
     <div class="tipo-wrap" style="border-color:${cor}55">
       <div class="tipo-hd" style="background:${cor}">
@@ -193,19 +203,19 @@ function secaoTipoHtml(bloco: BlocoTipoRocadaPdf, cor: string): string {
       </div>
       <div class="tipo-body">
         ${cardsHtml([
-          { label: 'Bairros', valor: String(bloco.bairros), cor },
-          { label: 'Operadores', valor: String(bloco.operadores), cor },
+          { label: 'Locais', valor: String(bloco.bairros), cor },
+          { label: 'Segmentos', valor: String(bloco.operadores), cor },
           { label: 'Equipes', valor: String(bloco.equipes), cor },
           { label: 'Equipamentos', valor: String(bloco.equipamentos), cor },
         ])}
         <table class="layout2-tbl">
           <tr>
-            <td>${tabelaGrupoHtml('Bairros', bloco.porBairro, bloco.areaM2, cor)}</td>
-            <td>${tabelaGrupoHtml('Operadores', bloco.porOperador, bloco.areaM2, cor)}</td>
+            <td>${tabelaGrupoHtml('Locais', locais, bloco.areaM2, cor)}</td>
+            <td>${tabelaGrupoHtml('Segmentos', segmentos, bloco.areaM2, cor)}</td>
           </tr>
           <tr>
-            <td>${tabelaGrupoHtml('Equipes', bloco.porEquipe, bloco.areaM2, cor)}</td>
-            <td>${tabelaGrupoHtml('Equipamentos', bloco.porEquipamento, bloco.areaM2, cor)}</td>
+            <td>${tabelaGrupoHtml('Equipes', equipes, bloco.areaM2, cor)}</td>
+            <td>${tabelaGrupoHtml('Equipamentos', equips, bloco.areaM2, cor)}</td>
           </tr>
         </table>
       </div>
@@ -240,7 +250,7 @@ export function gerarHtmlRelatorioRocadaDia(p: ParamsRelatorioRocadaDia): string
     + Math.max(0, areaTotal - areaMan - areaMec) * Number(p.valorM2 || vMan || vMec || 0);
 
   const geradoEm = new Date().toLocaleString('pt-BR');
-  const porTipo = (p.porTipo && p.porTipo.length > 0)
+  const porTipo = ((p.porTipo && p.porTipo.length > 0)
     ? p.porTipo
     : [
         ...(areaMan > 0 || regMan > 0
@@ -249,7 +259,12 @@ export function gerarHtmlRelatorioRocadaDia(p: ParamsRelatorioRocadaDia): string
         ...(areaMec > 0 || regMec > 0
           ? [{ label: 'Mecanizada', registros: regMec, areaM2: areaMec, chave: 'mecanizada' }]
           : []),
-      ];
+      ])
+    .map((t) => ({
+      ...t,
+      label: /n[aã]o classificado/i.test(t.label) ? 'Roçada' : t.label,
+    }))
+    .filter((t) => t.areaM2 > 0);
 
   const cards = cardsHtml([
     { label: 'Área total', valor: `${fmtAreaM2(areaTotal)} m²`, cor: '#22c55e' },
@@ -278,16 +293,30 @@ export function gerarHtmlRelatorioRocadaDia(p: ParamsRelatorioRocadaDia): string
     || (p.blocoMecanizada && (p.blocoMecanizada.registros > 0 || p.blocoMecanizada.areaM2 > 0)),
   );
 
+  const porLocal = filtrarLinhasPdf(p.analise.porBairro);
+  const porSegmento = filtrarLinhasPdf(p.analise.porOperador);
+  const porEquipe = filtrarLinhasPdf(p.analise.porEquipe);
+  const porEquip = filtrarLinhasPdf(p.analise.porEquipamento);
+  const tituloLocal = porLocal.some((l) => /→/.test(l.label))
+    ? 'Top locais por área'
+    : 'Top locais / trechos / bairros por área';
+  const tituloSegmento = porSegmento.some((l) => /→/.test(l.label))
+    ? 'Top segmentos (início → término)'
+    : 'Top operadores / endereços por área';
+  const tituloEquipe = porEquipe.some((l) => /mensal|semanal|diario|diário|bimestral/i.test(l.label))
+    ? 'Top periodicidade / equipes por área'
+    : 'Top equipes por área';
+
   const rankingsGerais = !temSplit
     ? `
       <table class="layout2-tbl">
         <tr>
-          <td>${tabelaGrupoHtml('Top bairros por área', p.analise.porBairro, areaTotal)}</td>
-          <td>${tabelaGrupoHtml('Top operadores por área', p.analise.porOperador, areaTotal)}</td>
+          <td>${tabelaGrupoHtml(tituloLocal, porLocal, areaTotal)}</td>
+          <td>${tabelaGrupoHtml(tituloSegmento, porSegmento, areaTotal)}</td>
         </tr>
         <tr>
-          <td>${tabelaGrupoHtml('Top equipes por área', p.analise.porEquipe, areaTotal)}</td>
-          <td>${tabelaGrupoHtml('Top equipamentos por área', p.analise.porEquipamento, areaTotal)}</td>
+          <td>${tabelaGrupoHtml(tituloEquipe, porEquipe, areaTotal)}</td>
+          <td>${tabelaGrupoHtml('Top equipamentos por área', porEquip, areaTotal)}</td>
         </tr>
       </table>`
     : '';

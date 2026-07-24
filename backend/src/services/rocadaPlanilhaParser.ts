@@ -22,6 +22,18 @@ export type ModeloRocadaDetectado =
   | 'generico'
   | 'desconhecido';
 
+export function labelModeloRocada(modelo: ModeloRocadaDetectado | string): string {
+  switch (modelo) {
+    case 'londrina': return 'Londrina';
+    case 'pindamonhangaba': return 'Pindamonhangaba';
+    case 'qgis': return 'QGIS';
+    case 'betim_trator': return 'Betim';
+    case 'modelo_trecho': return 'Padrão (área m²)';
+    case 'generico': return 'Padrão área m²';
+    default: return String(modelo || 'desconhecido');
+  }
+}
+
 export interface LinhaRocadaCanonico {
   dataSaida: Date | null;
   bairro: string | null;
@@ -281,9 +293,48 @@ function probeColunaTipo(rows: unknown[][]): {
   };
 }
 
+/** True se a aba tem ao menos uma linha com m²/área > 0 (sonda nas primeiras linhas). */
+function probeTemAreaUtil(rows: unknown[][]): boolean {
+  if (!rows.length) return false;
+  const headerIdx = encontrarLinhaCabecalho(rows);
+  const headerRow = (rows[headerIdx] || []).map((c) => String(c ?? '').trim());
+  if (detectarModeloPorCabecalho(headerRow) === 'desconhecido') return false;
+
+  const iArea = acharCol(
+    headerRow,
+    'METRAGEM (M²)', 'METRAGEM', 'TOTAL (M²)', 'TOTAL', 'Área', 'AREA', 'Area m²', 'EXECUTADO', 'M2', 'M²',
+  );
+  const iExec = acharCol(headerRow, 'EXECUTADO');
+  const iProj = acharCol(headerRow, 'PROJETO');
+  const iComp = acharCol(headerRow, 'COMPRIMENTO');
+  const iLarg = acharCol(headerRow, 'LARGURA');
+  const iDistSede = acharCol(headerRow, 'DISTRITO SEDE');
+  const iDistMoreia = acharCol(headerRow, 'DISTRITO MOREIA');
+
+  const limite = Math.min(rows.length, headerIdx + 1 + 120);
+  for (let r = headerIdx + 1; r < limite; r++) {
+    const row = rows[r] || [];
+    let area = iArea >= 0 ? cellNum(row[iArea]) : 0;
+    if (area <= 0 && iExec >= 0) area = cellNum(row[iExec]);
+    if (area <= 0 && iProj >= 0) area = cellNum(row[iProj]);
+    if (area <= 0 && iComp >= 0 && iLarg >= 0) {
+      const c = cellNum(row[iComp]);
+      const l = cellNum(row[iLarg]);
+      if (c > 0 && l > 0 && l < 500) area = c * l;
+    }
+    if (area <= 0 && (iDistSede >= 0 || iDistMoreia >= 0)) {
+      area = (iDistSede >= 0 ? cellNum(row[iDistSede]) : 0)
+        + (iDistMoreia >= 0 ? cellNum(row[iDistMoreia]) : 0);
+    }
+    if (area > 0) return true;
+  }
+  return false;
+}
+
 /**
- * Escolhe abas sem duplicar: se existir aba "mista" (coluna Tipo com Manual+Mecanizada
- * e nome ambíguo), usa só ela. Caso contrário usa abas dedicadas (Manual / Mecanizada).
+ * Escolhe abas sem duplicar e sem preferir templates vazios (ex.: TRATOR 01 sem m²).
+ * - Aba com coluna Tipo Manual+Mecanizada: usa ela (mesmo se o nome for "manual").
+ * - Senão: usa só abas que tenham metragem real; fallback para todas as candidatas.
  */
 function selecionarAbasRocada(
   sheetNames: string[],
@@ -294,45 +345,57 @@ function selecionarAbasRocada(
     const rows = lerRows(nome);
     const tipoAba = inferirTipoExecucaoAba(nome);
     const col = probeColunaTipo(rows);
-    return { nome, tipoAba, ...col, rows };
+    const temArea = probeTemAreaUtil(rows);
+    return { nome, tipoAba, ...col, rows, temArea };
   });
 
-  const mistosConfiaveis = probes.filter((p) => p.temAmbos && !p.tipoAba);
-  const dedicadas = probes.filter((p) => p.tipoAba === 'manual' || p.tipoAba === 'mecanizada');
+  const comDados = probes.filter((p) => p.temArea);
+  const universo = comDados.length > 0 ? comDados : probes;
 
-  let escolhidas = probes;
+  // Coluna Tipo com os dois tipos manda — inclusive se o nome da aba for "manual"/"mecanizada"
+  const mistosConfiaveis = universo.filter((p) => p.temAmbos);
+  const dedicadas = universo.filter(
+    (p) => !p.temAmbos && (p.tipoAba === 'manual' || p.tipoAba === 'mecanizada'),
+  );
+  const genericas = universo.filter((p) => !p.temAmbos && !p.tipoAba);
+
+  let escolhidas = universo;
   let aviso: string | undefined;
 
   if (mistosConfiaveis.length > 0) {
-    // QGIS típico: aba principal com Tipo + aba "manual" espelhada → evita duplicar
-    escolhidas = mistosConfiaveis;
-    if (dedicadas.length > 0) {
+    // Preferir a aba mista com mais sinais de Tipo (evita aba espelhada fraca)
+    mistosConfiaveis.sort((a, b) => (b.manual + b.mecanizada) - (a.manual + a.mecanizada));
+    escolhidas = [mistosConfiaveis[0]];
+    const ignoradas = probes.filter((p) => p.nome !== escolhidas[0].nome && (p.temArea || p.tipoAba));
+    if (ignoradas.length > 0) {
       aviso =
-        `Usando aba(s) com coluna Tipo (Manual+Mecanizada): ${mistosConfiaveis.map((p) => p.nome).join(', ')}. `
-        + `Ignorada(s) aba(s) espelhada(s): ${dedicadas.map((p) => p.nome).join(', ')}.`;
+        `Usando aba com coluna Tipo (Manual+Mecanizada): ${escolhidas[0].nome}. `
+        + `Ignorada(s): ${ignoradas.map((p) => p.nome).join(', ')}.`;
     }
-  } else if (dedicadas.length > 0 && probes.some((p) => !p.tipoAba)) {
-    // Tem dedicadas + genéricas sem Tipo misto → preferir dedicadas no split real
-    const soDedicadas = dedicadas;
-    if (filtroTipo === 'manual' || filtroTipo === 'mecanizada') {
-      const match = soDedicadas.filter((p) => p.tipoAba === filtroTipo);
-      escolhidas = match.length > 0 ? match : soDedicadas;
-    } else {
-      escolhidas = soDedicadas;
-    }
+  } else if (dedicadas.length > 0 && genericas.length > 0) {
+    // Dedicadas com dados + genérica com dados (ex.: ROÇADA trecho + TRATOR) → manter as duas
+    // Dedicadas vazias já saíram em `universo` quando genérica tem dados
+    escolhidas = [...dedicadas, ...genericas];
+  } else if (dedicadas.length > 0) {
+    escolhidas = dedicadas;
+  } else if (genericas.length > 0) {
+    escolhidas = genericas;
   }
 
   if (filtroTipo === 'manual' || filtroTipo === 'mecanizada') {
-    const porNome = escolhidas.filter((p) => p.tipoAba === filtroTipo);
-    if (porNome.length > 0 && mistosConfiaveis.length === 0) {
-      escolhidas = porNome;
+    const mistos = escolhidas.filter((p) => p.temAmbos);
+    if (mistos.length > 0) {
+      escolhidas = mistos;
+    } else {
+      const porNome = escolhidas.filter((p) => p.tipoAba === filtroTipo);
+      if (porNome.length > 0) escolhidas = porNome;
     }
   }
 
   const forcarTipoPorAba: Record<string, TipoExecucaoRocada | null> = {};
   for (const p of escolhidas) {
-    // Em aba dedicada (só Manual ou só Mecanizada no nome), o nome manda
-    forcarTipoPorAba[p.nome] = mistosConfiaveis.includes(p) ? null : (p.tipoAba || null);
+    // Só força pelo nome se a aba NÃO tiver os dois tipos na coluna Tipo
+    forcarTipoPorAba[p.nome] = p.temAmbos ? null : (p.tipoAba || null);
   }
 
   return { abas: escolhidas.map((p) => p.nome), forcarTipoPorAba, aviso };
@@ -408,7 +471,14 @@ function parseLinhasAba(
 
   const iData = acharCol(headerRow, 'DATA', 'Data');
   const iBairro = acharCol(headerRow, 'BAIRRO', 'bairro_ful', 'BAIRRO ');
-  const iLog = acharCol(headerRow, 'LOGRADOURO', 'LOCALIZAÇÃO', 'LOCALIZACAO', 'ENDEREÇO', 'ENDERECO', 'TRECHO', 'name_2');
+  const iTrecho = acharCol(headerRow, 'TRECHO');
+  const iInicio = acharCol(headerRow, 'INICIO', 'INÍCIO');
+  const iTermino = acharCol(headerRow, 'TERMINO', 'TÉRMINO', 'FIM');
+  const iEndereco = acharCol(headerRow, 'ENDEREÇO', 'ENDERECO');
+  const iLog = acharCol(
+    headerRow,
+    'LOGRADOURO', 'LOCALIZAÇÃO', 'LOCALIZACAO', 'ENDEREÇO', 'ENDERECO', 'TRECHO', 'name_2',
+  );
   const iArea = acharCol(headerRow, 'METRAGEM (M²)', 'METRAGEM', 'TOTAL (M²)', 'TOTAL', 'Área', 'AREA', 'Area m²', 'EXECUTADO', 'M2', 'M²');
   const iEquip = acharCol(headerRow, 'EQUIPAMENTO UTILIZADO', 'EQUIPAMENTO', 'Equipamento');
   const iOp = acharCol(headerRow, 'OPERADOR', 'Operador');
@@ -417,6 +487,7 @@ function parseLinhasAba(
   const iDist = acharCol(headerRow, 'DISTRITO SEDE', 'DISTRITO', 'DISTRITO MOREIA');
   const iComp = acharCol(headerRow, 'COMPRIMENTO');
   const iLarg = acharCol(headerRow, 'LARGURA');
+  const iUnd = acharCol(headerRow, 'UND', 'UNIDADE');
   const iExec = acharCol(headerRow, 'EXECUTADO');
   const iProj = acharCol(headerRow, 'PROJETO');
 
@@ -441,10 +512,32 @@ function parseLinhasAba(
     if (!row.some((c) => String(c ?? '').trim())) continue;
 
     const dataSaida = iData >= 0 ? parseDataFlex(row[iData]) : null;
-    const bairro = iBairro >= 0 ? cellStr(row[iBairro]) : null;
-    const logradouro = iLog >= 0 ? cellStr(row[iLog]) : null;
+    const trecho = iTrecho >= 0 ? cellStr(row[iTrecho]) : null;
+    const inicio = iInicio >= 0 ? cellStr(row[iInicio]) : null;
+    const termino = iTermino >= 0 ? cellStr(row[iTermino]) : null;
+    const endereco = iEndereco >= 0 ? cellStr(row[iEndereco]) : null;
+    let bairro = iBairro >= 0 ? cellStr(row[iBairro]) : null;
+    let logradouro = iLog >= 0 ? cellStr(row[iLog]) : null;
+    // Modelo trecho/padrão: TRECHO é o local principal; INÍCIO→TÉRMINO descreve o segmento
+    if (!bairro && trecho) bairro = trecho;
+    if (!logradouro && trecho) logradouro = trecho;
+    if (inicio || termino) {
+      const segmento = [inicio, termino].filter(Boolean).join(' → ');
+      if (segmento) logradouro = logradouro && logradouro !== segmento ? `${logradouro} (${segmento})` : segmento;
+    } else if (!logradouro && endereco) {
+      logradouro = endereco;
+    }
     // Linha só com lixo / sem contexto operacional — ignora sem contar como "sem área"
-    if (!dataSaida && !bairro && !logradouro && !cellStr(row[iOp]) && !cellStr(row[iEquipe])) {
+    if (!dataSaida && !bairro && !logradouro && !trecho && !cellStr(row[iOp]) && !cellStr(row[iEquipe])) {
+      continue;
+    }
+    // Linha de totalização (Londrina etc.)
+    const rotuloResumo = norm(bairro || trecho || logradouro || '');
+    if (rotuloResumo === 'TOTAL' || rotuloResumo === 'SOMA' || rotuloResumo.startsWith('TOTAL ')) {
+      continue;
+    }
+    if (!dataSaida && rotuloResumo) {
+      // Sem data e sem valor operacional útil — pula resumos
       continue;
     }
 
@@ -490,8 +583,17 @@ function parseLinhasAba(
       continue;
     }
 
-    // Equipe inferida do nome da aba (TRATOR 01, TR 025…)
+    // Equipe / periodicidade (LARGURA textual "Mensal", "Semanal"…)
     let equipe = iEquipe >= 0 ? cellStr(row[iEquipe]) : null;
+    let periodicidade: string | null = null;
+    if (iLarg >= 0) {
+      const largRaw = cellStr(row[iLarg]);
+      const largNum = cellNum(row[iLarg]);
+      if (largRaw && !(largNum > 0)) {
+        periodicidade = largRaw;
+        if (!equipe) equipe = largRaw;
+      }
+    }
     if (!equipe) {
       const sn = sheetName.trim();
       if (/trator|tr\s*\d|equipe/i.test(sn)) equipe = sn;
@@ -499,6 +601,11 @@ function parseLinhasAba(
 
     let equipamento = iEquip >= 0 ? cellStr(row[iEquip]) : null;
     if (!equipamento && /trator/i.test(sheetName)) equipamento = 'TRATOR';
+    if (!equipamento && iUnd >= 0) {
+      const und = cellStr(row[iUnd]);
+      // UND costuma ser "M²" — só usa se parecer equipamento/tipo
+      if (und && !/^m[²2]?$/i.test(und)) equipamento = und;
+    }
 
     const tipoColuna = iTipo >= 0 ? cellStr(row[iTipo]) : null;
     const tipoDaColuna = classificarTipoExecucaoRocada(tipoColuna);
@@ -518,23 +625,57 @@ function parseLinhasAba(
       ? labelTipoExecucao(forcarTipoAba)
       : (tipoColuna || labelTipoExecucao(tipoExecucao));
 
+    // Operador: coluna OPERADOR; no modelo trecho usa INÍCIO como referência de segmento
+    let operador = iOp >= 0 ? cellStr(row[iOp]) : null;
+    if (!operador && (inicio || termino)) {
+      operador = [inicio, termino].filter(Boolean).join(' → ') || null;
+    } else if (!operador && endereco) {
+      operador = endereco;
+    }
+
+    const comprimento = iComp >= 0 ? cellNum(row[iComp]) : 0;
+    const projetoM2 = iProj >= 0 ? cellNum(row[iProj]) : 0;
+    const executadoM2 = iExec >= 0 ? cellNum(row[iExec]) : 0;
+
     const base = {
       dataSaida,
       bairro,
       logradouro,
       areaM2: Math.round(areaM2 * 100) / 100,
       equipamento,
-      operador: iOp >= 0 ? cellStr(row[iOp]) : null,
+      operador,
       equipe,
       tipo: tipoLabel,
       tipoExecucao,
       distrito: iDist >= 0 ? cellStr(row[iDist]) : null,
       aba: sheetName,
       modelo,
+      dadosExtra: {
+        TRECHO: trecho,
+        INICIO: inicio,
+        TERMINO: termino,
+        ENDERECO: endereco,
+        PERIODICIDADE: periodicidade,
+        COMPRIMENTO: comprimento > 0 ? comprimento : null,
+        PROJETO_M2: projetoM2 > 0 ? projetoM2 : null,
+        EXECUTADO_M2: executadoM2 > 0 ? executadoM2 : null,
+        LOCAL: bairro || trecho || logradouro,
+      } as Record<string, unknown>,
     };
 
     linhas.push({
-      ...base,
+      dataSaida: base.dataSaida,
+      bairro: base.bairro,
+      logradouro: base.logradouro,
+      areaM2: base.areaM2,
+      equipamento: base.equipamento,
+      operador: base.operador,
+      equipe: base.equipe,
+      tipo: base.tipo,
+      tipoExecucao: base.tipoExecucao,
+      distrito: base.distrito,
+      aba: base.aba,
+      modelo: base.modelo,
       dados: montarDadosCanonicos(base),
     });
   }
@@ -706,6 +847,7 @@ export function parsearPlanilhaRocada(
 
 export function resumoParseRocada(r: ResultadoParseRocada): {
   modelo: string;
+  modeloLabel: string;
   abas: number;
   registros: number;
   areaTotalM2: number;
@@ -723,6 +865,7 @@ export function resumoParseRocada(r: ResultadoParseRocada): {
   const areaTotalM2 = r.linhas.reduce((s, l) => s + l.areaM2, 0);
   return {
     modelo: r.modelo,
+    modeloLabel: labelModeloRocada(r.modelo),
     abas: r.abasUsadas.length,
     registros: r.linhas.length,
     areaTotalM2: Math.round(areaTotalM2 * 100) / 100,

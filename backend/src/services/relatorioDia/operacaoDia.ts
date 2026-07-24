@@ -2,6 +2,16 @@
  * Port fiel de `frontend/src/utils/operacaoDia.ts` — partes usadas pelo PDF de operação.
  */
 import { ehPlacaReserva } from '../../utils/placasReserva';
+import { normalizarTipoCaminhaoPeso, type TipoCaminhaoPeso } from '../../config/pesoMaximoCaminhao';
+import {
+  LABEL_TIPO_CAMINHAO,
+  classificarPctIdeal,
+  densidadeOptsToInput,
+  notaDaFaixaIdeal,
+  resolverPesosIdeaisKg,
+  statusPctVsMargemIdeal,
+  type NotaIdealViagem,
+} from './escalaIdealPeso';
 import { fmtNum } from './fmt';
 
 export interface LinhaOperacaoGrupo {
@@ -13,6 +23,8 @@ export interface LinhaOperacaoGrupo {
   horas: number;
   tonMediaViagem: number;
   kmMedioViagem: number;
+  /** Tipo predominante (Mini/Toco/…) — eficiência vs ideal do tipo. */
+  tipoCaminhao?: string | null;
 }
 
 export interface OperacaoDiaResumo {
@@ -55,7 +67,19 @@ export interface LinhaEficienciaPlaca extends LinhaOperacaoGrupo {
   pctMediaTonViag: number;
   status: 'bom' | 'medio' | 'ruim';
   ehReserva?: boolean;
+  mediaRefLabel?: string;
+  pesoIdealKg?: number | null;
+  pctIdeal?: number | null;
+  notaIdeal?: NotaIdealViagem | null;
 }
+
+export type OptsEficienciaContrato = {
+  volumeL?: Partial<Record<TipoCaminhaoPeso, number>> | null;
+  densidadeResiduoKgL?: number | null;
+  densidadeKgL?: Partial<Record<TipoCaminhaoPeso, number>> | null;
+  /** Fallback placa → tipo a partir das viagens PESO 1–4. */
+  tipoPorPlaca?: Map<string, TipoCaminhaoPeso> | null;
+};
 
 /** Converte agregação SQL do backend no formato do painel/PDF do dia. */
 export function analiseOperacaoDeAgregacaoSql(agg: {
@@ -71,19 +95,23 @@ export function analiseOperacaoDeAgregacaoSql(agg: {
   porMotorista: Array<{
     label: string; viagens: number; tonelagem: number; kmTotal: number;
     horasProdutivas: number; tonPorViagem: number; kmPorViagem: number;
+    tipoCaminhao?: string;
   }>;
   porPlaca: Array<{
     label: string; viagens: number; tonelagem: number; kmTotal: number;
     horasProdutivas: number; tonPorViagem: number; kmPorViagem: number;
+    tipoCaminhao?: string;
   }>;
   porDistrito: Array<{
     label: string; viagens: number; tonelagem: number; kmTotal: number;
     horasProdutivas: number; tonPorViagem: number; kmPorViagem: number;
+    tipoCaminhao?: string;
   }>;
 }): OperacaoDiaAnalise {
   const mapLinha = (l: {
     label: string; viagens: number; tonelagem: number; kmTotal: number;
     horasProdutivas: number; tonPorViagem: number; kmPorViagem: number;
+    tipoCaminhao?: string;
   }): LinhaOperacaoGrupo => ({
     chave: l.label,
     registros: l.viagens,
@@ -93,6 +121,7 @@ export function analiseOperacaoDeAgregacaoSql(agg: {
     horas: l.horasProdutivas,
     tonMediaViagem: l.tonPorViagem,
     kmMedioViagem: l.kmPorViagem,
+    tipoCaminhao: l.tipoCaminhao || null,
   });
 
   const r = agg.resumo;
@@ -100,6 +129,30 @@ export function analiseOperacaoDeAgregacaoSql(agg: {
   const kmMedio = r.viagens > 0 ? r.kmTotal / r.viagens : 0;
   const tonKm = r.kmTotal > 0 ? r.pesoTotalTon / r.kmTotal : 0;
   const prodColetor = r.placas > 0 ? r.pesoTotalTon / r.placas : 0;
+
+  // Agrega por tipo a partir das placas tipadas
+  const accTipo = new Map<string, { viagens: number; toneladas: number; km: number; horas: number }>();
+  for (const p of agg.porPlaca) {
+    const tipo = normalizarTipoCaminhaoPeso(p.tipoCaminhao);
+    if (!tipo || !(p.viagens > 0)) continue;
+    const a = accTipo.get(tipo) || { viagens: 0, toneladas: 0, km: 0, horas: 0 };
+    a.viagens += p.viagens;
+    a.toneladas += p.tonelagem;
+    a.km += p.kmTotal;
+    a.horas += p.horasProdutivas;
+    accTipo.set(tipo, a);
+  }
+  const porTipoCaminhao: LinhaOperacaoGrupo[] = [...accTipo.entries()].map(([tipo, a]) => ({
+    chave: LABEL_TIPO_CAMINHAO[tipo as TipoCaminhaoPeso] || tipo,
+    tipoCaminhao: tipo,
+    registros: a.viagens,
+    viagens: a.viagens,
+    toneladas: a.toneladas,
+    km: a.km,
+    horas: a.horas,
+    tonMediaViagem: a.viagens > 0 ? a.toneladas / a.viagens : 0,
+    kmMedioViagem: a.viagens > 0 ? a.km / a.viagens : 0,
+  }));
 
   return {
     resumo: {
@@ -121,7 +174,7 @@ export function analiseOperacaoDeAgregacaoSql(agg: {
     porTurno: [],
     porRegional: [],
     porMotorista: agg.porMotorista.map(mapLinha),
-    porTipoCaminhao: [],
+    porTipoCaminhao,
     porDistrito: agg.porDistrito.map(mapLinha),
     registrosConsiderados: r.registros,
   };
@@ -170,23 +223,7 @@ export function gerarInsightsOperacao(
     });
   }
 
-  const placasFracas = analise.porPlaca
-    .filter(
-      (p) =>
-        p.viagens >= 1
-        && !ehPlacaReserva(p.chave, placasReserva)
-        && avgTonViag > 0
-        && p.tonMediaViagem < avgTonViag * 0.75,
-    )
-    .sort((a, b) => a.tonMediaViagem - b.tonMediaViagem);
-
-  if (placasFracas.length > 0 && analise.porPlaca.length >= 2) {
-    insights.push({
-      severidade: placasFracas.length >= 2 ? 'critico' : 'atencao',
-      titulo: 'Veículos com produção abaixo da média',
-      texto: `${placasFracas.length} placa(s) com ton/viagem inferior a 75% da média (${fmtNum(avgTonViag, 2)} t): ${placasFracas.slice(0, 3).map((p) => p.chave).join(', ')}.`,
-    });
-  }
+  // Não compara Mini com média geral do dia — isso gera falso gargalo.
 
   if (analise.porPlaca.length >= 2) {
     const top = analise.porPlaca[0];
@@ -279,23 +316,115 @@ export function gerarInsightsOperacao(
   return insights.slice(0, 6);
 }
 
-/** Linhas por placa com indicador de eficiência vs média do dia. */
+function resolverTipoGrupo(
+  grupo: LinhaOperacaoGrupo,
+  opts?: OptsEficienciaContrato,
+): TipoCaminhaoPeso | null {
+  const direto = normalizarTipoCaminhaoPeso(grupo.tipoCaminhao);
+  if (direto) return direto;
+  if (opts?.tipoPorPlaca) {
+    const key = String(grupo.chave || '').trim().toUpperCase();
+    return opts.tipoPorPlaca.get(key) || null;
+  }
+  return null;
+}
+
+/** Classifica t/viagem do grupo vs peso ideal do tipo (nunca vs média geral do dia). */
+export function classificarGrupoVsIdealTipo(
+  grupo: LinhaOperacaoGrupo,
+  opts?: OptsEficienciaContrato,
+): {
+  status: 'bom' | 'medio' | 'ruim';
+  pctIdeal: number | null;
+  pesoIdealKg: number | null;
+  mediaRefLabel: string;
+  notaIdeal: NotaIdealViagem | null;
+  pctMediaTonViag: number;
+} {
+  const avgDia = 0; // não usar média do dia como referência principal
+  const tipo = resolverTipoGrupo(grupo, opts);
+  const ideais = resolverPesosIdeaisKg(opts?.volumeL, densidadeOptsToInput(opts));
+  const pesoIdealKg = tipo && ideais[tipo] > 0 ? ideais[tipo] : null;
+  const pesoKg = grupo.tonMediaViagem * 1000;
+
+  if (pesoIdealKg != null && pesoIdealKg > 0 && pesoKg > 0) {
+    const pctIdeal = Math.round((pesoKg / pesoIdealKg) * 1000) / 10;
+    const nota = notaDaFaixaIdeal(classificarPctIdeal(pctIdeal));
+    return {
+      status: statusPctVsMargemIdeal(pctIdeal),
+      pctIdeal,
+      pesoIdealKg,
+      mediaRefLabel: LABEL_TIPO_CAMINHAO[tipo!],
+      notaIdeal: nota,
+      pctMediaTonViag: pctIdeal,
+    };
+  }
+
+  // Sem tipo/ideal: não marca Mini como gargalo — status neutro (médio)
+  return {
+    status: 'medio',
+    pctIdeal: null,
+    pesoIdealKg: null,
+    mediaRefLabel: tipo ? LABEL_TIPO_CAMINHAO[tipo] : 'sem tipo',
+    notaIdeal: null,
+    pctMediaTonViag: avgDia,
+  };
+}
+
+/** Linhas por placa — eficiência vs ideal do tipo (Mini/Toco/…). */
 export function montarEficienciaPlacas(
   analise: OperacaoDiaAnalise,
   placasReserva?: string[],
+  opts?: OptsEficienciaContrato,
 ): LinhaEficienciaPlaca[] {
-  const avgTonViag = analise.resumo.tonMediaColeta;
+  const ordem = { ruim: 0, medio: 1, bom: 2 };
   return analise.porPlaca
     .filter((p) => p.chave !== '—')
     .map((p) => {
-      const pct = avgTonViag > 0 ? (p.tonMediaViagem / avgTonViag) * 100 : 100;
+      const classif = classificarGrupoVsIdealTipo(p, opts);
       return {
         ...p,
         tonHora: p.horas > 0 ? p.toneladas / p.horas : 0,
-        pctMediaTonViag: pct,
-        status: statusVsMedia(pct),
+        pctMediaTonViag: classif.pctMediaTonViag,
+        status: classif.status,
         ehReserva: ehPlacaReserva(p.chave, placasReserva),
+        mediaRefLabel: classif.mediaRefLabel,
+        pesoIdealKg: classif.pesoIdealKg,
+        pctIdeal: classif.pctIdeal,
+        notaIdeal: classif.notaIdeal,
       };
     })
-    .sort((a, b) => a.pctMediaTonViag - b.pctMediaTonViag);
+    .sort((a, b) => {
+      const ds = ordem[a.status] - ordem[b.status];
+      if (ds !== 0) return ds;
+      return (a.pctIdeal ?? 999) - (b.pctIdeal ?? 999);
+    });
+}
+
+/** Eficiência de motorista/turno/regional vs ideal do tipo predominante. */
+export function montarEficienciaGrupos(
+  linhas: LinhaOperacaoGrupo[],
+  opts?: OptsEficienciaContrato,
+): LinhaEficienciaPlaca[] {
+  const ordem = { ruim: 0, medio: 1, bom: 2 };
+  return linhas
+    .filter((l) => l.chave && l.chave !== '—' && l.viagens > 0)
+    .map((l) => {
+      const classif = classificarGrupoVsIdealTipo(l, opts);
+      return {
+        ...l,
+        tonHora: l.horas > 0 ? l.toneladas / l.horas : 0,
+        pctMediaTonViag: classif.pctMediaTonViag,
+        status: classif.status,
+        mediaRefLabel: classif.mediaRefLabel,
+        pesoIdealKg: classif.pesoIdealKg,
+        pctIdeal: classif.pctIdeal,
+        notaIdeal: classif.notaIdeal,
+      };
+    })
+    .sort((a, b) => {
+      const ds = ordem[a.status] - ordem[b.status];
+      if (ds !== 0) return ds;
+      return (a.pctIdeal ?? 999) - (b.pctIdeal ?? 999);
+    });
 }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   FiCheckCircle, FiAlertTriangle, FiPlus, FiEdit2, FiTrash2,
-  FiRefreshCw, FiMessageSquare, FiX, FiWifi,
+  FiRefreshCw, FiMessageSquare, FiX, FiWifi, FiWifiOff,
 } from 'react-icons/fi'
 import { useToast } from '../contexts/ToastContext'
 import wuzapiService, {
@@ -52,6 +52,7 @@ export default function WhatsappGrupos() {
   const [servicos, setServicos] = useState<ServicoOpcao[]>([])
   const [carregando, setCarregando] = useState(true)
   const [conectando, setConectando] = useState(false)
+  const [desconectando, setDesconectando] = useState(false)
   const [modalAberto, setModalAberto] = useState(false)
   const [editandoId, setEditandoId] = useState<string | null>(null)
   const [form, setForm] = useState<FormGrupo>(formVazio)
@@ -153,6 +154,39 @@ export default function WhatsappGrupos() {
       adicionarToast(msg || 'Erro ao conectar WhatsApp', 'error')
     } finally {
       setConectando(false)
+    }
+  }
+
+  const handleDesconectar = async () => {
+    if (!window.confirm('Desconectar o WhatsApp deste sistema? Será preciso escanear o QR de novo.')) {
+      return
+    }
+    setDesconectando(true)
+    try {
+      const r = await wuzapiService.disconnect()
+      if (r.sucesso === false) {
+        adicionarToast(r.erro || 'Falha ao desconectar', 'error')
+      } else {
+        adicionarToast(r.message || 'WhatsApp desconectado', 'success')
+        setStatus((prev) => (prev
+          ? {
+              ...prev,
+              conectado: false,
+              logado: false,
+              qrCode: null,
+              sessao: prev.sessao
+                ? { ...prev.sessao, connected: false, loggedIn: false, jid: '' }
+                : null,
+            }
+          : prev))
+        setTimeout(() => atualizarStatus(true), 800)
+      }
+    } catch (error: unknown) {
+      const msg = (error as { response?: { data?: { erro?: string; error?: string } } })?.response?.data?.erro
+        || (error as { response?: { data?: { error?: string } } })?.response?.data?.error
+      adicionarToast(msg || 'Erro ao desconectar WhatsApp', 'error')
+    } finally {
+      setDesconectando(false)
     }
   }
 
@@ -267,7 +301,8 @@ export default function WhatsappGrupos() {
 
   const conectado = !!(status?.conectado ?? status?.sessao?.connected)
   const sessaoOk = conectado && logado
-  const aguardandoQr = !!(status?.configurado && conectado && !logado)
+  const wuzapiOffline = !!(status?.wuzapiOffline)
+  const aguardandoQr = !!(status?.configurado && conectado && !logado && !wuzapiOffline)
   const qrCode = status?.qrCode || null
 
   return (
@@ -276,7 +311,8 @@ export default function WhatsappGrupos() {
         <div>
           <h2>Grupos WhatsApp</h2>
           <p className="wa-subtitle">
-            Conecte o WhatsApp pelo QR e mapeie cada grupo para um serviço. Planilhas do grupo são importadas automaticamente.
+            Conecte o WhatsApp pelo QR e mapeie o grupo a um serviço do contrato.
+            A planilha é classificada automaticamente (Coleta / Roçada / Capina…) e o relatório do último dia é enviado ao grupo.
           </p>
         </div>
         <div className="wa-grupos-actions">
@@ -297,31 +333,63 @@ export default function WhatsappGrupos() {
           <strong>
             {!status?.configurado
               ? 'WuzAPI não configurada'
-              : sessaoOk
-                ? 'WhatsApp conectado e logado'
-                : aguardandoQr
-                  ? 'Aguardando leitura do QR Code'
-                  : 'WuzAPI configurada — sessão offline'}
+              : wuzapiOffline
+                ? 'WuzAPI offline (container parado)'
+                : sessaoOk
+                  ? 'WhatsApp conectado e logado'
+                  : aguardandoQr
+                    ? 'Aguardando leitura do QR Code'
+                    : 'WuzAPI configurada — sessão offline'}
           </strong>
           <div className="wa-status-meta">
-            {status?.url || 'URL não definida'}
-            {status?.sessao?.jid ? ` · ${status.sessao.jid}` : ''}
-            {status?.mensagem ? ` · ${status.mensagem}` : ''}
-            {status?.erroSessao ? ` · ${status.erroSessao}` : ''}
+            {!status?.configurado
+              ? 'Defina WUZAPI_URL e WUZAPI_TOKEN no .env e reinicie o backend (a WuzAPI precisa estar rodando).'
+              : wuzapiOffline
+                ? 'Suba a WuzAPI: docker compose up -d wuzapi-db wuzapi — depois clique em Conectar / Gerar QR.'
+                : (
+                <>
+                  {status?.url || 'URL não definida'}
+                  {status?.tokenExiste === false ? ' · token ausente' : ''}
+                  {status?.sessao?.jid ? ` · ${status.sessao.jid}` : ''}
+                  {status?.mensagem ? ` · ${status.mensagem}` : ''}
+                  {status?.erroSessao && !wuzapiOffline ? ` · ${status.erroSessao}` : ''}
+                </>
+              )}
           </div>
-          <div className="wa-webhook">
-            Webhook: <code>{webhookUrl}</code>
-            <button type="button" className="btn-copy" onClick={() => {
-              navigator.clipboard.writeText(webhookUrl)
-              adicionarToast('URL do webhook copiada', 'success')
-            }}>Copiar</button>
-          </div>
-          {status?.configurado && !logado && (
+          {status?.configurado && (
+            <div className="wa-webhook">
+              Webhook: <code>{webhookUrl}</code>
+              <button type="button" className="btn-copy" onClick={() => {
+                navigator.clipboard.writeText(webhookUrl)
+                adicionarToast('URL do webhook copiada', 'success')
+              }}>Copiar</button>
+            </div>
+          )}
+          {status?.configurado && !wuzapiOffline && (
             <div className="wa-connect-row">
-              <button type="button" className="btn-conectar" onClick={handleConectar} disabled={conectando}>
-                <FiWifi size={15} />
-                {conectando ? 'Conectando…' : 'Conectar / Gerar QR'}
-              </button>
+              {!logado && (
+                <button
+                  type="button"
+                  className="btn-conectar"
+                  onClick={handleConectar}
+                  disabled={conectando || desconectando}
+                >
+                  <FiWifi size={15} />
+                  {conectando ? 'Conectando…' : 'Conectar / Gerar QR'}
+                </button>
+              )}
+              {(conectado || logado) && (
+                <button
+                  type="button"
+                  className="btn-desconectar"
+                  onClick={handleDesconectar}
+                  disabled={conectando || desconectando}
+                  title="Encerrar sessão WhatsApp neste sistema"
+                >
+                  <FiWifiOff size={15} />
+                  {desconectando ? 'Desconectando…' : 'Desconectar'}
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -343,6 +411,15 @@ export default function WhatsappGrupos() {
       {sessaoOk && (
         <div className="wa-ok-banner">
           <FiCheckCircle size={16} /> WhatsApp logado — pronto para receber planilhas dos grupos.
+          <button
+            type="button"
+            className="btn-desconectar-inline"
+            onClick={handleDesconectar}
+            disabled={desconectando}
+          >
+            <FiWifiOff size={14} />
+            {desconectando ? 'Desconectando…' : 'Desconectar'}
+          </button>
         </div>
       )}
 

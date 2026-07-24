@@ -33,6 +33,8 @@ export interface LinhaRankingColeta {
   tonPorViagem: number;
   kmPorViagem: number;
   placa?: string;
+  /** Tipo predominante do grupo (placa/motorista) — para eficiência vs ideal. */
+  tipoCaminhao?: string;
 }
 
 export interface AgregacaoColetaResult {
@@ -85,8 +87,9 @@ function baseQb(
   const qb = repo.createQueryBuilder(alias)
     .where(`${alias}.planilhaUploadId IN (:...uploadIds)`, { uploadIds });
   aplicarFiltroViagensValidasDashboard(qb, alias);
-  if (dataInicio) qb.andWhere(`${alias}.dataSaida >= :inicio`, { inicio: dataInicio });
-  if (dataFim) qb.andWhere(`${alias}.dataSaida <= :fim`, { fim: dataFim });
+  // dataSaida costuma ser meio-dia UTC — usar janela completa do dia
+  if (dataInicio) qb.andWhere(`${alias}.dataSaida >= :inicio`, { inicio: `${dataInicio}T00:00:00.000Z` });
+  if (dataFim) qb.andWhere(`${alias}.dataSaida <= :fim`, { fim: `${dataFim}T23:59:59.999Z` });
   return qb;
 }
 
@@ -108,6 +111,10 @@ function sqlTarifaPorTipo(valoresFixos: Record<string, number>): string {
   `;
 }
 
+/** Tipo predominante = o que mais aparece ordenado por viagens da linha. */
+const SQL_TIPO_PREDOMINANTE =
+  `(ARRAY_AGG(NULLIF(TRIM(c."tipoCaminhao"), '') ORDER BY COALESCE(c."viagensPorRota", 0) DESC NULLS LAST))[1]`;
+
 function mapRanking(rows: any[]): LinhaRankingColeta[] {
   return rows.map((r) => {
     const label = String(r.label || 'Não informado').trim() || 'Não informado';
@@ -116,6 +123,7 @@ function mapRanking(rows: any[]): LinhaRankingColeta[] {
     const tonelagem = round2(pesoKg / 1000);
     const kmTotal = round2(Number(r.km_total || 0));
     const horas = round2(Number(r.horas || 0));
+    const tipoRaw = r.tipo_caminhao != null ? String(r.tipo_caminhao).trim() : '';
     return {
       chave: label,
       label,
@@ -126,6 +134,7 @@ function mapRanking(rows: any[]): LinhaRankingColeta[] {
       tonPorViagem: viagens > 0 ? round2(tonelagem / viagens) : 0,
       kmPorViagem: viagens > 0 ? round2(kmTotal / viagens) : 0,
       placa: r.placa ? String(r.placa) : undefined,
+      tipoCaminhao: tipoRaw || undefined,
     };
   });
 }
@@ -234,19 +243,23 @@ export async function getAgregacaoColeta(
 
   const [porMotorista, porPlaca, porDistrito, bounds] = await Promise.all([
     baseQb(uploadIds, dataInicio, dataFim)
-      .select([...selectGrupo(labelMotorista), `STRING_AGG(DISTINCT NULLIF(TRIM(c.placa), ''), ', ') AS placa`])
+      .select([
+        ...selectGrupo(labelMotorista),
+        `STRING_AGG(DISTINCT NULLIF(TRIM(c.placa), ''), ', ') AS placa`,
+        `${SQL_TIPO_PREDOMINANTE} AS tipo_caminhao`,
+      ])
       .groupBy(labelMotorista)
       .orderBy('peso_kg', 'DESC')
       .limit(topN)
       .getRawMany(),
     baseQb(uploadIds, dataInicio, dataFim)
-      .select(selectGrupo(labelPlaca))
+      .select([...selectGrupo(labelPlaca), `${SQL_TIPO_PREDOMINANTE} AS tipo_caminhao`])
       .groupBy(labelPlaca)
       .orderBy('peso_kg', 'DESC')
       .limit(topN)
       .getRawMany(),
     baseQb(uploadIds, dataInicio, dataFim)
-      .select(selectGrupo(labelDistrito))
+      .select([...selectGrupo(labelDistrito), `${SQL_TIPO_PREDOMINANTE} AS tipo_caminhao`])
       .groupBy(labelDistrito)
       .orderBy('peso_kg', 'DESC')
       .limit(topN)

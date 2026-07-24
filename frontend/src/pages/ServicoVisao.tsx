@@ -13,6 +13,7 @@ import ServicoMiniFlow from '../components/ServicoMiniFlow';
 import VerificacaoViagensPanel, { type VerificacaoViagensData } from '../components/VerificacaoViagensPanel';
 import type { ColunaDetectada } from '../components/KpiEditor/KpiEditorTypes';
 import { extrairPlacasReservaContrato } from '../utils/placasReserva';
+import { ehServicoPorUnidade } from '../utils/unidadeServico';
 import servicoService from '../services/servicoService';
 
 /** Acima disso, KPIs/executivo podem truncar no backend (GRAFICOS_DADOS_LIMITE). */
@@ -96,7 +97,7 @@ export default function ServicoVisao() {
         setPeriodoDados(data.periodoDados ?? null);
       }
 
-      const ehRocada = tipoAtual === 'rocadeira';
+      const ehRocada = ehServicoPorUnidade(tipoAtual);
       const [resContrato, resInconsistencias, resVerificacao] = await Promise.allSettled([
         fetch('/api/contracts/' + contractId, { headers }),
         ehRocada
@@ -152,11 +153,12 @@ export default function ServicoVisao() {
 
   const temPlanilha = colunas.length > 0 || totalRegistros > 0;
   const ehRocada = tipoServico === 'rocadeira';
+  const ehPorUnidade = ehServicoPorUnidade(tipoServico);
   const volumeAlto = totalRegistros > AVISO_VOLUME_ALTO
     || (inconsistencias?.viagensValidas ?? 0) > AVISO_VOLUME_ALTO;
 
   const renderBannerInconsistencias = () => {
-    if (ehRocada) return null;
+    if (ehPorUnidade) return null;
     if (!inconsistencias || inconsistencias.viagensInconsistentes <= 0) return null;
 
     return (
@@ -295,7 +297,7 @@ export default function ServicoVisao() {
             (sem trazer todos os registros para o navegador).
           </div>
         )}
-        {registrosTotais > 0 && totalRegistros === 0 && !ehRocada && (
+        {registrosTotais > 0 && totalRegistros === 0 && !ehPorUnidade && (
           <div style={{
             background: '#fff7ed', border: '1px solid #fdba74', borderRadius: '8px',
             padding: '0.55rem 0.75rem', marginBottom: '0.65rem', fontSize: '0.75rem', color: '#9a3412',
@@ -344,7 +346,9 @@ export default function ServicoVisao() {
           <p style={{ margin: '0.2rem 0 0', fontSize: '0.78rem', color: '#64748b', lineHeight: 1.45 }}>
             {ehRocada
               ? 'Acompanhe o ciclo de roçada (m²) e abra qualquer dia para ver área por bairro/operador.'
-              : 'Acompanhe o ciclo e abra qualquer dia para ver a operação detalhada.'}
+              : ehPorUnidade
+                ? 'Acompanhe o ciclo pela unidade do serviço (km, m ou árvores) e abra qualquer dia para o detalhe.'
+                : 'Acompanhe o ciclo e abra qualquer dia para ver a operação detalhada.'}
             {totalRegistros > 0 && (
               <span style={{ color: '#94a3b8' }}> · {totalRegistros.toLocaleString('pt-BR')} registros importados</span>
             )}
@@ -354,7 +358,7 @@ export default function ServicoVisao() {
           <button
             type="button"
             className="btn btn-sm btn-ghost"
-            onClick={() => carregarDados({ revalidarInconsistencias: !ehRocada })}
+            onClick={() => carregarDados({ revalidarInconsistencias: !ehPorUnidade })}
             title="Recarregar dados"
           >
             <FiRefreshCw size={13} />
@@ -376,7 +380,7 @@ export default function ServicoVisao() {
 
       {renderBannerInconsistencias()}
 
-      {!ehRocada && verificacaoViagens && verificacaoViagens.linhasImportadas > 0 && (
+      {!ehPorUnidade && verificacaoViagens && verificacaoViagens.linhasImportadas > 0 && (
         <VerificacaoViagensPanel dados={verificacaoViagens} compacto={!verificacaoViagens.temDivergencia} />
       )}
 

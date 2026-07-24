@@ -1,6 +1,7 @@
-import { FiMap, FiUsers, FiTool, FiLayers } from 'react-icons/fi';
+import { FiMap, FiUsers, FiTool, FiLayers, FiActivity, FiDollarSign } from 'react-icons/fi';
 import { fmtAreaM2, type AnaliseRocadaDia, type LinhaRocadaAgrupada } from '../utils/operacaoRocada';
 import { formatarIsoParaBr } from '../utils/periodoDados';
+import GraficosRocadaDia from './GraficosRocadaDia';
 
 export interface BlocoTipoRocadaUi {
   tipo: 'manual' | 'mecanizada';
@@ -20,10 +21,12 @@ export interface BlocoTipoRocadaUi {
 interface Props {
   dataIso: string;
   analise: AnaliseRocadaDia | null;
-  /** Blocos separados Manual / Mecanizada vindos da API */
   blocoManual?: BlocoTipoRocadaUi | null;
   blocoMecanizada?: BlocoTipoRocadaUi | null;
   porTipo?: LinhaRocadaAgrupada[];
+  valorM2?: number | null;
+  valorM2Manual?: number | null;
+  valorM2Mecanizada?: number | null;
   registros?: Record<string, unknown>[];
   totalRegistros?: number;
   carregandoRegistros?: boolean;
@@ -34,11 +37,19 @@ interface Props {
   onPaginaChange?: (pagina: number) => void;
 }
 
-function Kpi({ label, valor, cor, icone }: { label: string; valor: string; cor: string; icone: React.ReactNode }) {
+function Kpi({
+  label, valor, cor, icone, sub,
+}: {
+  label: string;
+  valor: string;
+  cor: string;
+  icone: React.ReactNode;
+  sub?: string;
+}) {
   return (
     <div style={{
-      flex: '1 1 120px', background: '#fff', border: '1px solid #e2e8f0',
-      borderRadius: '10px', padding: '0.65rem 0.75rem', borderTop: `3px solid ${cor}`, minWidth: 0,
+      flex: '1 1 140px', background: '#fff', border: '1px solid #e2e8f0',
+      borderRadius: '10px', padding: '0.7rem 0.8rem', borderTop: `3px solid ${cor}`, minWidth: 0,
     }}>
       <div style={{
         display: 'flex', alignItems: 'center', gap: '0.3rem',
@@ -47,13 +58,63 @@ function Kpi({ label, valor, cor, icone }: { label: string; valor: string; cor: 
       }}>
         {icone} {label}
       </div>
-      <div style={{ fontSize: '1.05rem', fontWeight: 800, color: '#0f172a', lineHeight: 1.1 }}>{valor}</div>
+      <div style={{ fontSize: '1.1rem', fontWeight: 800, color: '#0f172a', lineHeight: 1.15 }}>{valor}</div>
+      {sub && (
+        <div style={{ fontSize: '0.65rem', color: '#94a3b8', marginTop: '0.2rem' }}>{sub}</div>
+      )}
+    </div>
+  );
+}
+
+function MiniStat({ label, valor }: { label: string; valor: string }) {
+  return (
+    <div style={{
+      background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.08)',
+      borderRadius: '8px', padding: '0.4rem 0.55rem',
+    }}>
+      <div style={{ fontSize: '0.58rem', color: '#94a3b8', textTransform: 'uppercase', fontWeight: 700 }}>
+        {label}
+      </div>
+      <div style={{ fontSize: '0.9rem', fontWeight: 800, color: '#e2e8f0', marginTop: '0.1rem' }}>
+        {valor}
+      </div>
+    </div>
+  );
+}
+
+function BarraParticipacao({
+  label, area, total, cor,
+}: {
+  label: string;
+  area: number;
+  total: number;
+  cor: string;
+}) {
+  const pct = total > 0 ? (area / total) * 100 : 0;
+  return (
+    <div style={{ marginBottom: '0.55rem' }}>
+      <div style={{
+        display: 'flex', justifyContent: 'space-between', gap: '0.5rem',
+        fontSize: '0.72rem', marginBottom: '0.25rem',
+      }}>
+        <span style={{ fontWeight: 700, color: '#334155' }}>{label}</span>
+        <span style={{ color: '#64748b' }}>
+          {fmtAreaM2(area)} m² · {pct.toFixed(0)}%
+        </span>
+      </div>
+      <div style={{ height: 8, background: '#f1f5f9', borderRadius: 999, overflow: 'hidden' }}>
+        <div style={{
+          width: `${Math.min(100, pct)}%`, height: '100%', background: cor, borderRadius: 999,
+        }}
+        />
+      </div>
     </div>
   );
 }
 
 function TabelaGrupo({ titulo, linhas }: { titulo: string; linhas: { label: string; registros: number; areaM2: number }[] }) {
   if (!linhas.length) return null;
+  const totalArea = linhas.reduce((s, l) => s + l.areaM2, 0);
   return (
     <div style={{
       background: '#fff', border: '1px solid #e2e8f0', borderRadius: '10px',
@@ -62,8 +123,12 @@ function TabelaGrupo({ titulo, linhas }: { titulo: string; linhas: { label: stri
       <div style={{
         padding: '0.55rem 0.85rem', background: '#f8fafc', borderBottom: '1px solid #e2e8f0',
         fontSize: '0.75rem', fontWeight: 700, color: '#334155',
+        display: 'flex', justifyContent: 'space-between', gap: '0.5rem',
       }}>
-        {titulo}
+        <span>{titulo}</span>
+        <span style={{ color: '#64748b', fontWeight: 600 }}>
+          {linhas.length} item(ns) · {fmtAreaM2(totalArea)} m²
+        </span>
       </div>
       <div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
@@ -71,19 +136,26 @@ function TabelaGrupo({ titulo, linhas }: { titulo: string; linhas: { label: stri
             <tr style={{ color: '#64748b', background: '#fafbfc' }}>
               <th style={{ padding: '0.4rem 0.85rem', textAlign: 'left' }}>Nome</th>
               <th style={{ padding: '0.4rem 0.6rem', textAlign: 'center' }}>Registros</th>
+              <th style={{ padding: '0.4rem 0.6rem', textAlign: 'right' }}>Participação</th>
               <th style={{ padding: '0.4rem 0.85rem', textAlign: 'right' }}>Área (m²)</th>
             </tr>
           </thead>
           <tbody>
-            {linhas.slice(0, 30).map((l) => (
-              <tr key={l.label} style={{ borderTop: '1px solid #f1f5f9' }}>
-                <td style={{ padding: '0.4rem 0.85rem', fontWeight: 600, color: '#1e293b' }}>{l.label}</td>
-                <td style={{ padding: '0.4rem 0.6rem', textAlign: 'center', color: '#475569' }}>{l.registros}</td>
-                <td style={{ padding: '0.4rem 0.85rem', textAlign: 'right', fontWeight: 700, color: '#166534' }}>
-                  {fmtAreaM2(l.areaM2)}
-                </td>
-              </tr>
-            ))}
+            {linhas.slice(0, 30).map((l) => {
+              const pct = totalArea > 0 ? (l.areaM2 / totalArea) * 100 : 0;
+              return (
+                <tr key={l.label} style={{ borderTop: '1px solid #f1f5f9' }}>
+                  <td style={{ padding: '0.45rem 0.85rem', fontWeight: 600, color: '#1e293b' }}>{l.label}</td>
+                  <td style={{ padding: '0.45rem 0.6rem', textAlign: 'center', color: '#475569' }}>{l.registros}</td>
+                  <td style={{ padding: '0.45rem 0.6rem', textAlign: 'right', color: '#64748b' }}>
+                    {pct.toFixed(1)}%
+                  </td>
+                  <td style={{ padding: '0.45rem 0.85rem', textAlign: 'right', fontWeight: 700, color: '#166534' }}>
+                    {fmtAreaM2(l.areaM2)}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -91,13 +163,7 @@ function TabelaGrupo({ titulo, linhas }: { titulo: string; linhas: { label: stri
   );
 }
 
-function SecaoTipo({
-  bloco,
-  cor,
-}: {
-  bloco: BlocoTipoRocadaUi;
-  cor: string;
-}) {
+function SecaoTipo({ bloco, cor }: { bloco: BlocoTipoRocadaUi; cor: string }) {
   return (
     <div style={{
       flex: '1 1 320px',
@@ -145,12 +211,30 @@ function SecaoTipo({
   );
 }
 
+function estimarReceita(
+  resumo: AnaliseRocadaDia['resumo'],
+  valorM2?: number | null,
+  valorM2Manual?: number | null,
+  valorM2Mecanizada?: number | null,
+): number {
+  const vMan = Number(valorM2Manual || 0) > 0 ? Number(valorM2Manual) : Number(valorM2 || 0);
+  const vMec = Number(valorM2Mecanizada || 0) > 0 ? Number(valorM2Mecanizada) : Number(valorM2 || 0);
+  const vFallback = Number(valorM2 || vMan || vMec || 0);
+  const areaMan = Number(resumo.areaManualM2 || 0);
+  const areaMec = Number(resumo.areaMecanizadaM2 || 0);
+  const areaOutro = Math.max(0, Number(resumo.areaM2 || 0) - areaMan - areaMec);
+  return areaMan * vMan + areaMec * vMec + areaOutro * vFallback;
+}
+
 export default function RocadaDiaPanel({
   dataIso,
   analise,
   blocoManual = null,
   blocoMecanizada = null,
   porTipo = [],
+  valorM2 = null,
+  valorM2Manual = null,
+  valorM2Mecanizada = null,
   registros = [],
   totalRegistros,
   carregandoRegistros,
@@ -177,46 +261,217 @@ export default function RocadaDiaPanel({
 
   const { resumo } = analise;
   const total = totalRegistros ?? resumo.registros;
+  const mediaPorRegistro = resumo.registros > 0 ? resumo.areaM2 / resumo.registros : 0;
+  const receita = estimarReceita(resumo, valorM2, valorM2Manual, valorM2Mecanizada);
   const temSplit = Boolean(
     (blocoManual && blocoManual.registros > 0) || (blocoMecanizada && blocoMecanizada.registros > 0),
   );
-  const tipos = porTipo.length > 0
+  const areaMan = Number(resumo.areaManualM2 || blocoManual?.areaM2 || 0);
+  const areaMec = Number(resumo.areaMecanizadaM2 || blocoMecanizada?.areaM2 || 0);
+  const areaOutro = Math.max(0, resumo.areaM2 - areaMan - areaMec);
+
+  const tiposBrutos = porTipo.length > 0
     ? porTipo
     : [
-        ...(resumo.areaManualM2 ? [{ label: 'Manual', registros: resumo.registrosManual || 0, areaM2: resumo.areaManualM2 }] : []),
-        ...(resumo.areaMecanizadaM2 ? [{ label: 'Mecanizada', registros: resumo.registrosMecanizada || 0, areaM2: resumo.areaMecanizadaM2 }] : []),
+        ...(areaMan > 0 ? [{ label: 'Manual', registros: resumo.registrosManual || blocoManual?.registros || 0, areaM2: areaMan }] : []),
+        ...(areaMec > 0 ? [{ label: 'Mecanizada', registros: resumo.registrosMecanizada || blocoMecanizada?.registros || 0, areaM2: areaMec }] : []),
+        ...(areaOutro > 0 && areaMan <= 0 && areaMec <= 0
+          ? [{ label: 'Roçada', registros: resumo.registros, areaM2: areaOutro }]
+          : areaOutro > 0
+            ? [{ label: 'Outros', registros: Math.max(0, resumo.registros - (resumo.registrosManual || 0) - (resumo.registrosMecanizada || 0)), areaM2: areaOutro }]
+            : []),
       ];
+  const tipos = tiposBrutos
+    .map((t) => ({
+      ...t,
+      label: /n[aã]o classificado/i.test(t.label) ? 'Roçada' : t.label,
+    }))
+    .filter((t) => t.areaM2 > 0);
+
+  const linhasLocal = (analise.porBairro || []).filter((l) => l.label !== 'Não informado' && l.areaM2 > 0);
+  const linhasSegmento = (analise.porOperador || []).filter((l) => l.label !== 'Não informado' && l.areaM2 > 0);
+  const linhasEquipe = (analise.porEquipe || []).filter((l) => l.label !== 'Não informado' && l.areaM2 > 0);
+  const linhasEquip = (analise.porEquipamento || []).filter((l) => l.label !== 'Não informado' && l.areaM2 > 0);
+
+  // Rótulos conforme o que a planilha realmente trouxe
+  const labelLocal = linhasLocal.some((l) => /→/.test(l.label)) ? 'Área por local'
+    : linhasLocal.length > 0 ? 'Área por local / trecho / bairro'
+      : 'Área por local';
+  const labelSegmento = linhasSegmento.some((l) => /→/.test(l.label))
+    ? 'Área por segmento (início → término)'
+    : 'Área por operador / endereço';
+  const labelEquipe = linhasEquipe.some((l) => /mensal|semanal|diario|diário|bimestral/i.test(l.label))
+    ? 'Área por periodicidade / equipe'
+    : 'Área por equipe';
 
   return (
     <div>
+      {/* Resumo rápido */}
+      <div style={{
+        background: 'linear-gradient(135deg, #ecfdf5 0%, #eff6ff 100%)',
+        border: '1px solid #bbf7d0', borderRadius: '10px',
+        padding: '0.65rem 0.85rem', marginBottom: '0.75rem',
+        fontSize: '0.72rem', color: '#166534',
+      }}>
+        <strong>{fmtAreaM2(resumo.areaM2)} m²</strong>
+        {' '}em {formatarIsoParaBr(dataIso)}
+        {' · '}{resumo.registros} registro{resumo.registros !== 1 ? 's' : ''}
+        {resumo.bairros > 0 && ` · ${resumo.bairros} local${resumo.bairros !== 1 ? 'is' : ''}`}
+        {resumo.operadores > 0 && ` · ${resumo.operadores} segmento${resumo.operadores !== 1 ? 's' : ''}`}
+        {resumo.equipes > 0 && ` · ${resumo.equipes} equipe${resumo.equipes !== 1 ? 's' : ''}/periodicidade`}
+        {resumo.equipamentos > 0 && ` · ${resumo.equipamentos} equipamento${resumo.equipamentos !== 1 ? 's' : ''}`}
+      </div>
+
+      {/* Hero */}
+      <div style={{
+        background: 'linear-gradient(135deg, #1e293b 0%, #0f172a 100%)',
+        borderRadius: '12px', padding: '1rem 1.25rem', marginBottom: '0.85rem',
+        border: '1px solid #334155', display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap',
+      }}>
+        <div style={{ flex: 1, minWidth: '180px' }}>
+          <div style={{ fontSize: '0.6rem', fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase' }}>
+            Área roçada no dia
+          </div>
+          <div style={{
+            fontSize: '1.85rem', fontWeight: 800, color: '#86efac', marginTop: '0.15rem',
+            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+          }}>
+            {fmtAreaM2(resumo.areaM2)} m²
+          </div>
+          <div style={{ fontSize: '0.68rem', color: '#64748b', marginTop: '0.25rem' }}>
+            Média {fmtAreaM2(mediaPorRegistro)} m² / registro
+            {receita > 0 && ` · receita estimada R$ ${receita.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+          </div>
+        </div>
+        <div style={{
+          display: 'grid', gridTemplateColumns: 'repeat(2, minmax(95px, 1fr))', gap: '0.4rem',
+          minWidth: '210px',
+        }}>
+          <MiniStat label="Registros" valor={String(resumo.registros)} />
+          <MiniStat label="Locais" valor={String(resumo.bairros)} />
+          <MiniStat label="Segmentos" valor={String(resumo.operadores)} />
+          <MiniStat label="Equipes" valor={String(resumo.equipes)} />
+        </div>
+      </div>
+
+      {/* KPIs */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '0.85rem' }}>
-        <Kpi label="Área total" valor={`${fmtAreaM2(resumo.areaM2)} m²`} cor="#22c55e" icone={<FiLayers size={11} />} />
-        <Kpi label="Registros" valor={String(resumo.registros)} cor="#6366f1" icone={<FiMap size={11} />} />
-        {(resumo.areaManualM2 || 0) > 0 && (
+        <Kpi
+          label="Área total"
+          valor={`${fmtAreaM2(resumo.areaM2)} m²`}
+          cor="#22c55e"
+          icone={<FiLayers size={11} />}
+          sub={`${resumo.registros} registro(s)`}
+        />
+        <Kpi
+          label="Média / registro"
+          valor={`${fmtAreaM2(mediaPorRegistro)} m²`}
+          cor="#6366f1"
+          icone={<FiActivity size={11} />}
+        />
+        {resumo.bairros > 0 && (
           <Kpi
-            label="Manual"
-            valor={`${fmtAreaM2(resumo.areaManualM2 || 0)} m²`}
-            cor="#0ea5e9"
-            icone={<FiUsers size={11} />}
+            label="Locais"
+            valor={String(resumo.bairros)}
+            cor="#0369a1"
+            icone={<FiMap size={11} />}
+            sub="bairros / trechos"
           />
         )}
-        {(resumo.areaMecanizadaM2 || 0) > 0 && (
+        {resumo.operadores > 0 && (
+          <Kpi
+            label="Segmentos"
+            valor={String(resumo.operadores)}
+            cor="#7c3aed"
+            icone={<FiUsers size={11} />}
+            sub="operador / início-término"
+          />
+        )}
+        {resumo.equipes > 0 && (
+          <Kpi
+            label="Equipes"
+            valor={String(resumo.equipes)}
+            cor="#b45309"
+            icone={<FiUsers size={11} />}
+            sub="equipe / periodicidade"
+          />
+        )}
+        {resumo.equipamentos > 0 && (
+          <Kpi
+            label="Equipamentos"
+            valor={String(resumo.equipamentos)}
+            cor="#0f766e"
+            icone={<FiTool size={11} />}
+          />
+        )}
+        {receita > 0 && (
+          <Kpi
+            label="Receita estimada"
+            valor={`R$ ${receita.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+            cor="#059669"
+            icone={<FiDollarSign size={11} />}
+            sub="com base na tarifa m² do serviço"
+          />
+        )}
+        {areaMan > 0 && (
+          <Kpi
+            label="Manual"
+            valor={`${fmtAreaM2(areaMan)} m²`}
+            cor="#0ea5e9"
+            icone={<FiUsers size={11} />}
+            sub={resumo.areaM2 > 0 ? `${((areaMan / resumo.areaM2) * 100).toFixed(0)}% do dia` : undefined}
+          />
+        )}
+        {areaMec > 0 && (
           <Kpi
             label="Mecanizada"
-            valor={`${fmtAreaM2(resumo.areaMecanizadaM2 || 0)} m²`}
+            valor={`${fmtAreaM2(areaMec)} m²`}
             cor="#f59e0b"
             icone={<FiTool size={11} />}
+            sub={resumo.areaM2 > 0 ? `${((areaMec / resumo.areaM2) * 100).toFixed(0)}% do dia` : undefined}
           />
         )}
       </div>
 
+      {/* Participação por tipo */}
       {tipos.length > 0 && (
-        <TabelaGrupo titulo="Resumo por tipo de execução" linhas={tipos.map((t) => ({
-          label: t.label,
-          registros: t.registros,
-          areaM2: t.areaM2,
-        }))} />
+        <div style={{
+          background: '#fff', border: '1px solid #e2e8f0', borderRadius: '10px',
+          padding: '0.85rem 1rem', marginBottom: '0.85rem',
+        }}>
+          <div style={{
+            fontSize: '0.75rem', fontWeight: 700, color: '#334155', marginBottom: '0.65rem',
+          }}>
+            Participação por tipo de execução
+          </div>
+          {tipos.map((t) => (
+            <BarraParticipacao
+              key={t.label}
+              label={t.label}
+              area={t.areaM2}
+              total={resumo.areaM2}
+              cor={
+                /manual/i.test(t.label) ? '#0ea5e9'
+                  : /mecaniz/i.test(t.label) ? '#f59e0b'
+                    : '#22c55e'
+              }
+            />
+          ))}
+        </div>
       )}
+
+      <GraficosRocadaDia
+        analise={{
+          ...analise,
+          porBairro: linhasLocal,
+          porOperador: linhasSegmento,
+          porEquipe: linhasEquipe,
+          porEquipamento: linhasEquip,
+        }}
+        porTipo={tipos}
+        blocoManual={blocoManual}
+        blocoMecanizada={blocoMecanizada}
+      />
 
       {temSplit ? (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.85rem', marginBottom: '0.85rem', alignItems: 'flex-start' }}>
@@ -229,10 +484,18 @@ export default function RocadaDiaPanel({
         </div>
       ) : (
         <>
-          <TabelaGrupo titulo="Área por bairro" linhas={analise.porBairro} />
-          <TabelaGrupo titulo="Área por operador" linhas={analise.porOperador} />
-          <TabelaGrupo titulo="Área por equipe" linhas={analise.porEquipe} />
-          <TabelaGrupo titulo="Área por equipamento" linhas={analise.porEquipamento} />
+          {(linhasLocal.length > 0 || linhasSegmento.length > 0 || linhasEquipe.length > 0 || linhasEquip.length > 0) && (
+            <div style={{
+              fontSize: '0.7rem', fontWeight: 700, color: '#64748b',
+              textTransform: 'uppercase', letterSpacing: '0.04em', margin: '0.25rem 0 0.5rem',
+            }}>
+              Rankings a partir dos indicadores da planilha
+            </div>
+          )}
+          <TabelaGrupo titulo={labelLocal} linhas={linhasLocal} />
+          <TabelaGrupo titulo={labelSegmento} linhas={linhasSegmento} />
+          <TabelaGrupo titulo={labelEquipe} linhas={linhasEquipe} />
+          <TabelaGrupo titulo="Área por equipamento" linhas={linhasEquip} />
         </>
       )}
 

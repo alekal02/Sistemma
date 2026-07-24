@@ -1,12 +1,37 @@
 import type { KpiValor } from '../hooks/useKpiCalculator';
 import { formatarIsoParaBr } from './periodoDados';
 import type { RegistroDiaLinha } from './dadosPorDia';
-import type { OperacaoDiaAnalise, LinhaOperacaoGrupo, InsightOperacao, LinhaEficienciaPlaca } from './operacaoDia';
-import { gerarInsightsOperacao, montarEficienciaPlacas } from './operacaoDia';
+import type { OperacaoDiaAnalise, LinhaEficienciaPlaca, OptsAnaliseContratoDia } from './operacaoDia';
+import { montarEficienciaPlacas } from './operacaoDia';
 import type { ReceitaDiaAnalise, LinhaReceitaGrupo } from './receitaDia';
-import type { EstudoRotasDia, GargaloRota, LinhaEstudoRota } from './estudoRotasDia';
+import type { EstudoRotasDia } from './estudoRotasDia';
+import type { CenarioCaixaMediaDia } from './cenarioCaixaMediaDia';
+import type { ResumoCapacidadeDia } from './capacidadeViagemDia';
 import { fmtMoeda, fmtNum } from './relatorioDiario';
 import { resumirFrotaOperacao } from './placasReserva';
+import {
+  LABEL_TIPO_CAMINHAO,
+  PCT_IDEAL_MAX,
+  PCT_IDEAL_MIN,
+  densidadeOptsToInput,
+  pctIdealForaDaMargem,
+  textoEscalaIdealCurto,
+  TIPOS_LIMITE_CAMINHAO,
+  normalizarTipoCaminhaoPeso,
+  resolverDensidadeResiduoKgL,
+  resolverLimitesPesoKg,
+  resolverPesosIdeaisKg,
+  type MapaLimiteCaminhao,
+  type TipoLimiteCaminhao,
+} from './limitesCaminhaoContrato';
+import { montarPontosViagemPorTipo } from './viagemPorTipoGrafico';
+import {
+  COR_STATUS_RANKING,
+  LABEL_STATUS_RANKING,
+  montarRankingViagensPorTipo,
+  tiposPresentesRanking,
+  type RankingViagemTipoItem,
+} from './rankingViagensTipo';
 
 export type AbaRelatorioDia = 'operacao' | 'receita';
 
@@ -18,14 +43,6 @@ function esc(s: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
-}
-
-function badgeReservaHtml(): string {
-  return '<span class="badge" style="color:#92400e;background:#fef3c7;font-size:5px;margin-left:3px">RESERVA</span>';
-}
-
-function placaComReservaHtml(placa: string, ehReserva?: boolean): string {
-  return `${esc(placa)}${ehReserva ? badgeReservaHtml() : ''}`;
 }
 
 const ESTILOS = `
@@ -119,6 +136,38 @@ const ESTILOS = `
   .dest-val { font-size: 8px; font-weight: 800; color: #0f172a; margin-top: 2px; font-family: monospace; white-space: nowrap; }
   .dest-sub { font-size: 6px; color: #94a3b8; margin-top: 1px; }
   .gargalo-rota { font-weight: 800; color: #334155; }
+  .gargalo-placa { font-weight: 800; color: #1e3a5f; font-family: monospace; }
+  .celula-cenario-perda, .celula-resultado-perda { color: #991b1b !important; }
+  .celula-cenario-ganho, .celula-resultado-ganho { color: #166534 !important; }
+  .diag-box { border-radius: 8px; border: 1px solid #e2e8f0; padding: 8px 10px; margin-bottom: 8px; }
+  .diag-ok { background: #f0fdf4; border-color: #bbf7d0; }
+  .diag-atencao { background: #fffbeb; border-color: #fde68a; }
+  .diag-critico { background: #fef2f2; border-color: #fecaca; }
+  .diag-veredito { font-size: 11px; font-weight: 800; letter-spacing: 0.02em; margin-bottom: 3px; }
+  .diag-ok .diag-veredito { color: #166534; }
+  .diag-atencao .diag-veredito { color: #92400e; }
+  .diag-critico .diag-veredito { color: #991b1b; }
+  .diag-resumo { font-size: 7.5px; color: #475569; margin: 0 0 7px; line-height: 1.35; }
+  .diag-lista { margin: 0; padding: 0 0 0 14px; }
+  .diag-lista li { font-size: 7.5px; color: #1e293b; margin-bottom: 3px; line-height: 1.35; }
+  .diag-lista li strong { color: #0f172a; }
+  .diag-vazio { font-size: 7.5px; color: #166534; font-weight: 700; margin: 0; }
+  .vg-card { border: 1px solid #e2e8f0; border-radius: 8px; padding: 7px 8px; margin-bottom: 6px; background: #fff; }
+  .vg-card.g { border-color: #fecaca; background: #fef2f2; }
+  .vg-card-hd { width: 100%; border-collapse: collapse; margin-bottom: 4px; }
+  .vg-card-hd td { vertical-align: middle; padding: 0; }
+  .vg-tipo { font-size: 9px; font-weight: 800; color: #0f172a; }
+  .vg-chips { font-size: 6px; color: #64748b; margin-top: 1px; }
+  .vg-chip { display: inline-block; background: #f1f5f9; border-radius: 3px; padding: 1px 4px; margin-right: 3px; font-weight: 700; color: #334155; }
+  .vg-status { text-align: right; white-space: nowrap; }
+  .vg-row { width: 100%; border-collapse: collapse; margin-top: 3px; }
+  .vg-row td { padding: 1px 0; vertical-align: middle; font-size: 6px; }
+  .vg-row .lbl { width: 52px; color: #64748b; font-weight: 700; }
+  .vg-row .track { background: #f1f5f9; border-radius: 4px; height: 9px; overflow: hidden; }
+  .vg-row .fill { display: block; height: 9px; border-radius: 4px; min-width: 2px; }
+  .vg-row .val { width: 58px; text-align: right; font-weight: 800; font-family: monospace; color: #0f172a; padding-left: 4px; }
+  .vg-legenda { font-size: 6px; color: #64748b; margin: 0 0 6px; }
+  .vg-dot { display: inline-block; width: 7px; height: 7px; border-radius: 2px; margin-right: 3px; vertical-align: -1px; }
   .footer { text-align: center; font-size: 6px; color: #94a3b8; margin-top: 10px; padding-top: 8px; border-top: 1px solid #e2e8f0; }
   @media print { * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; } body { padding: 10px; } }
 `;
@@ -180,216 +229,381 @@ function barraHorizontalHtml(label: string, valor: number, maxVal: number, cor =
     </div>`;
 }
 
-function heroOperacaoHtml(op: OperacaoDiaAnalise['resumo']) {
-  const tonH = op.horas > 0 ? op.toneladas / op.horas : 0;
-  const kmH = op.horas > 0 ? op.km / op.horas : 0;
-  return `
-  <table class="tbl-layout">
-    <tr>
-      <td style="width:58%;padding-right:10px">
-        <div class="hero-dark hero-op">
-          <div class="lbl">Viagens do dia</div>
-          <div class="val">${fmtNum(op.viagens, 0)}</div>
-          <div class="sub">${op.caminhoes ?? op.coletores} caminhão(ões) · ${op.motoristas} motorista(s) · ${op.registros} registro(s)</div>
-        </div>
-      </td>
-      <td style="width:42%">
-        <div class="hero-dark" style="padding:8px">
-          <table class="mini-tbl">
-            <tr>
-              <td class="mini-dark"><div class="lbl">Toneladas</div><div class="val">${fmtNum(op.toneladas, 1)} t</div></td>
-              <td class="mini-dark"><div class="lbl">KM total</div><div class="val">${fmtNum(op.km, 0)} km</div></td>
-            </tr>
-            <tr>
-              <td class="mini-dark"><div class="lbl">Ton./viagem</div><div class="val">${fmtNum(op.tonMediaColeta, 2)} t</div></td>
-              <td class="mini-dark"><div class="lbl">Ton./hora</div><div class="val">${fmtNum(tonH, 2)} t/h</div></td>
-            </tr>
-          </table>
-        </div>
-      </td>
-    </tr>
-  </table>
-  <table class="ref-tbl">
-    <thead><tr>
-      <th>Indicador-chave</th><th>Valor do dia</th><th>Referência gerencial</th>
-    </tr></thead>
-    <tbody>
-      <tr><td>Produtividade por veículo</td><td class="dest">${fmtNum(op.prodColetor, 2)} t</td><td>Volume médio por placa ativa</td></tr>
-      <tr><td>KM por viagem</td><td class="dest">${fmtNum(op.kmMedioViagem, 1)} km</td><td>Eficiência de deslocamento</td></tr>
-      <tr><td>Ton./KM</td><td class="dest">${fmtNum(op.tonKm, 3)}</td><td>Carga transportada por km rodado</td></tr>
-      <tr><td>Velocidade operacional</td><td class="dest">${fmtNum(kmH, 1)} km/h</td><td>KM rodado por hora produtiva</td></tr>
-    </tbody>
-  </table>`;
-}
-
-function insightsHtml(insights: InsightOperacao[]): string {
-  if (!insights.length) return '';
-  const clsMap = { critico: 'insight-critico', atencao: 'insight-atencao', info: 'insight-info' };
-  return `
-    <div class="sec">Gargalos e pontos de atenção</div>
-    <div class="insight-box">
-      ${insights.map((i) => `
-        <div class="insight-item ${clsMap[i.severidade]}">
-          <div class="insight-tit">${esc(i.titulo)}</div>
-          <div>${esc(i.texto)}</div>
-        </div>`).join('')}
-    </div>`;
-}
-
 function statusBadge(status: 'bom' | 'medio' | 'ruim'): string {
   const map = { bom: ['st-bom', 'OK'], medio: ['st-medio', 'Atenção'], ruim: ['st-ruim', 'Gargalo'] };
   const [cls, lbl] = map[status];
   return `<span class="${cls}">${lbl}</span>`;
 }
 
-function graficoPizzaTipoOpHtml(linhas: LinhaOperacaoGrupo[], totalViagens: number): string {
-  const lista = linhas.filter((l) => l.chave && l.viagens > 0);
-  if (!lista.length) return '';
+type LinhaTipoEstudo = {
+  tipo: TipoLimiteCaminhao;
+  label: string;
+  viagens: number;
+  toneladas: number;
+  tonMediaViagem: number;
+  kmMedioViagem: number;
+  realizadoKg: number;
+  idealKg: number;
+  maxKg: number;
+  pctIdeal: number | null;
+  gargalo: boolean;
+};
 
-  const total = lista.reduce((s, l) => s + l.viagens, 0);
-  const segs = lista.map((l, i) => {
-    const pct = total > 0 ? (l.viagens / total) * 100 : 0;
-    const cor = PALETA_PIZZA[i % PALETA_PIZZA.length];
-    return { ...l, pct, cor };
-  });
+type ItemGargalo = {
+  severidade: 'critico' | 'atencao';
+  origem: 'tipo' | 'rota' | 'placa';
+  texto: string;
+};
 
-  return `
-    <div class="chart-box">
-      <div class="bloco-hd">Viagens por tipo de caminhão</div>
-      <div class="pizza-segs">
-        ${segs.map((s) => `<span class="pizza-seg" style="width:${Math.max(s.pct, 1)}%;background:${s.cor}"></span>`).join('')}
-      </div>
-      <div style="font-size:8px;font-weight:800;color:#4338ca;text-align:center;margin-bottom:4px">${fmtNum(totalViagens, 0)} viagens</div>
-      <table class="pizza-leg">
-        ${segs.map((s) => `
-          <tr>
-            <td style="width:12px"><span class="pizza-dot" style="background:${s.cor}"></span></td>
-            <td style="font-weight:600;color:#334155">${esc(s.chave)}</td>
-            <td class="r nowrap" style="color:#64748b">${fmtNum(s.viagens, 0)} viag. (${fmtNum(s.pct, 0)}%)</td>
-          </tr>`).join('')}
-      </table>
-    </div>`;
+function montarLinhasTipoEstudo(
+  operacao: OperacaoDiaAnalise,
+  estudo: EstudoRotasDia | null | undefined,
+  limOpts: OptsAnaliseContratoDia,
+): LinhaTipoEstudo[] {
+  const ideais = resolverPesosIdeaisKg(limOpts.volumeL, densidadeOptsToInput(limOpts));
+  const limites = resolverLimitesPesoKg(limOpts.limitesPesoKg);
+  const mediaEstudo = new Map(
+    (estudo?.mediaPorTipo || []).map((t) => [t.tipo, t] as const),
+  );
+
+  return TIPOS_LIMITE_CAMINHAO.map((tipo) => {
+    const g = operacao.porTipoCaminhao.find((x) => normalizarTipoCaminhaoPeso(x.chave) === tipo);
+    const m = mediaEstudo.get(tipo);
+    if ((!g || g.viagens <= 0) && (!m || m.viagens <= 0)) return null;
+
+    const viagens = m?.viagens || g!.viagens;
+    const toneladas = m?.toneladas ?? g!.toneladas;
+    const tonMediaViagem = m?.tonMediaViagem ?? g!.tonMediaViagem;
+    const kmMedioViagem = m?.kmMedioViagem ?? g!.kmMedioViagem;
+    const realizadoKg = m?.mediaPesoKg != null && m.mediaPesoKg > 0
+      ? Math.round(m.mediaPesoKg)
+      : Math.round(tonMediaViagem * 1000);
+    const idealKg = ideais[tipo];
+    const pctIdeal = idealKg > 0 ? Math.round((realizadoKg / idealKg) * 1000) / 10 : null;
+
+    return {
+      tipo,
+      label: LABEL_TIPO_CAMINHAO[tipo],
+      viagens,
+      toneladas,
+      tonMediaViagem,
+      kmMedioViagem,
+      realizadoKg,
+      idealKg,
+      maxKg: limites[tipo],
+      pctIdeal,
+      gargalo: pctIdealForaDaMargem(pctIdeal),
+    };
+  }).filter(Boolean) as LinhaTipoEstudo[];
 }
 
-function graficoBarrasHorizontaisOpHtml(titulo: string, linhas: LinhaOperacaoGrupo[], cor: string, campo: 'viagens' | 'toneladas' = 'viagens'): string {
-  const lista = linhas.filter((l) => l.chave && l.chave !== '—' && l[campo] > 0);
-  if (!lista.length) return '';
-
-  const maxVal = Math.max(...lista.map((l) => l[campo]), 0.01);
-  const fmt = campo === 'viagens'
-    ? (v: number) => `${fmtNum(v, 0)} viag.`
-    : (v: number) => `${fmtNum(v, 1)} t`;
+function blocoIndicadoresDiaHtml(
+  op: OperacaoDiaAnalise['resumo'],
+  cenario?: CenarioCaixaMediaDia | null,
+  dens?: number | null,
+): string {
+  const densFmt = resolverDensidadeResiduoKgL(cenario?.densidadeKgL ?? dens);
+  const cards: { label: string; valor: string; cor: string }[] = [
+    { label: 'Viagens', valor: fmtNum(op.viagens, 0), cor: '#6366f1' },
+    { label: 'Toneladas', valor: `${fmtNum(op.toneladas, 1)} t`, cor: '#16a34a' },
+    { label: 't / viagem', valor: `${fmtNum(op.tonMediaColeta, 2)} t`, cor: '#0891b2' },
+    { label: 'Caminhões', valor: fmtNum(op.caminhoes ?? op.coletores, 0), cor: '#7c3aed' },
+  ];
+  if (cenario && cenario.pesoIdealKg > 0) {
+    cards.push(
+      { label: '% ideal frota', valor: `${fmtNum(cenario.ocupacaoVsIdealPct ?? 0, 0)}%`, cor: '#5b21b6' },
+      { label: 'Densidade', valor: `${fmtNum(densFmt, 2)} kg/L`, cor: '#b45309' },
+    );
+  } else {
+    cards.push(
+      { label: 'KM / viagem', valor: `${fmtNum(op.kmMedioViagem, 1)} km`, cor: '#d97706' },
+      { label: 'KM total', valor: `${fmtNum(op.km, 0)} km`, cor: '#64748b' },
+    );
+  }
 
   return `
-    <div class="chart-box">
-      <div class="bloco-hd">${esc(titulo)}</div>
-      ${lista.map((l) => barraHorizontalHtml(l.chave, l[campo], maxVal, cor, fmt)).join('')}
-    </div>`;
+  <div class="sec">Indicadores do dia</div>
+  ${cardsHtml(cards)}`;
 }
 
-function graficoOperacaoPlacaHtml(linhas: LinhaEficienciaPlaca[], mediaTonViag: number): string {
-  if (!linhas.length) return '';
+/**
+ * Gráfico gerencial: só kg na mesma escala (ideal × coletado).
+ * Viagens e t/viagem entram como chips — evita misturar unidades.
+ */
+function blocoGraficoViagemPorTipoHtml(
+  operacao: OperacaoDiaAnalise,
+  limOpts: OptsAnaliseContratoDia,
+): string {
+  const pontos = montarPontosViagemPorTipo(operacao, limOpts.volumeL, densidadeOptsToInput(limOpts));
+  if (!pontos.length) return '';
 
-  const maxVal = Math.max(...linhas.map((l) => l.toneladas), 0.01);
-  const totalTon = linhas.reduce((s, l) => s + l.toneladas, 0);
+  const maxKg = Math.max(...pontos.flatMap((p) => [p.pesoIdealKg, p.pesoColetadoKg]), 1);
+  const totalViagens = pontos.reduce((s, p) => s + p.viagens, 0) || 1;
 
-  return `
-    <div class="bloco">
-      <div class="sec">Ranking de produção por veículo</div>
-      <table class="bloco-hd-tbl">
+  const cards = pontos.map((p) => {
+    const wIdeal = Math.max(2, Math.round((p.pesoIdealKg / maxKg) * 100));
+    const wCol = Math.max(2, Math.round((p.pesoColetadoKg / maxKg) * 100));
+    const corCol = p.gargalo ? '#ef4444' : '#16a34a';
+    const pctViag = Math.round((p.viagens / totalViagens) * 100);
+    const statusTxt = p.gargalo
+      ? `GARGALO ${p.pctIdeal != null ? `${fmtNum(p.pctIdeal, 0)}%` : ''}`
+      : `OK ${p.pctIdeal != null ? `${fmtNum(p.pctIdeal, 0)}%` : ''}`;
+    const statusCls = p.gargalo ? 'st-ruim' : 'st-bom';
+
+    return `
+    <div class="vg-card${p.gargalo ? ' g' : ''}">
+      <table class="vg-card-hd"><tr>
+        <td>
+          <div class="vg-tipo">${esc(p.label)} <span style="font-weight:600;color:#94a3b8;font-size:7px">· visão média do tipo</span></div>
+          <div class="vg-chips">
+            <span class="vg-chip">${fmtNum(p.viagens, 0)} viagens (${fmtNum(pctViag, 0)}%)</span>
+            <span class="vg-chip">média ${fmtNum(p.tonMediaViagem, 2)} t/v</span>
+          </div>
+        </td>
+        <td class="vg-status"><span class="${statusCls}">${esc(statusTxt)}</span></td>
+      </tr></table>
+      <table class="vg-row">
         <tr>
-          <td>Toneladas por placa (vs média ${fmtNum(mediaTonViag, 2)} t/viag)</td>
-          <td class="r"><span class="badge" style="color:#1d4ed8;background:#dbeafe">Total: ${fmtNum(totalTon, 1)} t</span></td>
+          <td class="lbl">Ideal</td>
+          <td><div class="track"><span class="fill" style="width:${wIdeal}%;background:#8b5cf6"></span></div></td>
+          <td class="val">${fmtNum(p.pesoIdealKg, 0)} kg</td>
+        </tr>
+        <tr>
+          <td class="lbl">Média dia</td>
+          <td><div class="track"><span class="fill" style="width:${wCol}%;background:${corCol}"></span></div></td>
+          <td class="val" style="color:${corCol}">${fmtNum(p.pesoColetadoKg, 0)} kg</td>
         </tr>
       </table>
-      ${linhas.map((l) => {
-        const barW = Math.max(4, Math.round((l.toneladas / maxVal) * 100));
-        const pctTon = totalTon > 0 ? (l.toneladas / totalTon) * 100 : 0;
-        const lbl = l.chave.length > 9 ? l.chave.slice(0, 9) + '…' : l.chave;
-        const detalhe = `${fmtNum(l.viagens, 0)} viag. · ${fmtNum(l.tonMediaViagem, 2)} t/viag · ${fmtNum(l.tonHora, 2)} t/h`;
-        return `
-          <div class="bar-row">
-            <div class="bar-lbl">${placaComReservaHtml(lbl, l.ehReserva)} ${statusBadge(l.status)}</div>
-            <div class="bar-track"><span class="bar-fill ${l.status}" style="width:${barW}%"></span></div>
-            <div class="bar-val op">${fmtNum(l.toneladas, 1)} t</div>
+    </div>`;
+  }).join('');
+
+  return `
+  <div class="sec">Desempenho por tipo — peso ideal × média do dia</div>
+  <p class="vg-legenda">
+    <span class="vg-dot" style="background:#8b5cf6"></span>Peso ideal (contrato)
+    &nbsp;&nbsp;<span class="vg-dot" style="background:#16a34a"></span>Média coletada (OK)
+    &nbsp;&nbsp;<span class="vg-dot" style="background:#ef4444"></span>Média (fora do ótimo ${PCT_IDEAL_MIN}–${PCT_IDEAL_MAX}%)
+    &nbsp;· detalhe viagem a viagem na seção seguinte
+  </p>
+  ${cards}`;
+}
+
+function detalheRankingViagemHtml(item: RankingViagemTipoItem): string {
+  const parts = [
+    '1 viag.',
+    `${fmtNum(item.toneladas, 2)} t/viag`,
+  ];
+  if (item.pctIdeal != null) {
+    parts.push(`${fmtNum(item.pctIdeal, 0)}% do ideal ${esc(item.tipoLabel)}`);
+    parts.push(esc(item.faixaLabel));
+  }
+  if (item.pctMediaTipo != null) {
+    parts.push(`${fmtNum(item.pctMediaTipo, 0)}% da média ${esc(item.tipoLabel)}`);
+  }
+  if (item.rota && item.rota !== '—') {
+    parts.push(esc(item.rota.length > 22 ? `${item.rota.slice(0, 22)}…` : item.rota));
+  }
+  return parts.join(' · ');
+}
+
+/**
+ * Ranking viagem a viagem (barras + Gargalo/Atenção/OK) vs ideal do tipo.
+ * Mini compara com Mini; Toco com Toco — nunca com a média geral do dia.
+ */
+function blocoDetalheViagensHtml(capacidade?: ResumoCapacidadeDia | null): string {
+  const ranking = montarRankingViagensPorTipo(capacidade);
+  if (!ranking.length) {
+    return `
+    <div class="sec">Ranking por viagem</div>
+    <p class="estudo-nota">Sem pesos individuais (PESO 1–4) no dia para rankear viagem a viagem.</p>`;
+  }
+
+  const LIMITE = 60;
+  const tipos = tiposPresentesRanking(ranking);
+  const truncado = ranking.length > LIMITE;
+
+  const pctOk = capacidade && capacidade.viagensClassificadas > 0
+    ? Math.round((capacidade.ok / capacidade.viagensClassificadas) * 1000) / 10
+    : null;
+
+  const blocosTipo = tipos.map((tipo) => {
+    const vs = ranking.filter((v) => v.tipo === tipo).slice(0, LIMITE);
+    if (!vs.length) return '';
+    const ideal = capacidade?.pesosIdeaisAplicados[tipo];
+    const media = capacidade?.porTipo.find((t) => t.tipo === tipo)?.mediaPesoKg;
+    const maxTon = Math.max(...vs.map((v) => v.toneladas), 0.01);
+    const nP = vs.filter((v) => v.status === 'pessimo').length;
+    const nR = vs.filter((v) => v.status === 'ruim').length;
+    const nO = vs.filter((v) => v.status === 'otimo').length;
+
+    const rows = vs.map((v) => {
+      const barW = Math.max(4, Math.round((v.toneladas / maxTon) * 100));
+      const cor = COR_STATUS_RANKING[v.status];
+      const stCls = v.status === 'pessimo' ? 'st-ruim' : v.status === 'ruim' ? 'st-medio' : 'st-bom';
+      const lbl = v.placa.length > 9 ? `${v.placa.slice(0, 9)}…` : v.placa;
+      return `
+        <div class="bar-row">
+          <div class="bar-lbl">
+            ${esc(lbl)}
+            <div><span class="${stCls}">${LABEL_STATUS_RANKING[v.status]}</span></div>
           </div>
-          <div class="bar-detail">${detalhe} · ${fmtNum(pctTon, 1)}% do volume · ${fmtNum(l.pctMediaTonViag, 0)}% da média</div>`;
-      }).join('')}
+          <div class="bar-track"><span class="bar-fill" style="width:${barW}%;background:${cor}"></span></div>
+          <div class="bar-val" style="color:#1d4ed8">${fmtNum(v.toneladas, 1)} t</div>
+        </div>
+        <div class="bar-detail">${detalheRankingViagemHtml(v)}</div>`;
+    }).join('');
+
+    return `
+    <div class="bloco" style="margin-bottom:7px">
+      <div class="bloco-hd">${esc(LABEL_TIPO_CAMINHAO[tipo])}
+        — ${fmtNum(vs.length, 0)} viagem(ns)
+        · Péssimo ${fmtNum(nP, 0)} · Ruim ${fmtNum(nR, 0)} · Ótimo ${fmtNum(nO, 0)}
+        ${ideal != null && ideal > 0 ? ` · ideal ${fmtNum(ideal, 0)} kg` : ''}
+        ${media != null && media > 0 ? ` · média ${fmtNum(media, 0)} kg` : ''}
+      </div>
+      ${rows}
     </div>`;
-}
-
-function tabelaEficienciaPlacaHtml(linhas: LinhaEficienciaPlaca[], mediaTonViag: number): string {
-  if (!linhas.length) return '';
-  return `
-    <div class="bloco">
-      <div class="bloco-hd">Quadro de eficiência — onde agir primeiro</div>
-      <table class="data">
-        <colgroup>
-          <col style="width:16%"/><col style="width:8%"/><col style="width:12%"/>
-          <col style="width:12%"/><col style="width:10%"/><col style="width:10%"/>
-          <col style="width:10%"/><col style="width:12%"/><col style="width:10%"/>
-        </colgroup>
-        <thead><tr>
-          <th>Placa</th><th class="c">Viag.</th><th class="r">Ton</th>
-          <th class="r op-h">t/viag</th><th class="r">KM/viag</th><th class="r">t/h</th>
-          <th class="r">% média</th><th class="c">Status</th><th class="r">Prioridade</th>
-        </tr></thead>
-        <tbody>${linhas.map((l, i) => {
-          const prioridade = l.status === 'ruim' ? 1 : l.status === 'medio' ? 2 : 3;
-          return `
-          <tr style="background:${i % 2 === 0 ? '#f8fafc' : '#fff'}">
-            <td style="font-weight:700">${placaComReservaHtml(l.chave, l.ehReserva)}</td>
-            <td class="c">${fmtNum(l.viagens, 0)}</td>
-            <td class="r nowrap">${fmtNum(l.toneladas, 1)} t</td>
-            <td class="r nowrap" style="font-weight:700;color:${l.status === 'ruim' ? '#991b1b' : l.status === 'medio' ? '#92400e' : '#166534'}">${fmtNum(l.tonMediaViagem, 2)}</td>
-            <td class="r nowrap">${fmtNum(l.kmMedioViagem, 1)}</td>
-            <td class="r nowrap">${fmtNum(l.tonHora, 2)}</td>
-            <td class="r nowrap">${fmtNum(l.pctMediaTonViag, 0)}%</td>
-            <td class="c">${statusBadge(l.status)}</td>
-            <td class="r nowrap" style="font-weight:700;color:${prioridade === 1 ? '#ef4444' : prioridade === 2 ? '#f59e0b' : '#64748b'}">P${prioridade}</td>
-          </tr>`;
-        }).join('')}
-        </tbody>
-      </table>
-      <div style="font-size:6px;color:#94a3b8;margin-top:4px">Referência t/viag do dia: ${fmtNum(mediaTonViag, 2)} t · P1 = ação imediata · P2 = monitorar · P3 = dentro da média</div>
-    </div>`;
-}
-
-function tabelaGrupoEficienciaHtml(titulo: string, linhas: LinhaOperacaoGrupo[], mediaTonViag: number): string {
-  const lista = linhas.filter((l) => l.chave && l.chave !== '—' && l.viagens > 0);
-  if (!lista.length) return '';
-
-  const ordenada = [...lista].sort((a, b) => a.tonMediaViagem - b.tonMediaViagem);
+  }).join('');
 
   return `
-    <div class="bloco">
-      <div class="bloco-hd">${esc(titulo)}</div>
-      <table class="data">
-        <thead><tr>
-          <th>Grupo</th><th class="c">Viag.</th><th class="r">Ton</th>
-          <th class="r op-h">t/viag</th><th class="c">vs média</th>
-        </tr></thead>
-        <tbody>${ordenada.map((l, i) => {
-          const pct = mediaTonViag > 0 ? (l.tonMediaViagem / mediaTonViag) * 100 : 100;
-          const st = statusVsMediaPdf(pct);
-          return `
-          <tr style="background:${i % 2 === 0 ? '#f8fafc' : '#fff'}">
-            <td style="font-weight:600">${esc(l.chave)}</td>
-            <td class="c">${fmtNum(l.viagens, 0)}</td>
-            <td class="r nowrap">${fmtNum(l.toneladas, 1)} t</td>
-            <td class="r nowrap" style="font-weight:700">${fmtNum(l.tonMediaViagem, 2)}</td>
-            <td class="c">${statusBadge(st)}</td>
-          </tr>`;
-        }).join('')}
-        </tbody>
-      </table>
-    </div>`;
+  <div class="sec">Ranking de produção por viagem</div>
+  <p class="estudo-nota">
+    Cada barra = <strong>1 viagem</strong> (PESO 1–4). Ordenado dos piores para os melhores
+    vs <strong>ideal do próprio tipo</strong> (Mini ≠ Toco).
+    Escala: ${esc(textoEscalaIdealCurto())}.
+  </p>
+  ${cardsHtml([
+    { label: 'Viagens no ranking', valor: fmtNum(Math.min(ranking.length, LIMITE), 0), cor: '#6366f1' },
+    { label: 'Péssimo', valor: fmtNum(capacidade?.pessimo ?? 0, 0), cor: '#b91c1c' },
+    { label: 'Ruim', valor: fmtNum(capacidade?.ruim ?? 0, 0), cor: '#ea580c' },
+    { label: 'Ótimo / %', valor: pctOk != null ? `${fmtNum(capacidade?.otimo ?? 0, 0)} · ${fmtNum(pctOk, 0)}%` : fmtNum(capacidade?.otimo ?? 0, 0), cor: '#16a34a' },
+  ])}
+  ${blocosTipo}
+  ${truncado ? `<p class="estudo-nota">Exibindo até ${fmtNum(LIMITE, 0)} viagens por tipo (piores % primeiro). Total no dia: ${fmtNum(ranking.length, 0)}.</p>` : ''}`;
 }
 
-function statusVsMediaPdf(pct: number): 'bom' | 'medio' | 'ruim' {
-  if (pct >= 90) return 'bom';
-  if (pct >= 75) return 'medio';
-  return 'ruim';
+function blocoGargalosOperacaoHtml(opts: {
+  tipos: LinhaTipoEstudo[];
+  estudo?: EstudoRotasDia | null;
+  eficiencia: LinhaEficienciaPlaca[];
+  cenario?: CenarioCaixaMediaDia | null;
+}): string {
+  const itens: ItemGargalo[] = [];
+
+  for (const t of opts.tipos.filter((x) => x.gargalo)) {
+    itens.push({
+      severidade: (t.pctIdeal != null && Math.abs(t.pctIdeal - 100) > 25) ? 'critico' : 'atencao',
+      origem: 'tipo',
+      texto: `${t.label}: ${fmtNum(t.realizadoKg, 0)} kg médio vs ideal ${fmtNum(t.idealKg, 0)} kg (${fmtNum(t.pctIdeal ?? 0, 0)}% · ótimo ${PCT_IDEAL_MIN}–${PCT_IDEAL_MAX}%) — ${fmtNum(t.viagens, 0)} viagem(ns)`,
+    });
+  }
+
+  const rotas = (opts.estudo?.rotas || [])
+    .filter((r) => r.status === 'ruim' && pctIdealForaDaMargem(r.pctIdeal))
+    .sort((a, b) => Math.abs((b.pctIdeal ?? 100) - 100) - Math.abs((a.pctIdeal ?? 100) - 100))
+    .slice(0, 5);
+  for (const r of rotas) {
+    itens.push({
+      severidade: (r.pctIdeal != null && Math.abs(r.pctIdeal - 100) > 25) ? 'critico' : 'atencao',
+      origem: 'rota',
+      texto: `Rota ${r.rota} (${r.tipoPredominanteLabel}): ${fmtNum(r.tonMediaViagem * 1000, 0)} kg vs ideal ${fmtNum(r.pesoIdealKg ?? 0, 0)} kg (${fmtNum(r.pctIdeal ?? 0, 0)}%)`,
+    });
+  }
+
+  const placas = opts.eficiencia
+    .filter((p) => p.status !== 'bom' && !p.ehReserva)
+    .slice(0, 5);
+  for (const p of placas) {
+    itens.push({
+      severidade: p.status === 'ruim' ? 'critico' : 'atencao',
+      origem: 'placa',
+      texto: `Placa ${p.chave} (${p.mediaRefLabel}): ${fmtNum(p.tonMediaViagem, 2)} t/viag`
+        + (p.pctIdeal != null ? ` · ${fmtNum(p.pctIdeal, 0)}% do ideal (ótimo ${PCT_IDEAL_MIN}–${PCT_IDEAL_MAX}%)` : '')
+        + ` · ${fmtNum(p.viagens, 0)} viag.`,
+    });
+  }
+
+  const vistos = new Set<string>();
+  const lista = itens.filter((i) => {
+    const k = i.texto.toLowerCase();
+    if (vistos.has(k)) return false;
+    vistos.add(k);
+    return true;
+  }).slice(0, 10);
+
+  const nCrit = lista.filter((g) => g.severidade === 'critico').length;
+  const veredito = nCrit > 0 ? 'critico' : lista.length > 0 ? 'atencao' : 'ok';
+  const cls = veredito === 'critico' ? 'diag-critico' : veredito === 'atencao' ? 'diag-atencao' : 'diag-ok';
+  const titulo = veredito === 'critico'
+    ? 'Gargalos críticos na operação'
+    : veredito === 'atencao'
+      ? 'Gargalos e pontos de atenção'
+      : 'Sem gargalos vs peso ideal por tipo';
+
+  const resumoFrota = opts.cenario && opts.cenario.pesoIdealKg > 0
+    ? `Frota do dia: ${fmtNum(opts.cenario.ocupacaoVsIdealPct ?? 0, 0)}% do ideal`
+      + ` (${fmtNum(opts.cenario.pesoMedioDiaKg, 0)} / ${fmtNum(opts.cenario.pesoIdealKg, 0)} kg). `
+    : '';
+
+  const porOrigem = (origem: ItemGargalo['origem'], label: string) => {
+    const subset = lista.filter((g) => g.origem === origem);
+    if (!subset.length) return '';
+    return `
+      <div style="font-size:6.5px;font-weight:800;color:#64748b;text-transform:uppercase;margin:5px 0 2px">${esc(label)}</div>
+      <ol class="diag-lista">
+        ${subset.map((g) => `<li>${g.severidade === 'critico' ? '<strong>Crítico — </strong>' : ''}${esc(g.texto)}</li>`).join('')}
+      </ol>`;
+  };
+
+  return `
+  <div class="sec">Gargalos da operação</div>
+  <div class="diag-box ${cls}">
+    <div class="diag-veredito">${esc(titulo)}</div>
+    <p class="diag-resumo">${esc(resumoFrota)}${
+      lista.length
+        ? `${fmtNum(lista.length, 0)} apontamento(s) abaixo do ideal do tipo.`
+        : 'Tipos, rotas e placas dentro do parâmetro do contrato.'
+    }</p>
+    ${lista.length ? `
+      ${porOrigem('tipo', 'Por tipo')}
+      ${porOrigem('rota', 'Por rota')}
+      ${porOrigem('placa', 'Por placa')}
+    ` : '<p class="diag-vazio">Nenhum gargalo identificado no dia.</p>'}
+  </div>`;
+}
+
+/** Só rotas com gargalo — visão gerencial enxuta. */
+function blocoRotasPorTipoHtml(estudo?: EstudoRotasDia | null): string {
+  if (!estudo?.rotas?.length) return '';
+
+  const criticas = estudo.rotas
+    .filter((r) => r.viagens > 0 && r.tipoPredominante && r.status === 'ruim')
+    .sort((a, b) => (a.pctIdeal ?? a.pctMediaTonViag) - (b.pctIdeal ?? b.pctMediaTonViag))
+    .slice(0, 5);
+
+  if (!criticas.length) return '';
+
+  return `
+  <div class="sec">Rotas com gargalo (por tipo)</div>
+  <table class="data">
+    <thead><tr>
+      <th>Rota</th><th>Tipo</th><th class="c">Viag.</th>
+      <th class="r">Coletado</th><th class="r">Ideal</th><th class="c">%</th>
+    </tr></thead>
+    <tbody>
+      ${criticas.map((r, i) => `
+        <tr style="background:${i % 2 === 0 ? '#fef2f2' : '#fff'}">
+          <td style="font-weight:600">${esc(r.rota)}</td>
+          <td>${esc(r.tipoPredominanteLabel)}</td>
+          <td class="c">${fmtNum(r.viagens, 0)}</td>
+          <td class="r" style="font-weight:700">${fmtNum(r.tonMediaViagem * 1000, 0)} kg</td>
+          <td class="r">${r.pesoIdealKg != null ? `${fmtNum(r.pesoIdealKg, 0)} kg` : '—'}</td>
+          <td class="c" style="font-weight:800;color:#991b1b">
+            ${r.pctIdeal != null ? `${fmtNum(r.pctIdeal, 0)}%` : '—'}
+          </td>
+        </tr>`).join('')}
+    </tbody>
+  </table>`;
 }
 
 function graficoPizzaTipoHtml(linhas: LinhaReceitaGrupo[], faturamentoTotal: number): string {
@@ -544,163 +758,27 @@ function kpisHtml(kpis: KpiValor[], titulo: string) {
     </div>`;
 }
 
-function statusRotaHtml(status: LinhaEstudoRota['status']): string {
-  if (status === 'bom') return '<span class="st-bom">OK</span>';
-  if (status === 'medio') return '<span class="st-medio">Atenção</span>';
-  return '<span class="st-ruim">Gargalo</span>';
-}
-
-function gargalosRotaHtml(gargalos: GargaloRota[]): string {
-  if (!gargalos.length) return '';
-  return `
-  <div class="bloco">
-    <div class="bloco-hd">Gargalos por rota</div>
-    ${gargalos.map((g) => {
-      const cls = g.severidade === 'critico' ? 'insight-critico'
-        : g.severidade === 'atencao' ? 'insight-atencao' : 'insight-info';
-      const rotaTxt = g.rota && g.rota !== '—'
-        ? `<span class="gargalo-rota">${esc(g.rota)}</span> — `
-        : '';
-      return `
-      <div class="insight-item ${cls}">
-        <div class="insight-tit">${rotaTxt}${esc(g.titulo)}</div>
-        <div>${esc(g.texto)}</div>
-      </div>`;
-    }).join('')}
-  </div>`;
-}
-
-function tabelaEstudoRotasHtml(estudo: EstudoRotasDia): string {
-  const lista = estudo.rotas.slice(0, 25);
-  if (!lista.length) return '';
-  const maxTon = Math.max(...lista.map((r) => r.toneladas), 0.001);
-
-  return `
-  <div class="bloco">
-    <div class="bloco-hd">Detalhamento por rota (dados da planilha)</div>
-    <table class="data">
-      <colgroup>
-        <col style="width:14%"/><col style="width:7%"/><col style="width:7%"/>
-        <col style="width:9%"/><col style="width:8%"/><col style="width:9%"/>
-        <col style="width:8%"/><col style="width:9%"/><col style="width:9%"/>
-        <col style="width:10%"/><col style="width:10%"/>
-      </colgroup>
-      <thead><tr>
-        <th>Rota</th>
-        <th class="c">Linhas</th>
-        <th class="c">Viag.</th>
-        <th class="r">Ton</th>
-        <th class="r">% dia</th>
-        <th class="r op-h">t/viag</th>
-        <th class="r">km/viag</th>
-        <th class="r">t/h</th>
-        <th class="r">Peso min–máx</th>
-        <th>Placas</th>
-        <th class="c">Status</th>
-      </tr></thead>
-      <tbody>
-        ${lista.map((r, i) => {
-          const barW = Math.max(4, (r.toneladas / maxTon) * 100);
-          const pesoTxt = r.pesoMinKg != null && r.pesoMaxKg != null
-            ? `${fmtNum(r.pesoMinKg, 0)}–${fmtNum(r.pesoMaxKg, 0)}`
-            : '—';
-          const placasTxt = r.placas.length
-            ? (r.placas.length <= 2 ? r.placas.join(', ') : `${r.placas.slice(0, 2).join(', ')}+${r.placas.length - 2}`)
-            : '—';
-          return `
-          <tr style="background:${i % 2 === 0 ? '#f8fafc' : '#fff'}">
-            <td style="font-weight:700">${esc(r.rota)}</td>
-            <td class="c">${fmtNum(r.registros, 0)}</td>
-            <td class="c">${fmtNum(r.viagens, 0)}</td>
-            <td class="r nowrap">
-              ${fmtNum(r.toneladas, 1)} t
-              <span class="bar-mini" style="width:${barW}%;background:#6366f1"></span>
-            </td>
-            <td class="r nowrap" style="color:#64748b">${fmtNum(r.pctTonDia, 1)}%</td>
-            <td class="r nowrap" style="font-weight:700">${fmtNum(r.tonMediaViagem, 2)}</td>
-            <td class="r nowrap">${fmtNum(r.kmMedioViagem, 1)}</td>
-            <td class="r nowrap">${fmtNum(r.tonHora, 2)}</td>
-            <td class="r nowrap" style="font-size:6px">${pesoTxt}</td>
-            <td style="font-size:6px">${esc(placasTxt)}</td>
-            <td class="c">${statusRotaHtml(r.status)}</td>
-          </tr>`;
-        }).join('')}
-      </tbody>
-    </table>
-    ${estudo.rotas.length > 25
-      ? `<div class="estudo-nota" style="margin-top:4px">Exibindo as 25 rotas de maior volume (total: ${estudo.rotas.length}).</div>`
-      : ''}
-  </div>`;
-}
-
-function blocoEstudoRotasHtml(estudo: EstudoRotasDia | null | undefined): string {
-  if (!estudo || estudo.rotas.length === 0) return '';
-
-  const m = estudo.mediaDia;
-  const d = estudo.destaques;
-
-  return `
-  <div class="sec">Estudo de rotas do dia</div>
-  <p class="estudo-nota">
-    Agrupamento pela coluna <strong>${esc(estudo.colunaRota)}</strong> da planilha.
-    Cada linha = 1 rota; viagens = CONTADOR DE VIAGENS / PESO 1–4.
-    Médias e gargalos comparados à média do dia.
-  </p>
-
-  ${cardsHtml([
-    { label: 'Rotas ativas', valor: fmtNum(m.rotasAtivas, 0), cor: '#6366f1' },
-    { label: 'Média t/viagem (dia)', valor: `${fmtNum(m.tonMediaViagem, 2)} t`, cor: '#16a34a' },
-    { label: 'Média km/viagem (dia)', valor: `${fmtNum(m.kmMedioViagem, 1)} km`, cor: '#d97706' },
-    { label: 'Média t/h (dia)', valor: `${fmtNum(m.tonHora, 2)} t/h`, cor: '#7c3aed' },
-    { label: 'Viagens / rota', valor: fmtNum(m.viagensPorRota, 1), cor: '#0891b2' },
-    { label: 'Toneladas (rotas)', valor: `${fmtNum(m.toneladas, 1)} t`, cor: '#22c55e' },
-  ])}
-
-  <table class="destaques-tbl">
-    <tr>
-      <td class="destaque">
-        <div class="dest-tit">Maior volume</div>
-        <div class="dest-val">${d.maiorVolume ? `${fmtNum(d.maiorVolume.toneladas, 1)} t` : '—'}</div>
-        <div class="dest-sub">${esc(d.maiorVolume?.rota || '—')}</div>
-      </td>
-      <td class="destaque">
-        <div class="dest-tit">Menor rendimento</div>
-        <div class="dest-val">${d.menorRendimento ? `${fmtNum(d.menorRendimento.tonMediaViagem, 2)} t/v` : '—'}</div>
-        <div class="dest-sub">${esc(d.menorRendimento?.rota || '—')}</div>
-      </td>
-      <td class="destaque">
-        <div class="dest-tit">Maior KM/viagem</div>
-        <div class="dest-val">${d.maiorKm ? `${fmtNum(d.maiorKm.kmMedioViagem, 1)} km` : '—'}</div>
-        <div class="dest-sub">${esc(d.maiorKm?.rota || '—')}</div>
-      </td>
-      <td class="destaque">
-        <div class="dest-tit">Menor peso viagem</div>
-        <div class="dest-val">${d.menorPesoViagem ? fmtNum(d.menorPesoViagem.pesoKg, 0) : '—'}</div>
-        <div class="dest-sub">${esc(d.menorPesoViagem?.rota || '—')}</div>
-      </td>
-      <td class="destaque">
-        <div class="dest-tit">Maior peso viagem</div>
-        <div class="dest-val">${d.maiorPesoViagem ? fmtNum(d.maiorPesoViagem.pesoKg, 0) : '—'}</div>
-        <div class="dest-sub">${esc(d.maiorPesoViagem?.rota || '—')}</div>
-      </td>
-    </tr>
-  </table>
-
-  ${gargalosRotaHtml(estudo.gargalos)}
-  ${tabelaEstudoRotasHtml(estudo)}`;
-}
-
 function blocoOperacao(opts: {
   operacao: OperacaoDiaAnalise;
   dataIso: string;
   kpisOperacao?: KpiValor[];
   placasReserva?: string[];
   estudoRotas?: EstudoRotasDia | null;
+  cenarioCaixaMedia?: CenarioCaixaMediaDia | null;
+  limitesPesoKg?: MapaLimiteCaminhao | null;
+  volumeL?: MapaLimiteCaminhao | null;
+  densidadeResiduoKgL?: number | null;
+  densidadeKgL?: MapaLimiteCaminhao | null;
 }): string {
   const op = opts.operacao.resumo;
-  const insights = gerarInsightsOperacao(opts.operacao, opts.placasReserva);
-  const eficiencia = montarEficienciaPlacas(opts.operacao, opts.placasReserva);
-  const mediaTonViag = op.tonMediaColeta;
+  const limOpts: OptsAnaliseContratoDia = {
+    limitesPesoKg: opts.limitesPesoKg,
+    volumeL: opts.volumeL,
+    densidadeResiduoKgL: opts.densidadeResiduoKgL,
+    densidadeKgL: opts.densidadeKgL,
+  };
+  const eficiencia = montarEficienciaPlacas(opts.operacao, opts.placasReserva, limOpts);
+  const tipos = montarLinhasTipoEstudo(opts.operacao, opts.estudoRotas, limOpts);
   const frota = resumirFrotaOperacao(
     opts.operacao.porPlaca.filter((p) => p.chave !== '—').map((p) => p.chave),
     opts.placasReserva,
@@ -708,11 +786,6 @@ function blocoOperacao(opts: {
   const frotaReservaTxt = opts.placasReserva?.length
     ? ` · ${frota.titulares} titular${frota.titulares !== 1 ? 'es' : ''}${frota.reserva > 0 ? ` + ${frota.reserva} reserva` : ''}`
     : '';
-
-  const temTurno = opts.operacao.porTurno.some((l) => l.chave !== '—' && l.viagens > 0);
-  const temRegional = opts.operacao.porRegional.some((l) => l.chave !== '—' && l.viagens > 0);
-  const temMotorista = opts.operacao.porMotorista.some((l) => l.chave !== '—' && l.viagens > 0);
-  const temTipo = opts.operacao.porTipoCaminhao.some((l) => l.viagens > 0);
 
   return `
   <div class="banner op">
@@ -722,39 +795,17 @@ function blocoOperacao(opts: {
     · ${op.caminhoes ?? op.coletores} caminhão${(op.caminhoes ?? op.coletores) !== 1 ? 'es' : ''}${frotaReservaTxt}
   </div>
 
-  ${heroOperacaoHtml(op)}
-  ${insightsHtml(insights)}
-
-  ${blocoEstudoRotasHtml(opts.estudoRotas)}
-
-  <div class="sec">Onde está o volume do dia</div>
-  <table class="chart-tbl">
-    <tr>
-      <td colspan="2">${temTipo ? graficoPizzaTipoOpHtml(opts.operacao.porTipoCaminhao, op.viagens) : ''}</td>
-    </tr>
-    ${temTurno || temRegional ? `
-    <tr>
-      <td style="width:50%;vertical-align:top">${temTurno ? graficoBarrasHorizontaisOpHtml('Viagens por turno', opts.operacao.porTurno, '#7c3aed') : ''}</td>
-      <td style="width:50%;vertical-align:top">${temRegional ? graficoBarrasHorizontaisOpHtml('Viagens por regional', opts.operacao.porRegional, '#0891b2') : ''}</td>
-    </tr>` : ''}
-  </table>
-
-  ${graficoOperacaoPlacaHtml(eficiencia, mediaTonViag)}
-  ${tabelaEficienciaPlacaHtml(eficiencia, mediaTonViag)}
-
-  <div class="sec">Comparativo por dimensão</div>
-  <table class="layout2-tbl">
-    <tr>
-      <td>${temTurno ? tabelaGrupoEficienciaHtml('Turno — eficiência', opts.operacao.porTurno, mediaTonViag) : ''}</td>
-      <td>${temRegional ? tabelaGrupoEficienciaHtml('Regional — eficiência', opts.operacao.porRegional, mediaTonViag) : ''}</td>
-    </tr>
-    ${temMotorista ? `
-    <tr>
-      <td colspan="2">${tabelaGrupoEficienciaHtml('Motorista — eficiência', opts.operacao.porMotorista, mediaTonViag)}</td>
-    </tr>` : ''}
-  </table>
-
-  ${kpisHtml(opts.kpisOperacao || [], 'Indicadores complementares')}`;
+  ${blocoIndicadoresDiaHtml(op, opts.cenarioCaixaMedia, opts.densidadeResiduoKgL)}
+  ${blocoGraficoViagemPorTipoHtml(opts.operacao, limOpts)}
+  ${blocoDetalheViagensHtml(opts.estudoRotas?.capacidade)}
+  ${blocoGargalosOperacaoHtml({
+    tipos,
+    estudo: opts.estudoRotas,
+    eficiencia,
+    cenario: opts.cenarioCaixaMedia,
+  })}
+  ${blocoRotasPorTipoHtml(opts.estudoRotas)}
+  `;
 }
 
 function blocoReceita(opts: { receita: ReceitaDiaAnalise; dataIso: string }): string {
@@ -828,6 +879,11 @@ export function gerarHtmlRelatorioDia(opts: {
   kpisOperacao?: KpiValor[];
   placasReserva?: string[];
   estudoRotas?: EstudoRotasDia | null;
+  cenarioCaixaMedia?: CenarioCaixaMediaDia | null;
+  limitesPesoKg?: MapaLimiteCaminhao | null;
+  volumeL?: MapaLimiteCaminhao | null;
+  densidadeResiduoKgL?: number | null;
+  densidadeKgL?: MapaLimiteCaminhao | null;
   geradoEm?: Date;
 }): string {
   const { aba, servicoNome, dataIso, diaSemana, operacao, receita, linhas = [] } = opts;
@@ -849,6 +905,11 @@ export function gerarHtmlRelatorioDia(opts: {
       kpisOperacao: opts.kpisOperacao,
       placasReserva: opts.placasReserva,
       estudoRotas: opts.estudoRotas,
+      cenarioCaixaMedia: opts.cenarioCaixaMedia,
+      limitesPesoKg: opts.limitesPesoKg,
+      volumeL: opts.volumeL,
+      densidadeResiduoKgL: opts.densidadeResiduoKgL,
+      densidadeKgL: opts.densidadeKgL,
     });
 
   const resumo = ehReceita ? receita!.resumo : operacao.resumo;

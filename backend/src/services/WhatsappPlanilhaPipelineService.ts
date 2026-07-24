@@ -5,7 +5,11 @@ import { Contract } from '../entities/Contract';
 import { TipoServico, TIPOS_SERVICO_META } from '../enums/TipoServico';
 import DeduplicacaoService from './DeduplicacaoService';
 import RocadaImportService from './rocadaImportService';
+import ServicosUnificadosImportService from './servicosUnificadosImportService';
+import { classificarPlanilhaContrato } from './planilhaContratoClassifier';
+import { obterServicoPorTipoContrato } from './servicosPadraoContratoService';
 import PlanilhaService from './PlanilhaService';
+import { invalidarCacheSaudeContratos } from '../controllers/ContractController';
 import { htmlToPdf } from './PdfGeneratorService';
 import { gerarHtmlSaudeDadosServer } from './PdfSaudeDadosHtml';
 import { gerarHtmlRelatorioDiaRocadaServer } from './PdfRelatorioDiaHtml';
@@ -20,6 +24,7 @@ import { gerarNomePdfRelatorioDia } from './relatorioDia/gerarNomePdf';
 import { analiseOperacaoDeAgregacaoSql } from './relatorioDia/operacaoDia';
 import { diaSemanaPt } from './relatorioDia/fmt';
 import { calcularKpisOperacaoDiaSql } from './relatorioDia/kpisOperacaoDia';
+import { carregarViagensCapacidadeDia } from './relatorioDia/capacidadeViagemDia';
 import wuzapiService from './WuzapiService';
 
 const EXT_PLANILHA = /\.(xlsx|xls|xlsm)$/i;
@@ -186,49 +191,132 @@ async function obterBufferPlanilha(payload: WuzapiWebhookPayload, doc: Record<st
   return { buffer: Buffer.from(raw, 'base64'), nomeArquivo: nome };
 }
 
+type AlvoImportWhatsapp = {
+  servicoId: string;
+  servicoNome: string;
+  tipo: string;
+  importados: number;
+};
+
+type ResultadoImportWhatsapp = {
+  planilhaUploadId?: number;
+  importadas: number;
+  totalLinhas?: number;
+  tipoDetectado: string;
+  tipoDetectadoLabel: string;
+  mensagem: string;
+  /** Serviços que receberam dados (ex.: Capina + Roçada no CONSOLIDADO) */
+  alvos: AlvoImportWhatsapp[];
+};
+
+/**
+ * Mesma lógica do upload por contrato: classifica a planilha e grava no serviço certo.
+ * O serviço mapeado no grupo define o contrato; o conteúdo define o(s) tipo(s).
+ */
 async function importarPlanilha(
   buffer: Buffer,
   nomeArquivo: string,
-  servico: Servico,
+  servicoMapa: Servico,
   estrategia: string,
-): Promise<{ planilhaUploadId?: number; importadas?: number; totalLinhas?: number }> {
-  if (servico.tipo === TipoServico.ROCADEIRA || servico.tipo === 'rocadeira') {
-    const r = await RocadaImportService.importar(buffer, nomeArquivo, servico.id, undefined, true);
+): Promise<ResultadoImportWhatsapp> {
+  const contractId = servicoMapa.contract_id;
+  if (!contractId) {
+    throw new Error('Serviço mapeado sem contrato');
+  }
+
+  const classificacao = classificarPlanilhaContrato(buffer);
+  const est = (estrategia || 'atualizar_data') as 'ignorar' | 'substituir' | 'atualizar_data' | 'inserir_data';
+  const substituir = est !== 'ignorar';
+
+  if (classificacao.tipo === 'unificado') {
+    const r = await ServicosUnificadosImportService.importarPorContrato(
+      buffer,
+      nomeArquivo,
+      contractId,
+      undefined,
+      substituir,
+    );
+    invalidarCacheSaudeContratos(contractId);
+    const alvos = (r.splitPorServico || [])
+      .filter((s) => s.importados > 0)
+      .map((s) => ({
+        servicoId: s.servicoId,
+        servicoNome: s.servicoNome,
+        tipo: String(s.tipoSistema),
+        importados: s.importados,
+      }));
+    const partes = alvos.map((s) => `${s.servicoNome}: ${s.importados} reg.`);
     return {
       planilhaUploadId: r.planilhaUploadId,
       importadas: r.importados,
       totalLinhas: r.totalLinhas,
+      tipoDetectado: classificacao.tipo,
+      tipoDetectadoLabel: classificacao.label,
+      mensagem: `Planilha unificada: ${r.importados} registro(s). ${partes.join(' · ')}`,
+      alvos: alvos.length
+        ? alvos
+        : [{
+            servicoId: servicoMapa.id,
+            servicoNome: servicoMapa.nome,
+            tipo: String(servicoMapa.tipo || ''),
+            importados: r.importados,
+          }],
     };
   }
 
-  const est = (estrategia || 'atualizar_data') as 'ignorar' | 'substituir' | 'atualizar_data' | 'inserir_data';
-  let resultado: { planilhaUploadId?: number; importadas?: number; totalLinhas?: number };
-  if (est === 'atualizar_data' || est === 'inserir_data') {
-    const r = await DeduplicacaoService.importarPorData(buffer, nomeArquivo, est, undefined, servico.id);
-    resultado = {
+  if (classificacao.tipo === 'coleta') {
+    const alvo = await obterServicoPorTipoContrato(contractId, TipoServico.COLETA_CAMINHAO);
+    const r = (est === 'atualizar_data' || est === 'inserir_data')
+      ? await DeduplicacaoService.importarPorData(buffer, nomeArquivo, est, undefined, alvo.id)
+      : await DeduplicacaoService.importarComDedup(
+        buffer,
+        nomeArquivo,
+        est === 'substituir' ? 'substituir' : 'ignorar',
+        undefined,
+        alvo.id,
+      );
+    const qtd = Number((r as { importados?: number }).importados ?? 0);
+    await atualizarPadraoServicoAposImport(alvo.id, buffer, nomeArquivo, r.planilhaUploadId, r.totalLinhas);
+    invalidarCacheSaudeContratos(contractId);
+    return {
       planilhaUploadId: r.planilhaUploadId,
-      importadas: r.importados,
+      importadas: qtd,
       totalLinhas: r.totalLinhas,
-    };
-  } else {
-    const r = await DeduplicacaoService.importarComDedup(buffer, nomeArquivo, est, undefined, servico.id);
-    resultado = {
-      planilhaUploadId: r.planilhaUploadId,
-      importadas: r.importados,
-      totalLinhas: r.totalLinhas,
+      tipoDetectado: classificacao.tipo,
+      tipoDetectadoLabel: classificacao.label,
+      mensagem: `Coleta importada em “${alvo.nome}”: ${qtd} registro(s).`,
+      alvos: [{
+        servicoId: alvo.id,
+        servicoNome: alvo.nome,
+        tipo: String(alvo.tipo || TipoServico.COLETA_CAMINHAO),
+        importados: qtd,
+      }],
     };
   }
 
-  // Mesmo pós-processamento do upload manual: grava padrão da planilha no serviço
-  await atualizarPadraoServicoAposImport(
-    servico.id,
-    buffer,
-    nomeArquivo,
-    resultado.planilhaUploadId,
-    resultado.totalLinhas,
+  if (classificacao.tipo === 'rocada') {
+    const alvo = await obterServicoPorTipoContrato(contractId, TipoServico.ROCADEIRA);
+    const r = await RocadaImportService.importar(buffer, nomeArquivo, alvo.id, undefined, true);
+    invalidarCacheSaudeContratos(contractId);
+    return {
+      planilhaUploadId: r.planilhaUploadId,
+      importadas: r.importados,
+      totalLinhas: r.totalLinhas,
+      tipoDetectado: classificacao.tipo,
+      tipoDetectadoLabel: classificacao.label,
+      mensagem: `Roçada importada em “${alvo.nome}”: ${r.importados} registro(s).`,
+      alvos: [{
+        servicoId: alvo.id,
+        servicoNome: alvo.nome,
+        tipo: String(alvo.tipo || TipoServico.ROCADEIRA),
+        importados: r.importados,
+      }],
+    };
+  }
+
+  throw new Error(
+    'Formato de planilha não reconhecido. Use CONSOLIDADO (DATA/UND/QUANTITATIVO/TIPO DE SERVIÇO), Coleta (PLACA/PESO) ou Roçada.',
   );
-
-  return resultado;
 }
 
 /** Detecta colunas e salva padraoPlanilha (necessário para a UI marcar upload). */
@@ -375,7 +463,7 @@ export class WhatsappPlanilhaPipelineService {
     try {
       await wuzapiService.enviarTexto(
         grupoJid,
-        `📥 Planilha recebida (${fileName || 'arquivo'}). Importando para o serviço "${servico.nome}"…`,
+        `📥 Planilha recebida (${fileName || 'arquivo'}). Identificando tipo e importando no contrato…`,
       );
     } catch (err: any) {
       console.warn('[WhatsappPipeline] Falha ao avisar grupo:', err?.message || err);
@@ -384,187 +472,278 @@ export class WhatsappPlanilhaPipelineService {
     const { buffer, nomeArquivo: nomeRaw } = await obterBufferPlanilha(payload, doc);
     const nomeArquivo = EXT_PLANILHA.test(nomeRaw) ? nomeRaw : `${nomeRaw.replace(/\.[^.]+$/, '') || 'planilha'}.xlsx`;
     const importResult = await importarPlanilha(buffer, nomeArquivo, servico, mapa.estrategia);
+
+    try {
+      await wuzapiService.enviarTexto(
+        grupoJid,
+        `✅ ${importResult.mensagem}\nTipo detectado: ${importResult.tipoDetectadoLabel}`,
+      );
+    } catch { /* ignore */ }
+
     return this.posImport(mapa, servico, grupoJid, nomeArquivo, importResult, buffer);
+  }
+
+  /** Envia relatório do último dia operacional de um serviço (PDF ou texto). */
+  private async enviarRelatorioUltimoDia(
+    servico: Servico,
+    contrato: Contract | null,
+    grupoJid: string,
+    bufferPlanilha: Buffer,
+    nomeArquivo: string,
+  ): Promise<{ pdfSaude: boolean; pdfDiario: boolean; ultimoDia: string | null; erros: string[] }> {
+    const contratoNome = contrato?.numeroContrato || '—';
+    const tipoSvc = String(servico.tipo || '');
+    const tipoLabel = TIPOS_SERVICO_META[tipoSvc]?.label || tipoSvc || 'Serviço';
+    const ehRocada = tipoSvc === TipoServico.ROCADEIRA || tipoSvc === 'rocadeira';
+    const ehUnidadeNaoRocada = (
+      tipoSvc === TipoServico.CAPINA || tipoSvc === 'capina'
+      || tipoSvc === TipoServico.VARRICAO || tipoSvc === 'varricao'
+      || tipoSvc === TipoServico.PODA || tipoSvc === 'poda'
+      || tipoSvc === 'pintura_meio_fio'
+    );
+
+    const periodo = await PlanilhaService.getPeriodoDadosPorServico(servico.id);
+    const ultimoDia = periodo?.dataFim || null;
+    let pdfSaude = false;
+    let pdfDiario = false;
+    const erros: string[] = [];
+
+    if (!ehRocada && !ehUnidadeNaoRocada) {
+      try {
+        const cadastro = extrairCadastroOperacional(contrato?.configOperacional);
+        const relatorio = analisarViagensPlanilha(bufferPlanilha, nomeArquivo, cadastro);
+        const htmlSaude = gerarHtmlSaudeDadosServer({
+          relatorio,
+          contratoNome: String(contratoNome),
+          servicoNome: servico.nome,
+          tipoLabel,
+        });
+        const pdfBuf = await htmlToPdf(htmlSaude, {
+          margin: { top: '10mm', bottom: '10mm', left: '8mm', right: '8mm' },
+        });
+        await wuzapiService.enviarDocumento(
+          grupoJid,
+          `Saude_Dados_${servico.nome.replace(/[^\w\-]+/g, '_')}.pdf`,
+          pdfBuf,
+          `🩺 Saúde dos dados — ${servico.nome} (${nomeArquivo})`,
+        );
+        pdfSaude = true;
+      } catch (err: any) {
+        console.error('[WhatsappPipeline] Erro PDF saúde:', err?.message || err);
+        erros.push(`saúde ${servico.nome}: ${err?.message || 'erro'}`);
+      }
+    }
+
+    if (!ultimoDia) {
+      erros.push(`diário ${servico.nome}: sem dia operacional`);
+      return { pdfSaude, pdfDiario, ultimoDia, erros };
+    }
+
+    try {
+      const dataFmt = ultimoDia.split('-').reverse().join('-');
+      const dataBr = ultimoDia.split('-').reverse().join('/');
+
+      if (ehRocada) {
+        const agg = await getAgregacaoRocada(servico.id, { data: ultimoDia, topN: 15 });
+        const htmlDia = gerarHtmlRelatorioDiaRocadaServer({
+          servicoNome: servico.nome,
+          contratoNome: String(contratoNome),
+          dataIso: ultimoDia,
+          resumo: agg.resumo,
+          porBairro: (agg.porBairro || []).map((l) => ({
+            label: l.label,
+            registros: l.registros,
+            areaM2: l.areaM2,
+          })),
+          porOperador: (agg.porOperador || []).map((l) => ({
+            label: l.label,
+            registros: l.registros,
+            areaM2: l.areaM2,
+          })),
+        });
+        const pdfDia = await htmlToPdf(htmlDia, {
+          margin: { top: '10mm', bottom: '10mm', left: '8mm', right: '8mm' },
+        });
+        await wuzapiService.enviarDocumento(
+          grupoJid,
+          `Relatorio_Dia_${dataFmt}_${servico.nome.replace(/[^\w\-]+/g, '_')}.pdf`,
+          pdfDia,
+          `📅 Relatório diário — ${dataBr} (${servico.nome})`,
+        );
+        pdfDiario = true;
+      } else if (ehUnidadeNaoRocada) {
+        const dias = await PlanilhaService.getMetricasPorDia(servico.id, ultimoDia, ultimoDia);
+        const d = dias[0];
+        const linhasMsg = [
+          `📅 *${servico.nome}* — último dia ${dataBr}`,
+          `Registros: ${d?.rotas ?? 0}`,
+        ];
+        if (Number(d?.metroLinear || 0) > 0) {
+          linhasMsg.push(`Metro linear: ${Number(d?.metroLinear).toLocaleString('pt-BR')} m`);
+        }
+        if (Number(d?.kmLinear || 0) > 0) {
+          linhasMsg.push(`Extensão: ${Number(d?.kmLinear).toLocaleString('pt-BR', { maximumFractionDigits: 3 })} km`);
+        }
+        if (Number(d?.areaM2 || 0) > 0) {
+          linhasMsg.push(`Área: ${Number(d?.areaM2).toLocaleString('pt-BR')} m²`);
+        }
+        if (Number(d?.qtdArvore || 0) > 0) {
+          linhasMsg.push(`Árvores: ${Number(d?.qtdArvore).toLocaleString('pt-BR')}`);
+        }
+        if (Number(d?.quantitativo || 0) > 0) {
+          linhasMsg.push(`Quantitativo: ${Number(d?.quantitativo).toLocaleString('pt-BR', { maximumFractionDigits: 3 })}`);
+        }
+        linhasMsg.push('_Detalhe completo: abra o dia no Sistemma_');
+        await wuzapiService.enviarTexto(grupoJid, linhasMsg.join('\n'));
+        pdfDiario = true;
+      } else {
+        const valoresFixos = buildValoresFixosFaturamento(contrato || null, servico.configFaturamento);
+        const agg = await getAgregacaoColeta(servico.id, {
+          data: ultimoDia,
+          topN: 50,
+          valoresFixos,
+        });
+        const operacao = analiseOperacaoDeAgregacaoSql(agg);
+        const placasReserva = normalizarListaPlacasReserva(contrato?.configOperacional?.placasReserva);
+        const kpisOperacao = calcularKpisOperacaoDiaSql({
+          servico,
+          contract: contrato || null,
+          metricas: agg.resumo,
+          valoresFixos,
+          limite: 8,
+        });
+        const cfgOp = contrato?.configOperacional;
+        const capacidade = await carregarViagensCapacidadeDia(servico.id, ultimoDia, {
+          volumeL: cfgOp?.volumeL || null,
+          pesoMaximoKg: cfgOp?.pesoMaximoKg || null,
+          densidadeResiduoKgL: cfgOp?.densidadeResiduoKgL ?? null,
+          densidadeKgL: cfgOp?.densidadeKgL || null,
+        });
+        const htmlDia = gerarHtmlRelatorioDia({
+          aba: 'operacao',
+          servicoNome: servico.nome,
+          dataIso: ultimoDia,
+          diaSemana: diaSemanaPt(ultimoDia),
+          operacao,
+          kpisOperacao,
+          placasReserva,
+          capacidade,
+          volumeL: cfgOp?.volumeL || null,
+          densidadeResiduoKgL: cfgOp?.densidadeResiduoKgL ?? null,
+          densidadeKgL: cfgOp?.densidadeKgL || null,
+        });
+        const nomeDia = `${gerarNomePdfRelatorioDia({
+          servicoNome: servico.nome,
+          aba: 'operacao',
+          dataIso: ultimoDia,
+        })}.pdf`;
+        const pdfDia = await htmlToPdf(htmlDia, {
+          margin: { top: '10mm', bottom: '10mm', left: '8mm', right: '8mm' },
+        });
+        await wuzapiService.enviarDocumento(
+          grupoJid,
+          nomeDia,
+          pdfDia,
+          `📅 Relatório de Operação — ${dataBr} (${servico.nome})`,
+        );
+        pdfDiario = true;
+      }
+    } catch (err: any) {
+      console.error('[WhatsappPipeline] Erro relatório diário:', err?.message || err);
+      erros.push(`diário ${servico.nome}: ${err?.message || 'erro'}`);
+    }
+
+    return { pdfSaude, pdfDiario, ultimoDia, erros };
   }
 
   private async posImport(
     mapa: WhatsappGrupoMapa,
-    servico: Servico,
+    servicoMapa: Servico,
     grupoJid: string,
     nomeArquivo: string,
-    importResult: { planilhaUploadId?: number; importadas?: number; totalLinhas?: number },
+    importResult: ResultadoImportWhatsapp,
     bufferPlanilha: Buffer,
   ) {
-    const periodo = await PlanilhaService.getPeriodoDadosPorServico(servico.id);
-    const ultimoDiaOperacional = periodo?.dataFim || null;
-    const contrato = (servico as Servico & { contract?: Contract }).contract
-      || await AppDataSource.getRepository(Contract).findOne({ where: { id: servico.contract_id } });
+    const contrato = (servicoMapa as Servico & { contract?: Contract }).contract
+      || await AppDataSource.getRepository(Contract).findOne({ where: { id: servicoMapa.contract_id } });
     const contratoNome = contrato?.numeroContrato || '—';
-    const tipoLabel = TIPOS_SERVICO_META[servico.tipo || '']?.label || servico.tipo || 'Serviço';
-    const ehRocada = servico.tipo === TipoServico.ROCADEIRA || servico.tipo === 'rocadeira';
+    const servicoRepo = AppDataSource.getRepository(Servico);
 
     let pdfSaudeEnviado = false;
     let pdfDiarioEnviado = false;
     const errosPdf: string[] = [];
+    const diasPorServico: Array<{ nome: string; dia: string | null }> = [];
 
     if (mapa.responderPdf) {
-      // 1) PDF Saúde dos Dados (mesma análise do upload manual)
-      if (!ehRocada) {
-        try {
-          const cadastro = extrairCadastroOperacional(contrato?.configOperacional);
-          const relatorio = analisarViagensPlanilha(bufferPlanilha, nomeArquivo, cadastro);
-          const htmlSaude = gerarHtmlSaudeDadosServer({
-            relatorio,
-            contratoNome: String(contratoNome),
-            servicoNome: servico.nome,
-            tipoLabel,
-          });
-          const pdfSaude = await htmlToPdf(htmlSaude, {
-            margin: { top: '10mm', bottom: '10mm', left: '8mm', right: '8mm' },
-          });
-          const nomeSaude = `Saude_Dados_${servico.nome.replace(/[^\w\-]+/g, '_')}.pdf`;
-          await wuzapiService.enviarDocumento(
-            grupoJid,
-            nomeSaude,
-            pdfSaude,
-            `🩺 Saúde dos dados — ${servico.nome} (${nomeArquivo})`,
-          );
-          pdfSaudeEnviado = true;
-        } catch (err: any) {
-          console.error('[WhatsappPipeline] Erro PDF saúde:', err?.message || err);
-          errosPdf.push(`saúde: ${err?.message || 'erro'}`);
+      for (const alvo of importResult.alvos) {
+        if (alvo.importados <= 0) continue;
+        const servico = await servicoRepo.findOne({
+          where: { id: alvo.servicoId },
+          relations: ['contract'],
+        });
+        if (!servico) {
+          errosPdf.push(`${alvo.servicoNome}: serviço não encontrado`);
+          continue;
         }
-      }
-
-      // 2) PDF diário do último dia com dados no ciclo
-      if (ultimoDiaOperacional) {
-        try {
-          const dataFmt = ultimoDiaOperacional.split('-').reverse().join('-');
-          if (ehRocada) {
-            const agg = await getAgregacaoRocada(servico.id, { data: ultimoDiaOperacional, topN: 15 });
-            const htmlDia = gerarHtmlRelatorioDiaRocadaServer({
-              servicoNome: servico.nome,
-              contratoNome: String(contratoNome),
-              dataIso: ultimoDiaOperacional,
-              resumo: agg.resumo,
-              porBairro: (agg.porBairro || []).map((l) => ({
-                label: l.label,
-                registros: l.registros,
-                areaM2: l.areaM2,
-              })),
-              porOperador: (agg.porOperador || []).map((l) => ({
-                label: l.label,
-                registros: l.registros,
-                areaM2: l.areaM2,
-              })),
-            });
-            const pdfDia = await htmlToPdf(htmlDia, {
-              margin: { top: '10mm', bottom: '10mm', left: '8mm', right: '8mm' },
-            });
-            await wuzapiService.enviarDocumento(
-              grupoJid,
-              `Relatorio_Dia_${dataFmt}_${servico.nome.replace(/[^\w\-]+/g, '_')}.pdf`,
-              pdfDia,
-              `📅 Relatório diário — ${ultimoDiaOperacional.split('-').reverse().join('/')} (${servico.nome})`,
-            );
-            pdfDiarioEnviado = true;
-          } else {
-            const valoresFixos = buildValoresFixosFaturamento(
-              contrato || null,
-              servico.configFaturamento,
-            );
-            const agg = await getAgregacaoColeta(servico.id, {
-              data: ultimoDiaOperacional,
-              topN: 50,
-              valoresFixos,
-            });
-            const operacao = analiseOperacaoDeAgregacaoSql(agg);
-            const placasReserva = normalizarListaPlacasReserva(
-              contrato?.configOperacional?.placasReserva,
-            );
-            const kpisOperacao = calcularKpisOperacaoDiaSql({
-              servico,
-              contract: contrato || null,
-              metricas: agg.resumo,
-              valoresFixos,
-              limite: 8,
-            });
-            const htmlDia = gerarHtmlRelatorioDia({
-              aba: 'operacao',
-              servicoNome: servico.nome,
-              dataIso: ultimoDiaOperacional,
-              diaSemana: diaSemanaPt(ultimoDiaOperacional),
-              operacao,
-              kpisOperacao,
-              placasReserva,
-            });
-            const nomeDia = `${gerarNomePdfRelatorioDia({
-              servicoNome: servico.nome,
-              aba: 'operacao',
-              dataIso: ultimoDiaOperacional,
-            })}.pdf`;
-            const pdfDia = await htmlToPdf(htmlDia, {
-              margin: { top: '10mm', bottom: '10mm', left: '8mm', right: '8mm' },
-            });
-            await wuzapiService.enviarDocumento(
-              grupoJid,
-              nomeDia,
-              pdfDia,
-              `📅 Relatório de Operação — ${ultimoDiaOperacional.split('-').reverse().join('/')} (${servico.nome})`,
-            );
-            pdfDiarioEnviado = true;
-          }
-        } catch (err: any) {
-          console.error('[WhatsappPipeline] Erro PDF diário:', err?.message || err);
-          errosPdf.push(`diário: ${err?.message || 'erro'}`);
-        }
-      } else {
-        errosPdf.push('diário: sem dia operacional no ciclo');
+        const contratoAlvo = (servico as Servico & { contract?: Contract }).contract || contrato;
+        const envio = await this.enviarRelatorioUltimoDia(
+          servico,
+          contratoAlvo || null,
+          grupoJid,
+          bufferPlanilha,
+          nomeArquivo,
+        );
+        if (envio.pdfSaude) pdfSaudeEnviado = true;
+        if (envio.pdfDiario) pdfDiarioEnviado = true;
+        errosPdf.push(...envio.erros);
+        diasPorServico.push({ nome: servico.nome, dia: envio.ultimoDia });
       }
 
       if (errosPdf.length && (!pdfSaudeEnviado || !pdfDiarioEnviado)) {
         try {
           await wuzapiService.enviarTexto(
             grupoJid,
-            `⚠️ Planilha importada, mas falhou o envio de PDF (${errosPdf.join('; ')})`,
+            `⚠️ Importação ok, mas falhou parte do relatório (${errosPdf.slice(0, 4).join('; ')})`,
           );
         } catch { /* ignore */ }
       }
     }
 
+    const diasTxt = diasPorServico
+      .filter((d) => d.dia)
+      .map((d) => `${d.nome}: ${String(d.dia).split('-').reverse().join('/')}`)
+      .join(' · ');
+
     const resumo = [
       `✅ Importação concluída`,
       `Contrato: ${contratoNome}`,
-      `Serviço: ${servico.nome}`,
       `Arquivo: ${nomeArquivo}`,
-      importResult.importadas != null ? `Linhas: ${importResult.importadas}` : null,
-      ultimoDiaOperacional
-        ? `Último dia operacional: ${ultimoDiaOperacional.split('-').reverse().join('/')}`
+      `Tipo: ${importResult.tipoDetectadoLabel}`,
+      `Linhas: ${importResult.importadas}`,
+      importResult.alvos.length
+        ? `Serviços: ${importResult.alvos.map((a) => `${a.servicoNome} (${a.importados})`).join(' · ')}`
         : null,
-      `PDF saúde: ${pdfSaudeEnviado ? 'enviado' : (ehRocada ? 'n/a' : 'não enviado')}`,
-      `PDF diário: ${pdfDiarioEnviado ? 'enviado' : 'não enviado'}`,
+      diasTxt ? `Último dia operacional: ${diasTxt}` : null,
+      mapa.responderPdf
+        ? `Relatórios: ${pdfDiarioEnviado ? 'enviados' : 'não enviados'}`
+        : 'Relatórios: desativados no mapeamento',
     ].filter(Boolean).join('\n');
 
-    if (!mapa.responderPdf || (!pdfSaudeEnviado && !pdfDiarioEnviado)) {
-      try {
-        await wuzapiService.enviarTexto(grupoJid, resumo);
-      } catch { /* ignore */ }
-    } else if (!pdfSaudeEnviado || !pdfDiarioEnviado) {
-      try {
-        await wuzapiService.enviarTexto(grupoJid, resumo);
-      } catch { /* ignore */ }
-    }
+    try {
+      await wuzapiService.enviarTexto(grupoJid, resumo);
+    } catch { /* ignore */ }
 
     return {
       processado: true,
       resultado: {
         grupoJid,
-        servicoId: servico.id,
         contrato: contratoNome,
         nomeArquivo,
+        tipoDetectado: importResult.tipoDetectado,
         importadas: importResult.importadas,
         planilhaUploadId: importResult.planilhaUploadId,
-        ultimoDiaOperacional,
+        alvos: importResult.alvos,
+        diasPorServico,
         pdfSaudeEnviado,
         pdfDiarioEnviado,
       },

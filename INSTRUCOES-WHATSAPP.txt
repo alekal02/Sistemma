@@ -1,0 +1,33 @@
+INSTRUÇÕES WHATSAPP (máquina destino)
+=====================================
+
+A partir da 2.3.5 a WuzAPI sobe DENTRO do docker compose (não precisa
+instalar nada no Windows nem usar host.docker.internal).
+
+Passos:
+1. SUBSTITUA o docker-compose.yml pelo deste pacote (obrigatório)
+2. No .env:
+
+TAG=2.3.5
+WUZAPI_TOKEN=sistemma_wuzapi_token_local
+WUZAPI_ADMIN_TOKEN=1234ABCD
+WUZAPI_INSTANCE_NAME=Sistemma
+
+IMPORTANTE: remova do .env (se existirem) estas linhas antigas:
+  WUZAPI_URL=http://host.docker.internal:8080
+  WUZAPI_WEBHOOK_URL=http://host.docker.internal:3200/...
+
+3. Suba tudo de novo:
+
+docker compose pull
+docker compose up -d --force-recreate
+
+4. Confira:
+
+docker ps
+docker exec sistemma-backend printenv WUZAPI_URL
+# deve mostrar: http://wuzapi:8080
+
+docker logs sistemma-wuzapi --tail 30
+
+5. Na tela Grupos WhatsApp → Conectar / Gerar QR

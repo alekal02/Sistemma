@@ -17,6 +17,9 @@ router.get('/comparar-por-tipo', authenticate, (req, res) => controller.getCompa
 // POST /api/contracts/:contractId/servicos
 router.post('/', authenticate, (req, res) => controller.criar(req, res));
 
+// POST /api/contracts/:contractId/servicos/garantir-padrao
+router.post('/garantir-padrao', authenticate, (req, res) => controller.garantirPadrao(req, res));
+
 // GET /api/contracts/:contractId/servicos/:id
 router.get('/:id', authenticate, (req, res) => controller.buscarUm(req, res));
 

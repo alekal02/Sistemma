@@ -63,8 +63,10 @@ export function invalidarCacheComparacaoContrato(contractId: string): void {
 export function fingerprintLimitesContrato(configOperacional?: {
   pesoMaximoKg?: Record<string, number> | null;
   volumeL?: Record<string, number> | null;
+  densidadeResiduoKgL?: number | null;
 } | null): string {
   const peso = configOperacional?.pesoMaximoKg || {};
   const vol = configOperacional?.volumeL || {};
-  return JSON.stringify({ p: peso, v: vol });
+  const dens = configOperacional?.densidadeResiduoKgL ?? null;
+  return JSON.stringify({ p: peso, v: vol, d: dens });
 }

@@ -19,6 +19,18 @@ export interface DadoDiario {
   toneladas: number;
   /** Área roçada (m²) — serviços de roçada */
   areaM2?: number;
+  /** Capina / extensão linear em metros */
+  metroLinear?: number;
+  /** Capina/varrição em km */
+  kmLinear?: number;
+  /** Poda — quantidade de árvores */
+  qtdArvore?: number;
+  /** Quantitativo bruto da planilha unificada */
+  quantitativo?: number;
+  /** Métrica principal do tipo (para barra/KPI do ciclo) */
+  metricaUnidade?: number;
+  metricaSufixo?: string;
+  metricaLabel?: string;
   km: number;
   horas: number;
   coletores: number;
@@ -165,6 +177,13 @@ function criarVazio(label: string): DadoDiario {
     rotas: 0,
     toneladas: 0,
     areaM2: 0,
+    metroLinear: 0,
+    kmLinear: 0,
+    qtdArvore: 0,
+    quantitativo: 0,
+    metricaUnidade: 0,
+    metricaSufixo: '',
+    metricaLabel: '',
     km: 0,
     horas: 0,
     coletores: 0,
@@ -185,6 +204,13 @@ function criarDiaVazio(data: string): DadoDiario {
     rotas: 0,
     toneladas: 0,
     areaM2: 0,
+    metroLinear: 0,
+    kmLinear: 0,
+    qtdArvore: 0,
+    quantitativo: 0,
+    metricaUnidade: 0,
+    metricaSufixo: '',
+    metricaLabel: '',
     km: 0,
     horas: 0,
     coletores: 0,
@@ -255,7 +281,18 @@ export function agruparCicloPorDia(
 
 /** Monta relatório do ciclo a partir da agregação SQL do backend (sem limite de registros). */
 export function agruparCicloPorDiaFromApi(
-  diasApi: Array<{ data: string; rotas: number; viagens: number; pesoTotalKg: number; kmTotal: number; areaM2?: number }>,
+  diasApi: Array<{
+    data: string;
+    rotas: number;
+    viagens: number;
+    pesoTotalKg: number;
+    kmTotal: number;
+    areaM2?: number;
+    metroLinear?: number;
+    kmLinear?: number;
+    qtdArvore?: number;
+    quantitativo?: number;
+  }>,
   dataInicio: string,
   dataFim: string,
   valorTonelada = 80,
@@ -263,10 +300,16 @@ export function agruparCicloPorDiaFromApi(
   valorTruck?: number,
   valorToco?: number,
   valorBasculante?: number,
-  opts?: { modo?: 'coleta' | 'rocada'; valorM2?: number | null },
+  opts?: {
+    modo?: 'coleta' | 'rocada' | 'km_linear' | 'metro_linear' | 'arvores';
+    valorM2?: number | null;
+    tipoServico?: string | null;
+  },
 ): RelatorioDiarioResult & { diasComDados: number; diasSemDados: number } {
   const tarifa = valorTonelada;
-  const modoRocada = opts?.modo === 'rocada';
+  const modo = opts?.modo || 'coleta';
+  const modoRocada = modo === 'rocada';
+  const modoUnidade = modo === 'rocada' || modo === 'km_linear' || modo === 'metro_linear' || modo === 'arvores';
   const valorM2 = Number(opts?.valorM2) > 0 ? Number(opts?.valorM2) : 0;
   void valorMini;
   void valorTruck;
@@ -285,24 +328,67 @@ export function agruparCicloPorDiaFromApi(
     };
   }
 
+  const resolverMetrica = (raw: {
+    areaM2?: number;
+    metroLinear?: number;
+    kmLinear?: number;
+    qtdArvore?: number;
+    quantitativo?: number;
+    rotas: number;
+  }) => {
+    const areaM2 = Number(raw.areaM2 || 0);
+    const metroLinear = Number(raw.metroLinear || 0);
+    const kmLinear = Number(raw.kmLinear || 0);
+    const qtdArvore = Number(raw.qtdArvore || 0);
+    const quantitativo = Number(raw.quantitativo || 0);
+
+    if (modo === 'rocada') {
+      return { areaM2, metroLinear, kmLinear, qtdArvore, quantitativo, metricaUnidade: areaM2, metricaSufixo: 'm²', metricaLabel: 'Área' };
+    }
+    if (modo === 'arvores') {
+      const v = qtdArvore || quantitativo;
+      return { areaM2, metroLinear, kmLinear, qtdArvore: v, quantitativo, metricaUnidade: v, metricaSufixo: 'arv', metricaLabel: 'Árvores' };
+    }
+    if (modo === 'km_linear') {
+      if (kmLinear > 0) {
+        return { areaM2, metroLinear, kmLinear, qtdArvore, quantitativo, metricaUnidade: kmLinear, metricaSufixo: 'km', metricaLabel: 'Extensão' };
+      }
+      if (metroLinear > 0) {
+        return { areaM2, metroLinear, kmLinear, qtdArvore, quantitativo, metricaUnidade: metroLinear, metricaSufixo: 'm', metricaLabel: 'Metro linear' };
+      }
+      return { areaM2, metroLinear, kmLinear, qtdArvore, quantitativo, metricaUnidade: quantitativo, metricaSufixo: 'km', metricaLabel: 'Extensão' };
+    }
+    if (modo === 'metro_linear') {
+      const v = metroLinear || (kmLinear > 0 ? kmLinear * 1000 : quantitativo);
+      return { areaM2, metroLinear: v, kmLinear, qtdArvore, quantitativo, metricaUnidade: v, metricaSufixo: 'm', metricaLabel: 'Metro linear' };
+    }
+    return { areaM2, metroLinear, kmLinear, qtdArvore, quantitativo, metricaUnidade: 0, metricaSufixo: '', metricaLabel: '' };
+  };
+
   const dias = todasDatas.map((data) => {
     const raw = mapa.get(data);
-    const areaM2 = Number(raw?.areaM2 || 0);
-    const temDados = modoRocada
-      ? !!raw && (raw.rotas > 0 || areaM2 > 0)
-      : !!raw && raw.viagens > 0;
-    if (!raw || !temDados) return criarDiaVazio(data);
+    if (!raw) return criarDiaVazio(data);
 
-    if (modoRocada) {
-      const faturamento = areaM2 * valorM2;
+    if (modoUnidade) {
+      const m = resolverMetrica(raw);
+      const temDados = raw.rotas > 0 || m.metricaUnidade > 0;
+      if (!temDados) return criarDiaVazio(data);
+      const faturamento = modoRocada ? m.areaM2 * valorM2 : 0;
       return {
         data,
         label: `${data.slice(8, 10)}/${data.slice(5, 7)}`,
-        viagens: raw.rotas, // registros no dia
+        viagens: raw.rotas,
         rotas: raw.rotas,
         toneladas: 0,
-        areaM2,
-        km: 0,
+        areaM2: m.areaM2,
+        metroLinear: m.metroLinear,
+        kmLinear: m.kmLinear,
+        qtdArvore: m.qtdArvore,
+        quantitativo: m.quantitativo,
+        metricaUnidade: m.metricaUnidade,
+        metricaSufixo: m.metricaSufixo,
+        metricaLabel: m.metricaLabel,
+        km: m.kmLinear || raw.kmTotal || 0,
         horas: 0,
         coletores: 0,
         faturamento,
@@ -310,6 +396,8 @@ export function agruparCicloPorDiaFromApi(
         receitaHora: 0,
       };
     }
+
+    if (!(raw.viagens > 0)) return criarDiaVazio(data);
 
     const toneladas = raw.pesoTotalKg / 1000;
     const faturamento = toneladas * tarifa;
@@ -320,6 +408,13 @@ export function agruparCicloPorDiaFromApi(
       rotas: raw.rotas,
       toneladas,
       areaM2: 0,
+      metroLinear: 0,
+      kmLinear: 0,
+      qtdArvore: 0,
+      quantitativo: 0,
+      metricaUnidade: raw.viagens,
+      metricaSufixo: '',
+      metricaLabel: 'Viagens',
       km: raw.kmTotal,
       horas: 0,
       coletores: 0,
@@ -329,19 +424,33 @@ export function agruparCicloPorDiaFromApi(
     };
   });
 
-  const diasComDados = dias.filter((d) => (
-    modoRocada ? (d.rotas > 0 || (d.areaM2 || 0) > 0) : d.viagens > 0
-  )).length;
+  const diaAtivo = (d: DadoDiario) => (
+    modoUnidade
+      ? (d.rotas > 0 || (d.metricaUnidade || 0) > 0 || (d.areaM2 || 0) > 0)
+      : d.viagens > 0
+  );
+
+  const diasComDados = dias.filter(diaAtivo).length;
   const totaisCiclo = criarVazio('Total do Ciclo');
   for (const d of dias) {
-    const ativo = modoRocada ? (d.rotas > 0 || (d.areaM2 || 0) > 0) : d.viagens > 0;
-    if (!ativo) continue;
+    if (!diaAtivo(d)) continue;
     totaisCiclo.viagens += d.viagens;
     totaisCiclo.rotas += d.rotas;
     totaisCiclo.toneladas += d.toneladas;
     totaisCiclo.areaM2 = (totaisCiclo.areaM2 || 0) + (d.areaM2 || 0);
+    totaisCiclo.metroLinear = (totaisCiclo.metroLinear || 0) + (d.metroLinear || 0);
+    totaisCiclo.kmLinear = (totaisCiclo.kmLinear || 0) + (d.kmLinear || 0);
+    totaisCiclo.qtdArvore = (totaisCiclo.qtdArvore || 0) + (d.qtdArvore || 0);
+    totaisCiclo.quantitativo = (totaisCiclo.quantitativo || 0) + (d.quantitativo || 0);
+    totaisCiclo.metricaUnidade = (totaisCiclo.metricaUnidade || 0) + (d.metricaUnidade || 0);
     totaisCiclo.km += d.km;
     totaisCiclo.faturamento += d.faturamento;
+  }
+  // Sufixo/label do total = do primeiro dia com dados
+  const amostra = dias.find(diaAtivo);
+  if (amostra) {
+    totaisCiclo.metricaSufixo = amostra.metricaSufixo;
+    totaisCiclo.metricaLabel = amostra.metricaLabel;
   }
   totaisCiclo.receitaKm = totaisCiclo.km > 0 ? totaisCiclo.faturamento / totaisCiclo.km : 0;
 

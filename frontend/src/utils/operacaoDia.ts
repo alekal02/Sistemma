@@ -10,6 +10,22 @@ import { contarViagensPorRotaRegistro } from './viagensPorRota';
 import { fmtNum } from './relatorioDiario';
 import { normalizarPlaca } from './normalizarPlaca';
 import { ehPlacaReserva } from './placasReserva';
+import {
+  LABEL_TIPO_CAMINHAO,
+  PCT_IDEAL_MAX,
+  PCT_IDEAL_MIN,
+  densidadeOptsToInput,
+  pctIdealForaDaMargem,
+  statusPctVsMargemIdeal,
+  PCT_SUBCARGA_CAPACIDADE,
+  PCT_SUBCARGA_POR_TIPO,
+  limitePesoParaTipo,
+  normalizarTipoCaminhaoPeso,
+  resolverLimitesPesoKg,
+  resolverPesosIdeaisKg,
+  type MapaLimiteCaminhao,
+  type TipoLimiteCaminhao,
+} from './limitesCaminhaoContrato';
 
 export interface LinhaOperacaoGrupo {
   chave: string;
@@ -20,6 +36,8 @@ export interface LinhaOperacaoGrupo {
   horas: number;
   tonMediaViagem: number;
   kmMedioViagem: number;
+  /** Tipo predominante (Mini/Toco/…) quando tipado na planilha. */
+  tipoCaminhao?: string | null;
 }
 
 export interface OperacaoDiaResumo {
@@ -133,6 +151,18 @@ export interface LinhaEficienciaPlaca extends LinhaOperacaoGrupo {
   pctMediaTonViag: number;
   status: 'bom' | 'medio' | 'ruim';
   ehReserva?: boolean;
+  /** Média usada na comparação (do tipo, se tipado; senão média do dia). */
+  mediaRefTonViag: number;
+  /** Rótulo da referência (ex.: "Mini" ou "dia"). */
+  mediaRefLabel: string;
+  /** Limite do contrato (kg) para o tipo, se houver. */
+  limiteContratoKg: number | null;
+  /** Ocupação vs limite do contrato (%). */
+  pctContrato: number | null;
+  /** Peso ideal do tipo (volume × densidade) em kg. */
+  pesoIdealKg: number | null;
+  /** Ocupação vs peso ideal (%). */
+  pctIdeal: number | null;
 }
 
 const normalizar = (s: string) =>
@@ -152,7 +182,9 @@ function detectarColNroColetores(chaves: string[]): string | undefined {
   });
 }
 
-function criarGrupo(chave: string): LinhaOperacaoGrupo {
+type GrupoAcc = LinhaOperacaoGrupo & { _votosTipo?: Map<string, number> };
+
+function criarGrupo(chave: string): GrupoAcc {
   return {
     chave,
     registros: 0,
@@ -162,14 +194,30 @@ function criarGrupo(chave: string): LinhaOperacaoGrupo {
     horas: 0,
     tonMediaViagem: 0,
     kmMedioViagem: 0,
+    tipoCaminhao: null,
+    _votosTipo: new Map(),
   };
 }
 
-function finalizarGrupo(g: LinhaOperacaoGrupo): LinhaOperacaoGrupo {
+function finalizarGrupo(g: GrupoAcc): LinhaOperacaoGrupo {
+  let tipoPred: string | null = null;
+  let maxVotos = 0;
+  for (const [tipo, n] of g._votosTipo || []) {
+    if (n > maxVotos) {
+      maxVotos = n;
+      tipoPred = tipo;
+    }
+  }
   return {
-    ...g,
+    chave: g.chave,
+    registros: g.registros,
+    viagens: g.viagens,
+    toneladas: g.toneladas,
+    km: g.km,
+    horas: g.horas,
     tonMediaViagem: g.viagens > 0 ? g.toneladas / g.viagens : 0,
     kmMedioViagem: g.viagens > 0 ? g.km / g.viagens : 0,
+    tipoCaminhao: tipoPred,
   };
 }
 
@@ -178,19 +226,60 @@ function ordenar(lista: LinhaOperacaoGrupo[]): LinhaOperacaoGrupo[] {
 }
 
 function addGrupo(
-  map: Map<string, LinhaOperacaoGrupo>,
+  map: Map<string, GrupoAcc>,
   chave: string,
   reg: Record<string, unknown>,
   m: ReturnType<typeof extrairMetricasCardViagem>,
+  tipoRaw?: string,
 ) {
   const k = chave || '—';
   if (!map.has(k)) map.set(k, criarGrupo(k));
   const g = map.get(k)!;
+  const vg = contarViagensPorRotaRegistro(reg) || Math.max(m.viagens, 1);
   g.registros += 1;
-  g.viagens += contarViagensPorRotaRegistro(reg) || Math.max(m.viagens, 1);
+  g.viagens += vg;
   g.toneladas += m.toneladas;
   g.km += m.kmFinal;
   g.horas += m.horasTrabalhadas;
+  const tipoNorm = normalizarTipoCaminhaoPeso(tipoRaw);
+  if (tipoNorm && g._votosTipo) {
+    g._votosTipo.set(tipoNorm, (g._votosTipo.get(tipoNorm) || 0) + vg);
+  }
+}
+
+/** Média t/viagem por tipo tipado (MINI/TOCO/…) a partir de porTipoCaminhao. */
+export function mediasTonViagemPorTipo(
+  analise: OperacaoDiaAnalise,
+): Map<TipoLimiteCaminhao, number> {
+  const map = new Map<TipoLimiteCaminhao, number>();
+  for (const g of analise.porTipoCaminhao) {
+    const tipo = normalizarTipoCaminhaoPeso(g.chave);
+    if (!tipo || !(g.viagens > 0)) continue;
+    map.set(tipo, g.tonMediaViagem);
+  }
+  return map;
+}
+
+/** Referência de comparação: média do tipo da placa/grupo, senão média do dia. */
+export function referenciaTonViagemGrupo(
+  grupo: LinhaOperacaoGrupo,
+  analise: OperacaoDiaAnalise,
+  mediasTipo?: Map<TipoLimiteCaminhao, number>,
+): { media: number; label: string; tipo: TipoLimiteCaminhao | null } {
+  const medias = mediasTipo || mediasTonViagemPorTipo(analise);
+  const tipo = normalizarTipoCaminhaoPeso(grupo.tipoCaminhao || grupo.chave);
+  if (tipo && medias.has(tipo) && (medias.get(tipo) || 0) > 0) {
+    return {
+      media: medias.get(tipo)!,
+      label: LABEL_TIPO_CAMINHAO[tipo],
+      tipo,
+    };
+  }
+  return {
+    media: analise.resumo.tonMediaColeta,
+    label: 'dia',
+    tipo: null,
+  };
 }
 
 const resumoVazio: OperacaoDiaResumo = {
@@ -228,10 +317,61 @@ function statusVsMedia(pct: number): 'bom' | 'medio' | 'ruim' {
   return 'ruim';
 }
 
-/** Insights automáticos para o gerente identificar gargalos do dia. */
+function statusVsContratoETipo(opts: {
+  tonMediaViagem: number;
+  pctMediaTipo: number;
+  tipo: TipoLimiteCaminhao | null;
+  limiteKg: number | null;
+  pesoIdealKg?: number | null;
+}): {
+  status: 'bom' | 'medio' | 'ruim';
+  pctContrato: number | null;
+  pctIdeal: number | null;
+} {
+  const { tonMediaViagem, pctMediaTipo, tipo, limiteKg, pesoIdealKg } = opts;
+  const pesoKg = tonMediaViagem * 1000;
+  const pctContrato = limiteKg && limiteKg > 0
+    ? Math.round((pesoKg / limiteKg) * 1000) / 10
+    : null;
+  const pctIdeal = pesoIdealKg && pesoIdealKg > 0
+    ? Math.round((pesoKg / pesoIdealKg) * 1000) / 10
+    : null;
+
+  // Preferência: peso ideal ± margem — gargalo se abaixo OU acima da faixa
+  if (pctIdeal != null) {
+    if (pctContrato != null && pctContrato > 100) {
+      return { status: 'ruim', pctContrato, pctIdeal }; // acima do peso máx.
+    }
+    const st = statusPctVsMargemIdeal(pctIdeal);
+    return { status: st, pctContrato, pctIdeal };
+  }
+
+  // Fallback: faixa do peso máximo do tipo
+  if (pctContrato != null) {
+    const pctSub = (tipo && PCT_SUBCARGA_POR_TIPO[tipo]) || PCT_SUBCARGA_CAPACIDADE;
+    if (pctContrato >= pctSub && pctContrato <= PCT_IDEAL_MAX) {
+      if (pctMediaTipo >= PCT_IDEAL_MIN) return { status: 'bom', pctContrato, pctIdeal };
+      return { status: 'medio', pctContrato, pctIdeal };
+    }
+    if (pctContrato > PCT_IDEAL_MAX) return { status: 'medio', pctContrato, pctIdeal };
+    return { status: 'ruim', pctContrato, pctIdeal };
+  }
+
+  return { status: statusVsMedia(pctMediaTipo), pctContrato, pctIdeal };
+}
+
+export type OptsAnaliseContratoDia = {
+  limitesPesoKg?: MapaLimiteCaminhao | null;
+  volumeL?: MapaLimiteCaminhao | null;
+  densidadeResiduoKgL?: number | null;
+  densidadeKgL?: MapaLimiteCaminhao | null;
+};
+
+/** Insights gerenciais — poucos, priorizando limite/média do tipo (não média geral do dia). */
 export function gerarInsightsOperacao(
   analise: OperacaoDiaAnalise,
   placasReserva?: string[],
+  opts?: OptsAnaliseContratoDia,
 ): InsightOperacao[] {
   const { resumo } = analise;
   const insights: InsightOperacao[] = [];
@@ -239,7 +379,9 @@ export function gerarInsightsOperacao(
 
   const avgTonViag = resumo.tonMediaColeta;
   const avgKmViag = resumo.kmMedioViagem;
-  const avgTonH = resumo.horas > 0 ? resumo.toneladas / resumo.horas : 0;
+  const limites = resolverLimitesPesoKg(opts?.limitesPesoKg);
+  const ideais = resolverPesosIdeaisKg(opts?.volumeL, densidadeOptsToInput(opts));
+  const eficiencia = montarEficienciaPlacas(analise, placasReserva, opts);
 
   const reservaOperando = analise.porPlaca.filter(
     (p) => p.viagens > 0 && ehPlacaReserva(p.chave, placasReserva),
@@ -252,58 +394,52 @@ export function gerarInsightsOperacao(
     });
   }
 
-  const placasFracas = analise.porPlaca
-    .filter(
-      (p) =>
-        p.viagens >= 1
-        && !ehPlacaReserva(p.chave, placasReserva)
-        && avgTonViag > 0
-        && p.tonMediaViagem < avgTonViag * 0.75,
-    )
-    .sort((a, b) => a.tonMediaViagem - b.tonMediaViagem);
+  const placasFracas = eficiencia
+    .filter((p) => p.status !== 'bom' && !p.ehReserva)
+    .slice(0, 5);
 
-  if (placasFracas.length > 0 && analise.porPlaca.length >= 2) {
+  if (placasFracas.length > 0) {
+    const exemplos = placasFracas.slice(0, 3).map((p) => {
+      const ref = p.pesoIdealKg != null
+        ? ` / ideal ${fmtNum(p.pesoIdealKg, 0)} kg (${p.pctIdeal != null ? `${fmtNum(p.pctIdeal, 0)}%` : '—'})`
+        : p.limiteContratoKg != null ? ` / lim. ${fmtNum(p.limiteContratoKg, 0)} kg` : '';
+      return `${p.chave} (${p.mediaRefLabel}: ${fmtNum(p.tonMediaViagem, 2)} t${ref})`;
+    });
     insights.push({
       severidade: placasFracas.length >= 2 ? 'critico' : 'atencao',
-      titulo: 'Veículos com produção abaixo da média',
-      texto: `${placasFracas.length} placa(s) com ton/viagem inferior a 75% da média (${fmtNum(avgTonViag, 2)} t): ${placasFracas.slice(0, 3).map((p) => p.chave).join(', ')}.`,
+      titulo: `Veículos fora da faixa ótima do ideal (${PCT_IDEAL_MIN}–${PCT_IDEAL_MAX}%)`,
+      texto: `${placasFracas.length} placa(s) fora do ótimo (vol × dens): ${exemplos.join('; ')}.`,
     });
   }
 
-  if (analise.porPlaca.length >= 2) {
-    const top = analise.porPlaca[0];
-    const pct = resumo.toneladas > 0 ? (top.toneladas / resumo.toneladas) * 100 : 0;
-    if (pct >= 45) {
-      insights.push({
-        severidade: pct >= 60 ? 'atencao' : 'info',
-        titulo: 'Concentração de volume em um veículo',
-        texto: `${top.chave} concentrou ${fmtNum(pct, 0)}% das toneladas do dia — verifique balanceamento da frota.`,
-      });
-    }
-  }
+  const tiposForaMargem = analise.porTipoCaminhao
+    .map((t) => {
+      const tipo = normalizarTipoCaminhaoPeso(t.chave);
+      if (!tipo || t.viagens <= 0) return null;
+      const ideal = ideais[tipo];
+      if (!(ideal > 0)) return null;
+      const pesoMedio = t.tonMediaViagem * 1000;
+      const pct = (pesoMedio / ideal) * 100;
+      if (!pctIdealForaDaMargem(pct)) return null;
+      return { tipo, label: LABEL_TIPO_CAMINHAO[tipo], pesoMedio, ideal, pct, viagens: t.viagens };
+    })
+    .filter(Boolean) as Array<{
+      tipo: TipoLimiteCaminhao;
+      label: string;
+      pesoMedio: number;
+      ideal: number;
+      pct: number;
+      viagens: number;
+    }>;
 
-  const turnos = analise.porTurno.filter((t) => t.viagens > 0);
-  if (turnos.length >= 2) {
-    const pior = [...turnos].sort((a, b) => a.tonMediaViagem - b.tonMediaViagem)[0];
-    if (avgTonViag > 0 && pior.tonMediaViagem < avgTonViag * 0.85) {
-      insights.push({
-        severidade: 'atencao',
-        titulo: 'Turno com menor rendimento',
-        texto: `Turno ${pior.chave}: ${fmtNum(pior.tonMediaViagem, 2)} t/viagem vs média do dia ${fmtNum(avgTonViag, 2)} t.`,
-      });
-    }
-  }
-
-  const regionais = analise.porRegional.filter((r) => r.viagens > 0);
-  if (regionais.length >= 2) {
-    const pior = [...regionais].sort((a, b) => a.tonMediaViagem - b.tonMediaViagem)[0];
-    if (avgTonViag > 0 && pior.tonMediaViagem < avgTonViag * 0.85) {
-      insights.push({
-        severidade: 'atencao',
-        titulo: 'Regional com menor rendimento',
-        texto: `${pior.chave}: ${fmtNum(pior.tonMediaViagem, 2)} t/viagem vs média ${fmtNum(avgTonViag, 2)} t — possível gargalo logístico.`,
-      });
-    }
+  if (tiposForaMargem.length > 0) {
+    insights.push({
+      severidade: tiposForaMargem.some((t) => Math.abs(t.pct - 100) > 25) ? 'critico' : 'atencao',
+      titulo: `Tipos fora da faixa ótima do ideal (${PCT_IDEAL_MIN}–${PCT_IDEAL_MAX}%)`,
+      texto: tiposForaMargem
+        .map((t) => `${t.label}: ${fmtNum(t.pesoMedio, 0)} kg vs ideal ${fmtNum(t.ideal, 0)} kg (${fmtNum(t.pct, 0)}%)`)
+        .join(' · '),
+    });
   }
 
   const placasKmAlto = analise.porPlaca.filter(
@@ -311,75 +447,89 @@ export function gerarInsightsOperacao(
       p.viagens >= 1
       && !ehPlacaReserva(p.chave, placasReserva)
       && avgKmViag > 0
-      && p.kmMedioViagem > avgKmViag * 1.35,
+      && p.kmMedioViagem > avgKmViag * 1.5,
   );
-  if (placasKmAlto.length > 0 && analise.porPlaca.length >= 2) {
+  if (placasKmAlto.length > 0) {
     insights.push({
       severidade: 'atencao',
-      titulo: 'Deslocamento elevado por viagem',
-      texto: `${placasKmAlto.slice(0, 3).map((p) => p.chave).join(', ')} com KM/viagem acima de 135% da média (${fmtNum(avgKmViag, 1)} km).`,
+      titulo: 'Deslocamento muito elevado',
+      texto: `${placasKmAlto.slice(0, 3).map((p) => p.chave).join(', ')} com KM/viagem > 150% da média (${fmtNum(avgKmViag, 1)} km).`,
     });
   }
 
-  const placasTonHBaixo = analise.porPlaca.filter((p) => {
-    const tonH = p.horas > 0 ? p.toneladas / p.horas : 0;
-    return (
-      p.horas > 0
-      && !ehPlacaReserva(p.chave, placasReserva)
-      && avgTonH > 0
-      && tonH < avgTonH * 0.7
-    );
-  });
-  if (placasTonHBaixo.length > 0 && analise.porPlaca.length >= 2) {
+  // Resumo por tipo tipado (visão gerencial)
+  const tiposTxt = analise.porTipoCaminhao
+    .filter((t) => t.viagens > 0 && normalizarTipoCaminhaoPeso(t.chave))
+    .map((t) => {
+      const tipo = normalizarTipoCaminhaoPeso(t.chave)!;
+      const ideal = ideais[tipo];
+      const lim = limites[tipo];
+      return `${LABEL_TIPO_CAMINHAO[tipo]} ${fmtNum(t.tonMediaViagem, 2)} t/v (ideal ${fmtNum(ideal, 0)} · máx. ${fmtNum(lim, 0)} kg)`;
+    });
+  if (tiposTxt.length > 0) {
     insights.push({
-      severidade: 'critico',
-      titulo: 'Baixa produtividade por hora',
-      texto: `${placasTonHBaixo.slice(0, 3).map((p) => p.chave).join(', ')} com ton/h abaixo de 70% da média (${fmtNum(avgTonH, 2)} t/h).`,
+      severidade: 'info',
+      titulo: 'Referência por tipo (ideal e máx. do contrato)',
+      texto: tiposTxt.join(' · '),
     });
-  }
-
-  const mot = analise.porMotorista.filter((m) => m.viagens > 0);
-  if (mot.length >= 3) {
-    const pior = [...mot].sort((a, b) => a.tonMediaViagem - b.tonMediaViagem)[0];
-    if (avgTonViag > 0 && pior.tonMediaViagem < avgTonViag * 0.75) {
-      insights.push({
-        severidade: 'atencao',
-        titulo: 'Motorista com menor média do dia',
-        texto: `${pior.chave}: ${fmtNum(pior.tonMediaViagem, 2)} t/viagem em ${fmtNum(pior.viagens, 0)} viagem(ns).`,
-      });
-    }
   }
 
   if (insights.length === 0) {
     insights.push({
       severidade: 'info',
       titulo: 'Operação dentro dos parâmetros',
-      texto: `Nenhum desvio crítico detectado. Média: ${fmtNum(avgTonViag, 2)} t/viagem, ${fmtNum(avgKmViag, 1)} km/viagem, ${fmtNum(resumo.prodColetor, 2)} t/veículo.`,
+      texto: `Nenhum desvio vs peso ideal do tipo. Média do dia: ${fmtNum(avgTonViag, 2)} t/viagem.`,
     });
   }
 
-  return insights.slice(0, 6);
+  return insights.slice(0, 5);
 }
 
-/** Linhas por placa com indicador de eficiência vs média do dia. */
+/**
+ * Eficiência por placa vs peso ideal do tipo (vol × dens) e teto do contrato.
+ * Mini ~3,5 t com ideal ~3,3 t = OK — não compara com média geral do dia.
+ */
 export function montarEficienciaPlacas(
   analise: OperacaoDiaAnalise,
   placasReserva?: string[],
+  opts?: OptsAnaliseContratoDia,
 ): LinhaEficienciaPlaca[] {
-  const avgTonViag = analise.resumo.tonMediaColeta;
+  const mediasTipo = mediasTonViagemPorTipo(analise);
+  const limites = resolverLimitesPesoKg(opts?.limitesPesoKg);
+  const ideais = resolverPesosIdeaisKg(opts?.volumeL, densidadeOptsToInput(opts));
   return analise.porPlaca
     .filter((p) => p.chave !== '—')
     .map((p) => {
-      const pct = avgTonViag > 0 ? (p.tonMediaViagem / avgTonViag) * 100 : 100;
+      const ref = referenciaTonViagemGrupo(p, analise, mediasTipo);
+      const pct = ref.media > 0 ? (p.tonMediaViagem / ref.media) * 100 : 100;
+      const tipo = ref.tipo || normalizarTipoCaminhaoPeso(p.tipoCaminhao);
+      const limiteKg = limitePesoParaTipo(tipo, limites);
+      const pesoIdealKg = tipo && ideais[tipo] > 0 ? ideais[tipo] : null;
+      const { status, pctContrato, pctIdeal } = statusVsContratoETipo({
+        tonMediaViagem: p.tonMediaViagem,
+        pctMediaTipo: pct,
+        tipo,
+        limiteKg,
+        pesoIdealKg,
+      });
       return {
         ...p,
         tonHora: p.horas > 0 ? p.toneladas / p.horas : 0,
         pctMediaTonViag: pct,
-        status: statusVsMedia(pct),
+        status,
         ehReserva: ehPlacaReserva(p.chave, placasReserva),
+        mediaRefTonViag: ref.media,
+        mediaRefLabel: ref.label,
+        limiteContratoKg: limiteKg,
+        pctContrato,
+        pesoIdealKg,
+        pctIdeal,
       };
     })
-    .sort((a, b) => a.pctMediaTonViag - b.pctMediaTonViag);
+    .sort((a, b) => {
+      const ordem = { ruim: 0, medio: 1, bom: 2 };
+      return ordem[a.status] - ordem[b.status] || a.pctMediaTonViag - b.pctMediaTonViag;
+    });
 }
 
 export function contarCaminhoesUnicos(registros: Record<string, unknown>[]): number {
@@ -421,12 +571,12 @@ export function analisarOperacaoDia(registros: Record<string, unknown>[]): Opera
   const colTipo = detectarColTipo(chaves);
   const colNroColetores = detectarColNroColetores(chaves);
 
-  const mapPlaca = new Map<string, LinhaOperacaoGrupo>();
-  const mapTurno = new Map<string, LinhaOperacaoGrupo>();
-  const mapRegional = new Map<string, LinhaOperacaoGrupo>();
-  const mapMotorista = new Map<string, LinhaOperacaoGrupo>();
-  const mapTipo = new Map<string, LinhaOperacaoGrupo>();
-  const mapDistrito = new Map<string, LinhaOperacaoGrupo>();
+  const mapPlaca = new Map<string, GrupoAcc>();
+  const mapTurno = new Map<string, GrupoAcc>();
+  const mapRegional = new Map<string, GrupoAcc>();
+  const mapMotorista = new Map<string, GrupoAcc>();
+  const mapTipo = new Map<string, GrupoAcc>();
+  const mapDistrito = new Map<string, GrupoAcc>();
 
   const placas = new Set<string>();
   const motoristas = new Set<string>();
@@ -457,12 +607,12 @@ export function analisarOperacaoDia(registros: Record<string, unknown>[]): Opera
     }
 
     const tipoRaw = colTipo ? String(obterValorRegistro(reg, colTipo) || '').trim() : '';
-    addGrupo(mapPlaca, m.placa, reg as Record<string, unknown>, m);
-    addGrupo(mapTurno, m.turno, reg as Record<string, unknown>, m);
-    addGrupo(mapRegional, m.regional, reg as Record<string, unknown>, m);
-    addGrupo(mapMotorista, m.motorista, reg as Record<string, unknown>, m);
-    addGrupo(mapTipo, tipoRaw || 'Não informado', reg as Record<string, unknown>, m);
-    addGrupo(mapDistrito, m.distrito, reg as Record<string, unknown>, m);
+    addGrupo(mapPlaca, m.placa, reg as Record<string, unknown>, m, tipoRaw);
+    addGrupo(mapTurno, m.turno, reg as Record<string, unknown>, m, tipoRaw);
+    addGrupo(mapRegional, m.regional, reg as Record<string, unknown>, m, tipoRaw);
+    addGrupo(mapMotorista, m.motorista, reg as Record<string, unknown>, m, tipoRaw);
+    addGrupo(mapTipo, tipoRaw || 'Não informado', reg as Record<string, unknown>, m, tipoRaw);
+    addGrupo(mapDistrito, m.distrito, reg as Record<string, unknown>, m, tipoRaw);
   }
 
   const resumo: OperacaoDiaResumo = {

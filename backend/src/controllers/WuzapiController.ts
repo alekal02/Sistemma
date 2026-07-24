@@ -101,13 +101,21 @@ export class WuzapiController {
           logado: sessao.loggedIn,
         });
       } catch (err: any) {
+        const erroSessao = err?.message || 'Falha ao consultar sessão';
+        // 401 = token ainda sem usuário → WuzAPI online, só falta Connect criar instância
+        const offline = /ECONNREFUSED|inacess[ií]vel|ENOTFOUND|EHOSTUNREACH/i.test(String(erroSessao));
         res.json({
           ...base,
           sessao: null,
           qrCode: null,
           conectado: false,
           logado: false,
-          erroSessao: err?.message || 'Falha ao consultar sessão',
+          erroSessao,
+          wuzapiOffline: offline,
+          wuzapiOnline: !offline,
+          mensagem: offline
+            ? 'WuzAPI offline. Suba: docker compose up -d wuzapi-db wuzapi'
+            : undefined,
         });
       }
     } catch (error: any) {
@@ -126,12 +134,12 @@ export class WuzapiController {
         return;
       }
       const resultado = await wuzapiService.conectarSessao();
-      // Aguarda um pouco e tenta obter QR
+      // Aguarda um pouco e tenta obter QR (também quando já estava connected)
       let qrCode: string | null = null;
       try {
-        await new Promise((r) => setTimeout(r, 1500));
+        await new Promise((r) => setTimeout(r, 1200));
         const st = await wuzapiService.getStatus();
-        if (st.connected && !st.loggedIn) {
+        if (!st.loggedIn) {
           const qr = await wuzapiService.getQRCode();
           qrCode = qr.qrCode || null;
           if (qrCode && !qrCode.startsWith('data:')) {
@@ -145,9 +153,50 @@ export class WuzapiController {
         message: resultado.message,
         jid: resultado.jid,
         qrCode,
+        conectado: true,
+        logado: false,
       });
     } catch (error: any) {
-      res.status(500).json({ sucesso: false, erro: error?.message || 'Erro ao conectar' });
+      const msg = String(error?.message || 'Erro ao conectar');
+      const offline = /ECONNREFUSED|inacess[ií]vel|ENOTFOUND|EHOSTUNREACH/i.test(msg);
+      res.status(offline ? 503 : 500).json({
+        sucesso: false,
+        erro: offline
+          ? `${msg} Suba com: docker compose up -d wuzapi-db wuzapi`
+          : msg,
+        wuzapiOffline: offline,
+      });
+    }
+  }
+
+  /** POST /api/wuzapi/disconnect — logout / encerra sessão WhatsApp */
+  async disconnect(_req: Request, res: Response): Promise<void> {
+    try {
+      if (!wuzapiService.isConfigured) {
+        res.status(400).json({
+          sucesso: false,
+          erro: 'WuzAPI não configurada. Defina WUZAPI_URL e WUZAPI_TOKEN no .env',
+        });
+        return;
+      }
+      const resultado = await wuzapiService.desconectarSessao();
+      res.json({
+        sucesso: true,
+        message: resultado.message,
+        conectado: false,
+        logado: false,
+        qrCode: null,
+      });
+    } catch (error: any) {
+      const msg = String(error?.message || 'Erro ao desconectar');
+      const offline = /ECONNREFUSED|inacess[ií]vel|ENOTFOUND|EHOSTUNREACH/i.test(msg);
+      res.status(offline ? 503 : 500).json({
+        sucesso: false,
+        erro: offline
+          ? `${msg} Suba com: docker compose up -d wuzapi-db wuzapi`
+          : msg,
+        wuzapiOffline: offline,
+      });
     }
   }
 

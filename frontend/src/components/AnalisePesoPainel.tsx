@@ -104,6 +104,12 @@ export default function AnalisePesoPainel({ servicos, tipoServicoLabel, onAbrirS
         </button>
       </div>
 
+      <p className="vg-peso-densidade-hint">
+        A <strong>densidade (kg/L)</strong> é definida no contrato por tipo de caminhão
+        (com fallback da densidade padrão) e usada no peso ideal (volume × densidade).
+        Após alterar no contrato, clique em <strong>Atualizar</strong> nesta comparação.
+      </p>
+
       <div className="vg-peso-comp-wrap">
         <table className="vg-peso-comp-tabela">
           <thead>

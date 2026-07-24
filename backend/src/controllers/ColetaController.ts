@@ -2,6 +2,11 @@ import { Request, Response } from 'express';
 import PlanilhaService from '../services/PlanilhaService';
 import DeduplicacaoService from '../services/DeduplicacaoService';
 import RocadaImportService from '../services/rocadaImportService';
+import ServicosUnificadosImportService from '../services/servicosUnificadosImportService';
+import {
+  detectarPlanilhaServicosUnificados,
+  TIPOS_ACEITA_UNIFICADO,
+} from '../services/servicosUnificadosPlanilhaParser';
 import QualidadeDadosService from '../services/QualidadeDadosService';
 import { analisarQualidadePlanilha } from '../services/QualidadePlanilhaPreviewService';
 import AppDataSource from '../database/data-source';
@@ -10,12 +15,14 @@ import { TipoServico } from '../enums/TipoServico';
 import { buildConfigDashboardPadraoColeta } from '../config/dashboardPadraoColeta';
 import { Servico } from '../entities/Servico';
 import { inferirFiltroExecucaoServico } from '../utils/rocadaTipoExecucao';
+import { labelModeloRocada } from '../services/rocadaPlanilhaParser';
 import { PlanilhaUpload } from '../entities/PlanilhaUpload';
 import { invalidarCacheDashboardServico } from './ServicoController';
 import { invalidarCacheDadosServico } from '../services/servicoDadosCache';
 import { dashboardCache } from '../services/DashboardCacheManager';
 import { agendarWarmupPosUpload } from '../services/executivoCacheWarmupService';
 import { gerarConfigGraficosPadrao, reResolverGraficos } from '../services/graficosPadrao';
+import { invalidarCacheSaudeContratos } from './ContractController';
 
 // Extensão para request com file do multer
 interface RequestWithFile extends Request {
@@ -38,6 +45,153 @@ export class ColetaController {
       return existe ? usuarioId : null;
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * POST /api/coleta/upload/contrato
+   * Upload no nível do contrato: detecta o tipo da planilha e envia ao serviço certo.
+   * - CONSOLIDADO → distribui Roçada/Capina/Varrição/Poda
+   * - Coleta (PLACA/PESO) → serviço coleta_caminhao
+   * - Roçada legado → serviço rocadeira
+   *
+   * Body (multipart):
+   *   - planilha: arquivo .xlsx/.xls/.xlsm
+   *   - contract_id: string
+   *   - estrategia: opcional ('atualizar_data' default quando já há dados)
+   */
+  async uploadContrato(req: RequestWithFile, res: Response): Promise<void> {
+    try {
+      const file = req.file;
+      if (!file) {
+        res.status(400).json({ error: 'Nenhum arquivo enviado.' });
+        return;
+      }
+      const ext = file.originalname.split('.').pop()?.toLowerCase();
+      if (ext !== 'xlsx' && ext !== 'xls' && ext !== 'xlsm') {
+        res.status(400).json({ error: 'Formato inválido. Envie um arquivo .xlsx, .xls ou .xlsm.' });
+        return;
+      }
+
+      const contractId = String(req.body?.contract_id || '').trim();
+      if (!contractId) {
+        res.status(400).json({ error: 'contract_id é obrigatório.' });
+        return;
+      }
+
+      const usuarioIdValido = await this.validarUsuarioId(req.usuario?.id);
+      const estrategiaRaw = req.body?.estrategia;
+      const substituir = estrategiaRaw !== 'ignorar';
+
+      const { classificarPlanilhaContrato } = await import('../services/planilhaContratoClassifier');
+      const { obterServicoPorTipoContrato } = await import('../services/servicosPadraoContratoService');
+      const classificacao = classificarPlanilhaContrato(file.buffer);
+
+      if (classificacao.tipo === 'unificado') {
+        const resultado = await ServicosUnificadosImportService.importarPorContrato(
+          file.buffer,
+          file.originalname,
+          contractId,
+          usuarioIdValido ?? undefined,
+          substituir,
+        );
+
+        const partes = resultado.splitPorServico.map((s) => {
+          const und = resultado.porTipo.find((p) => p.tipoSistema === s.tipoSistema)?.undPrincipal || '';
+          return `${s.servicoNome}: ${s.importados} reg. (${s.quantitativoTotal.toLocaleString('pt-BR')}${und ? ' ' + und : ''})`;
+        });
+        let mensagem = `Planilha unificada importada: ${resultado.importados} registro(s). ${partes.join(' · ')}`;
+        if (resultado.tiposSemServico.length) {
+          mensagem += ` (${resultado.tiposSemServico.map((t) => `${t.registros} ${t.tipoSistema} sem serviço`).join(', ')})`;
+        }
+
+        invalidarCacheSaudeContratos(contractId);
+        res.json({
+          sucesso: true,
+          tipoDetectado: classificacao.tipo,
+          tipoDetectadoLabel: classificacao.label,
+          ...resultado,
+          importadas: resultado.importados,
+          mensagem,
+        });
+        return;
+      }
+
+      if (classificacao.tipo === 'coleta') {
+        const alvo = await obterServicoPorTipoContrato(contractId, TipoServico.COLETA_CAMINHAO);
+        let estrategia: 'ignorar' | 'substituir' | 'atualizar_data' | 'inserir_data' = 'atualizar_data';
+        if (estrategiaRaw === 'ignorar') estrategia = 'ignorar';
+        else if (estrategiaRaw === 'substituir') estrategia = 'substituir';
+        else if (estrategiaRaw === 'inserir_data') estrategia = 'inserir_data';
+
+        const resultado = (estrategia === 'atualizar_data' || estrategia === 'inserir_data')
+          ? await DeduplicacaoService.importarPorData(
+            file.buffer,
+            file.originalname,
+            estrategia,
+            usuarioIdValido ?? undefined,
+            alvo.id,
+          )
+          : await DeduplicacaoService.importarComDedup(
+            file.buffer,
+            file.originalname,
+            estrategia === 'substituir' ? 'substituir' : 'ignorar',
+            usuarioIdValido ?? undefined,
+            alvo.id,
+          );
+
+        const qtd = Number((resultado as any).importados ?? (resultado as any).importadas ?? 0);
+        invalidarCacheSaudeContratos(contractId);
+        res.json({
+          sucesso: true,
+          tipoDetectado: classificacao.tipo,
+          tipoDetectadoLabel: classificacao.label,
+          servicoId: alvo.id,
+          servicoNome: alvo.nome,
+          ...resultado,
+          importadas: qtd,
+          mensagem: `Coleta importada em “${alvo.nome}”: ${qtd} registro(s).`,
+        });
+        return;
+      }
+
+      if (classificacao.tipo === 'rocada') {
+        const alvo = await obterServicoPorTipoContrato(contractId, TipoServico.ROCADEIRA);
+        const temPlanilhaAnterior = await AppDataSource.getRepository(PlanilhaUpload).count({
+          where: { servico_id: alvo.id },
+        });
+        const resultadoRocada = await RocadaImportService.importar(
+          file.buffer,
+          file.originalname,
+          alvo.id,
+          usuarioIdValido ?? undefined,
+          temPlanilhaAnterior > 0 || substituir,
+        );
+
+        invalidarCacheSaudeContratos(contractId);
+        res.json({
+          sucesso: true,
+          tipoDetectado: classificacao.tipo,
+          tipoDetectadoLabel: classificacao.label,
+          servicoId: alvo.id,
+          servicoNome: alvo.nome,
+          ...resultadoRocada,
+          importadas: resultadoRocada.importados,
+          mensagem: `Roçada importada em “${alvo.nome}” (${labelModeloRocada(resultadoRocada.modelo)}): ${resultadoRocada.importados} registro(s).`,
+        });
+        return;
+      }
+
+      res.status(400).json({
+        error: 'Não foi possível identificar o tipo da planilha. Use layout unificado (DATA/UND/QUANTITATIVO/TIPO DE SERVIÇO), Coleta (PLACA/PESO) ou Roçada legada.',
+        tipoDetectado: classificacao.tipo,
+        tipoDetectadoLabel: classificacao.label,
+      });
+    } catch (error: any) {
+      console.error('Erro no upload por contrato:', error);
+      const msg = error.message || 'Erro ao processar planilha do contrato.';
+      const status = msg.includes('ciclo(s) já fechado') ? 409 : 400;
+      res.status(status).json({ error: msg });
     }
   }
 
@@ -72,13 +226,53 @@ export class ColetaController {
       // Validar usuarioId contra o banco (evita FK violation se banco foi resetado)
       const usuarioIdValido = await this.validarUsuarioId(req.usuario?.id);
 
-      // Serviço de roçada: pipeline multi-modelo (não usa validação de viagem)
+      // Layout unificado (DATA|UND|QUANTITATIVO|TIPO DE SERVIÇO) — pipeline próprio.
+      // NÃO altera o fluxo de roçada legado: só entra se o cabeçalho unificado for detectado.
       if (servico_id) {
         const servicoRepo = AppDataSource.getRepository(Servico);
         const servicoTipo = await servicoRepo.findOne({
           where: { id: servico_id },
-          select: ['id', 'tipo'],
+          select: ['id', 'tipo', 'nome'],
         });
+
+        if (
+          servicoTipo
+          && TIPOS_ACEITA_UNIFICADO.has(String(servicoTipo.tipo))
+          && detectarPlanilhaServicosUnificados(file.buffer)
+        ) {
+          const temPlanilhaAnterior = await AppDataSource.getRepository(PlanilhaUpload).count({
+            where: { servico_id },
+          });
+          const resultadoUnif = await ServicosUnificadosImportService.importar(
+            file.buffer,
+            file.originalname,
+            servico_id,
+            usuarioIdValido ?? undefined,
+            temPlanilhaAnterior > 0 || estrategiaRaw === 'atualizar_data',
+          );
+
+          const partes = resultadoUnif.splitPorServico.map((s) => {
+            const und = resultadoUnif.porTipo.find((p) => p.tipoSistema === s.tipoSistema)?.undPrincipal || '';
+            return `${s.servicoNome}: ${s.importados} reg. (${s.quantitativoTotal.toLocaleString('pt-BR')}${und ? ' ' + und : ''})`;
+          });
+          let mensagem = `Planilha unificada importada: ${resultadoUnif.importados} registro(s). ${partes.join(' · ')}`;
+          if (resultadoUnif.tiposSemServico.length) {
+            mensagem += ` (${resultadoUnif.tiposSemServico.map((t) => `${t.registros} ${t.tipoSistema} sem serviço`).join(', ')})`;
+          }
+          if (resultadoUnif.consolidacao?.uploadsRemovidos) {
+            mensagem += ` ${resultadoUnif.consolidacao.uploadsRemovidos} planilha(s) antiga(s) removida(s).`;
+          }
+
+          res.json({
+            sucesso: true,
+            ...resultadoUnif,
+            importadas: resultadoUnif.importados,
+            mensagem,
+          });
+          return;
+        }
+
+        // Serviço de roçada: pipeline multi-modelo (não usa validação de viagem)
         if (servicoTipo?.tipo === TipoServico.ROCADEIRA || servicoTipo?.tipo === 'rocadeira') {
           const temPlanilhaAnterior = await AppDataSource.getRepository(PlanilhaUpload).count({
             where: { servico_id },
@@ -114,7 +308,7 @@ export class ColetaController {
           }
 
           const split = resultadoRocada.splitPorServico;
-          let mensagem = `Roçada importada (${resultadoRocada.modelo}): ${resultadoRocada.importados} registro(s), `
+          let mensagem = `Roçada importada (${labelModeloRocada(resultadoRocada.modelo)}): ${resultadoRocada.importados} registro(s), `
             + `${resultadoRocada.areaTotalM2.toLocaleString('pt-BR')} m² em ${resultadoRocada.dias} dia(s).`;
           if (split && split.length >= 2) {
             mensagem += ' Dashboards Manual e Mecanizada atualizados neste upload.';
@@ -253,6 +447,60 @@ export class ColetaController {
   }
 
   /**
+   * POST /api/coleta/upload/preview-servicos-unificados
+   * Pré-visualiza layout unificado (TIPO DE SERVIÇO) sem importar.
+   */
+  async previewServicosUnificados(req: RequestWithFile, res: Response): Promise<void> {
+    try {
+      const file = req.file;
+      if (!file) {
+        res.status(400).json({ error: 'Nenhum arquivo enviado.' });
+        return;
+      }
+      const ext = file.originalname.split('.').pop()?.toLowerCase();
+      if (ext !== 'xlsx' && ext !== 'xls' && ext !== 'xlsm') {
+        res.status(400).json({ error: 'Formato inválido. Envie .xlsx, .xls ou .xlsm.' });
+        return;
+      }
+
+      const ehUnificado = detectarPlanilhaServicosUnificados(file.buffer);
+      if (!ehUnificado) {
+        res.json({
+          sucesso: false,
+          ehUnificado: false,
+          mensagem: 'Planilha não está no layout unificado (DATA, UND, QUANTITATIVO, TIPO DE SERVIÇO).',
+        });
+        return;
+      }
+
+      const preview = ServicosUnificadosImportService.preview(file.buffer);
+      const podeImportar = preview.resumo.podeImportar;
+      const partes = preview.porTipo.map((p) =>
+        `${p.tipoLabel}: ${p.registros} reg. (${p.quantitativoTotal.toLocaleString('pt-BR')}${p.undPrincipal ? ' ' + p.undPrincipal : ''})`,
+      );
+      const mensagem = podeImportar
+        ? `Layout unificado: ${preview.resumo.registros} registro(s). ${partes.join(' · ')}. Cada TIPO DE SERVIÇO vai para o serviço correspondente.`
+        : (preview.avisos[0] || 'Nenhuma linha válida no layout unificado.');
+
+      res.json({
+        sucesso: podeImportar,
+        ehUnificado: true,
+        arquivo: file.originalname,
+        mensagem,
+        modelo: preview.modelo,
+        abasUsadas: preview.abasUsadas,
+        avisos: preview.avisos,
+        porTipo: preview.porTipo,
+        podeImportar,
+        resumo: preview.resumo,
+      });
+    } catch (error: any) {
+      console.error('Erro no preview unificado:', error);
+      res.status(500).json({ error: error.message || 'Erro ao analisar planilha unificada.' });
+    }
+  }
+
+  /**
    * POST /api/coleta/upload/preview-rocada
    * Pré-visualiza planilha de roçada (multi-modelo) sem importar.
    */
@@ -293,7 +541,7 @@ export class ColetaController {
       const porTipo = preview.porTipoExecucao || preview.resumo.porTipoExecucao;
       let mensagem: string;
       if (podeImportar) {
-        mensagem = `Modelo ${preview.resumo.modelo}: ${preview.resumo.registros} registro(s), `
+        mensagem = `Modelo ${preview.resumo.modeloLabel || preview.resumo.modelo}: ${preview.resumo.registros} registro(s), `
           + `${preview.resumo.areaTotalM2.toLocaleString('pt-BR')} m², `
           + `${preview.resumo.dias} dia(s), ${preview.resumo.bairros} bairro(s).`;
         if (porTipo && (porTipo.manual.registros > 0 || porTipo.mecanizada.registros > 0)) {

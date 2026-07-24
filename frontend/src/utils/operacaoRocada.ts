@@ -94,6 +94,32 @@ function tipoExecucaoDoRegistro(r: Record<string, unknown>): 'manual' | 'mecaniz
   return 'desconhecido';
 }
 
+function localDoRegistro(r: Record<string, unknown>): string | null {
+  return str(
+    r.BAIRRO ?? r.bairro ?? r.TRECHO ?? r.LOCAL ?? r.regional ?? r.REGIONAL
+    ?? r.LOGRADOURO ?? r.LOCALIZACAO ?? r['LOCALIZAÇÃO'],
+  );
+}
+
+function segmentoDoRegistro(r: Record<string, unknown>): string | null {
+  const inicio = str(r.INICIO ?? r['INÍCIO']);
+  const termino = str(r.TERMINO ?? r['TÉRMINO']);
+  if (inicio || termino) return [inicio, termino].filter(Boolean).join(' → ');
+  return str(r.Operador ?? r.OPERADOR ?? r.motorista ?? r.ENDERECO ?? r['ENDEREÇO'] ?? r.ENDEREÇO);
+}
+
+function equipeDoRegistro(r: Record<string, unknown>): string | null {
+  return str(r.Equipe ?? r.EQUIPE ?? r.PERIODICIDADE ?? r.turno ?? r.TURNO);
+}
+
+function equipamentoDoRegistro(r: Record<string, unknown>): string | null {
+  const eq = str(r.Equipamento ?? r.EQUIPAMENTO ?? r.tipoCaminhao);
+  if (!eq) return null;
+  const n = eq.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
+  if (n === 'ROCADA' || n === 'MANUAL' || n === 'MECANIZADA') return null;
+  return eq;
+}
+
 export function analisarRocadaDia(registros: Record<string, unknown>[]): AnaliseRocadaDia {
   const areaM2 = registros.reduce((s, r) => s + areaDoRegistro(r), 0);
   let areaManualM2 = 0;
@@ -104,10 +130,10 @@ export function analisarRocadaDia(registros: Record<string, unknown>[]): Analise
     if (t === 'manual') areaManualM2 += a;
     else if (t === 'mecanizada') areaMecanizadaM2 += a;
   }
-  const bairros = new Set(registros.map((r) => str(r.BAIRRO ?? r.bairro ?? r.regional ?? r.REGIONAL)).filter(Boolean));
-  const operadores = new Set(registros.map((r) => str(r.Operador ?? r.OPERADOR ?? r.motorista ?? r.MOTORISTA)).filter(Boolean));
-  const equipes = new Set(registros.map((r) => str(r.Equipe ?? r.EQUIPE ?? r.turno ?? r.TURNO)).filter(Boolean));
-  const equipamentos = new Set(registros.map((r) => str(r.Equipamento ?? r.EQUIPAMENTO ?? r.tipoCaminhao)).filter(Boolean));
+  const bairros = new Set(registros.map(localDoRegistro).filter(Boolean));
+  const operadores = new Set(registros.map(segmentoDoRegistro).filter(Boolean));
+  const equipes = new Set(registros.map(equipeDoRegistro).filter(Boolean));
+  const equipamentos = new Set(registros.map(equipamentoDoRegistro).filter(Boolean));
 
   return {
     resumo: {
@@ -122,10 +148,10 @@ export function analisarRocadaDia(registros: Record<string, unknown>[]): Analise
       equipes: equipes.size,
       equipamentos: equipamentos.size,
     },
-    porBairro: agregar(registros, (r) => str(r.BAIRRO ?? r.bairro ?? r.regional ?? r.REGIONAL)),
-    porOperador: agregar(registros, (r) => str(r.Operador ?? r.OPERADOR ?? r.motorista ?? r.MOTORISTA)),
-    porEquipe: agregar(registros, (r) => str(r.Equipe ?? r.EQUIPE ?? r.turno ?? r.TURNO)),
-    porEquipamento: agregar(registros, (r) => str(r.Equipamento ?? r.EQUIPAMENTO ?? r.tipoCaminhao)),
+    porBairro: agregar(registros, localDoRegistro),
+    porOperador: agregar(registros, segmentoDoRegistro),
+    porEquipe: agregar(registros, equipeDoRegistro),
+    porEquipamento: agregar(registros, equipamentoDoRegistro),
   };
 }
 

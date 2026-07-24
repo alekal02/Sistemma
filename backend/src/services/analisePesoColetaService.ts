@@ -2,6 +2,7 @@ import { encontrarValorColuna } from './FormulaEngine';
 import { colunaEhPlaca, normalizarPlaca } from '../utils/normalizarPlaca';
 import { detectarTodasColunas } from './metricaExecutivaService';
 import {
+  TIPOS_CAMINHAO_ORDEM,
   normalizarTipoCaminhaoPeso,
   resolverLimitesPesoKg,
   resolverLimitesVolumeL,
@@ -20,6 +21,28 @@ import { detectarColunaRankingRotas } from './rankingOperacionalService';
 
 /** Densidade do resíduo (kg/L) — referência gerencial para peso ideal da caixa média */
 export const DENSIDADE_OTIMA_PADRAO = 0.55;
+
+/** Normaliza densidade do contrato (kg/L). Aceita 0,01–5; inválido → undefined. */
+export function normalizarDensidadeResiduoKgL(raw: unknown): number | undefined {
+  if (raw === null || raw === undefined || raw === '') return undefined;
+  const n = typeof raw === 'number' ? raw : Number(String(raw).replace(',', '.').trim());
+  if (!Number.isFinite(n) || n <= 0 || n > 5) return undefined;
+  return Math.round(n * 1000) / 1000;
+}
+
+/** Normaliza mapa de densidades por tipo (kg/L). */
+export function normalizarMapaDensidadesKgL(
+  raw: unknown,
+): Partial<Record<TipoCaminhaoPeso, number>> | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const obj = raw as Record<string, unknown>;
+  const out: Partial<Record<TipoCaminhaoPeso, number>> = {};
+  for (const t of TIPOS_CAMINHAO_ORDEM) {
+    const n = normalizarDensidadeResiduoKgL(obj[t]);
+    if (n != null) out[t] = n;
+  }
+  return Object.keys(out).length ? out : {};
+}
 
 export interface FaixaPesoAnalise {
   label: string;
@@ -286,6 +309,34 @@ export function calcularMediaIdealKg(caixaMediaL: number, densidadeResiduoKgL: n
   return Math.round(caixaMediaL * densidadeResiduoKgL * 100) / 100;
 }
 
+/**
+ * Peso ideal da frota com densidade por tipo:
+ * média ponderada de (volume[tipo] × dens[tipo]) pela contagem da frota.
+ */
+export function calcularMediaIdealKgPorTipo(
+  frota: { MINI: number; TOCO: number; BASCULANTE?: number; TRUCK: number },
+  volumes: LimitesVolumeL,
+  densidades: Record<TipoCaminhaoPeso, number>,
+): { mediaIdealKg: number; densidadeMedia: number } {
+  const basculante = frota.BASCULANTE ?? 0;
+  const total = frota.MINI + frota.TOCO + basculante + frota.TRUCK;
+  if (total <= 0) return { mediaIdealKg: 0, densidadeMedia: DENSIDADE_OTIMA_PADRAO };
+  const somaIdeal =
+    frota.MINI * volumes.MINI * densidades.MINI
+    + frota.TOCO * volumes.TOCO * densidades.TOCO
+    + basculante * volumes.BASCULANTE * densidades.BASCULANTE
+    + frota.TRUCK * volumes.TRUCK * densidades.TRUCK;
+  const somaDens =
+    frota.MINI * densidades.MINI
+    + frota.TOCO * densidades.TOCO
+    + basculante * densidades.BASCULANTE
+    + frota.TRUCK * densidades.TRUCK;
+  return {
+    mediaIdealKg: Math.round((somaIdeal / total) * 100) / 100,
+    densidadeMedia: Math.round((somaDens / total) * 1000) / 1000,
+  };
+}
+
 const VALORES_IGNORADOS_ROTA = new Set(['', '-', '--', 'N/D', 'ND', 'N/A', 'NA', '0', 'NULL', 'NONE']);
 
 function obterNomeRotaRegistro(reg: Record<string, unknown>, colRota: string): string {
@@ -359,6 +410,7 @@ export function analisarPesoColeta(
   servicoId: string,
   opts?: {
     densidadeOtima?: number;
+    densidadeKgL?: Partial<Record<TipoCaminhaoPeso, number>> | null;
     limitesPeso?: Partial<LimitesPesoKg>;
     limitesVolume?: Partial<LimitesVolumeL>;
     colunaTipoCaminhao?: string;
@@ -372,7 +424,13 @@ export function analisarPesoColeta(
 
   const limites = resolverLimitesPesoKg(opts?.limitesPeso);
   const volumes = resolverLimitesVolumeL(opts?.limitesVolume);
-  const densidadeOtima = opts?.densidadeOtima ?? DENSIDADE_OTIMA_PADRAO;
+  const densGlobal = normalizarDensidadeResiduoKgL(opts?.densidadeOtima) ?? DENSIDADE_OTIMA_PADRAO;
+  const densidades: Record<TipoCaminhaoPeso, number> = {
+    MINI: normalizarDensidadeResiduoKgL(opts?.densidadeKgL?.MINI) ?? densGlobal,
+    TOCO: normalizarDensidadeResiduoKgL(opts?.densidadeKgL?.TOCO) ?? densGlobal,
+    BASCULANTE: normalizarDensidadeResiduoKgL(opts?.densidadeKgL?.BASCULANTE) ?? densGlobal,
+    TRUCK: normalizarDensidadeResiduoKgL(opts?.densidadeKgL?.TRUCK) ?? densGlobal,
+  };
   const colTipo = opts?.colunaTipoCaminhao?.trim() || cols.colTipo || '';
 
   let totalPesoKg = 0;
@@ -410,7 +468,12 @@ export function analisarPesoColeta(
   );
 
   const caixaMediaKg = Math.round(calcularCaixaMediaPorFrota(tiposCaminhao, volumes) * 100) / 100;
-  const mediaIdealKg = calcularMediaIdealKg(caixaMediaKg, densidadeOtima);
+  const { mediaIdealKg, densidadeMedia } = calcularMediaIdealKgPorTipo(
+    tiposCaminhao,
+    volumes,
+    densidades,
+  );
+  const densidadeOtima = densidadeMedia;
   const perdaTon = ((pesoMedioKg - mediaIdealKg) * totalViagens) / 1000;
 
   const faixas: FaixaPesoAnalise[] = FAIXAS_PESO.map((f, i) => ({

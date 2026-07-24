@@ -23,6 +23,7 @@ import {
 } from '../config/dashboardPadraoColeta';
 import { gerarConfigGraficosPadrao, reResolverGraficos } from '../services/graficosPadrao';
 import { buildValoresFixosFaturamento, syncContractTarifasFromConfig } from '../services/configFaturamentoValores';
+import { garantirServicosPadraoContrato } from '../services/servicosPadraoContratoService';
 import {
   resolverValorUnitarioPorTipo,
   resolverLimitesDoContrato,
@@ -31,6 +32,7 @@ import {
 import { calcularHorasProdutivasTotal } from '../services/horasProdutivasService';
 import { isNomeColunaInvalido, detectarPadraoDeObjetos } from '../services/PadraoPlanilhaDetector';
 import { ColetaData } from '../entities/ColetaData';
+import { WhatsappGrupoMapa } from '../entities/WhatsappGrupoMapa';
 import ValidacaoViagemService from '../services/validacaoViagemService';
 import { verificarContagemViagens } from '../services/verificarContagemViagensService';
 import {
@@ -74,6 +76,7 @@ import {
 } from '../services/graficoAgregacaoService';
 import {
   analisarPesoColeta,
+  normalizarDensidadeResiduoKgL,
   type AnalisePesoColeta,
 } from '../services/analisePesoColetaService';
 import { calcularFaturamentoRocadaPorAreas } from '../utils/rocadaTipoExecucao';
@@ -530,6 +533,31 @@ export class ServicoController {
     } catch (error) {
       console.error('Erro ao buscar serviço:', error);
       return res.status(500).json({ error: 'Erro ao carregar serviço' });
+    }
+  }
+
+  /**
+   * POST /api/contracts/:contractId/servicos/garantir-padrao
+   * Garante Roçada, Capina, Varrição e Poda no contrato (idempotente).
+   */
+  async garantirPadrao(req: Request, res: Response): Promise<any> {
+    try {
+      const contractId = req.params.contractId as string;
+      const resultado = await garantirServicosPadraoContrato(contractId);
+      return res.json({
+        sucesso: true,
+        criados: resultado.criados,
+        jaExistiam: resultado.jaExistiam,
+        servicos: resultado.servicos,
+        mensagem: resultado.criados.length
+          ? `${resultado.criados.length} serviço(s) padrão criado(s).`
+          : 'Serviços padrão já estavam cadastrados.',
+      });
+    } catch (error: any) {
+      const msg = error?.message || 'Erro ao garantir serviços padrão';
+      const status = msg.includes('não encontrado') ? 404 : 500;
+      console.error('Erro ao garantir serviços padrão:', error);
+      return res.status(status).json({ error: msg });
     }
   }
 
@@ -1053,7 +1081,14 @@ export class ServicoController {
         return res.status(400).json({ error: 'Data inválida. Use YYYY-MM-DD.' });
       }
       const incluirInconsistentes = req.query.incluirInconsistentes === '1' || req.query.todos === '1';      const servico = await this.repository.findOne({ where: { id }, select: ['id', 'tipo'] });
-      const ehRocada = servico?.tipo === TipoServico.ROCADEIRA || servico?.tipo === 'rocadeira';
+      const tipo = String(servico?.tipo || '');
+      const ehServicoUnidade = (
+        tipo === TipoServico.ROCADEIRA || tipo === 'rocadeira'
+        || tipo === TipoServico.CAPINA || tipo === 'capina'
+        || tipo === TipoServico.VARRICAO || tipo === 'varricao'
+        || tipo === TipoServico.PODA || tipo === 'poda'
+        || tipo === 'pintura_meio_fio'
+      );
       const page = req.query.page ? Math.max(1, parseInt(String(req.query.page), 10) || 1) : undefined;
       // Pagina por padrão (coleta e roçada) — evita payloads de dezenas de MB/dia.
       const limitRaw = req.query.limit != null
@@ -1064,7 +1099,7 @@ export class ServicoController {
       const semPaginacao = req.query.all === '1' || req.query.limit === '0';
       const resultado = await PlanilhaService.getDadosBrutosPorDia(id, data, {
         apenasValidos: !incluirInconsistentes,
-        pularValidacaoViagem: ehRocada,
+        pularValidacaoViagem: ehServicoUnidade,
         page: semPaginacao ? undefined : (page || 1),
         limit: semPaginacao ? undefined : limit,
       });
@@ -2335,6 +2370,10 @@ export class ServicoController {
               || undefined,
             limitesPeso: limitesContratoSql.peso,
             limitesVolume: limitesContratoSql.volume,
+            densidadeOtima: normalizarDensidadeResiduoKgL(
+              contract?.configOperacional?.densidadeResiduoKgL,
+            ),
+            densidadeKgL: contract?.configOperacional?.densidadeKgL || null,
           });
         }
       } catch (errAnalise: any) {
@@ -2461,6 +2500,10 @@ export class ServicoController {
             || undefined,
           limitesPeso: limitesContrato.peso,
           limitesVolume: limitesContrato.volume,
+          densidadeOtima: normalizarDensidadeResiduoKgL(
+            contract?.configOperacional?.densidadeResiduoKgL,
+          ),
+          densidadeKgL: contract?.configOperacional?.densidadeKgL || null,
         })
       : null;
 
@@ -3938,14 +3981,37 @@ async getModeloExecutivo(req: Request, res: Response): Promise<any> {
   async excluir(req: Request, res: Response): Promise<any> {
     try {
       const id = req.params.id as string;
+      const contractId = req.params.contractId as string | undefined;
 
       const servico = await this.repository.findOne({ where: { id } });
       if (!servico) {
         return res.status(404).json({ error: 'Serviço não encontrado' });
       }
 
+      // Limpa planilhas + coleta_dados + arquivos do storage antes de remover o serviço
+      const limpeza = await PlanilhaService.excluirTodosDadosDoServico(id);
+
+      // Remove mapeamentos WhatsApp ligados ao serviço
+      await AppDataSource.getRepository(WhatsappGrupoMapa).delete({ servicoId: id });
+
       await this.repository.remove(servico);
-      return res.json({ message: 'Serviço excluído com sucesso' });
+
+      invalidarCacheDadosServico(id);
+      invalidarCacheDashboardServico(id);
+      try {
+        const { dashboardCache } = await import('../services/DashboardCacheManager');
+        dashboardCache.invalidar(id);
+      } catch { /* ignore */ }
+
+      if (contractId || servico.contract_id) {
+        invalidarCacheSaudeContratos(contractId || servico.contract_id);
+      }
+
+      return res.json({
+        message: 'Serviço excluído com sucesso',
+        uploadsRemovidos: limpeza.uploadsRemovidos,
+        registrosRemovidos: limpeza.registrosRemovidos,
+      });
     } catch (error) {
       console.error('Erro ao excluir serviço:', error);
       return res.status(500).json({ error: 'Erro ao excluir serviço' });
@@ -4295,8 +4361,22 @@ async getModeloExecutivo(req: Request, res: Response): Promise<any> {
           pesoTotalKg: acc.pesoTotalKg + d.pesoTotalKg,
           kmTotal: acc.kmTotal + d.kmTotal,
           areaM2: acc.areaM2 + d.areaM2,
+          metroLinear: acc.metroLinear + d.metroLinear,
+          kmLinear: acc.kmLinear + d.kmLinear,
+          qtdArvore: acc.qtdArvore + d.qtdArvore,
+          quantitativo: acc.quantitativo + d.quantitativo,
         }),
-        { rotas: 0, viagens: 0, pesoTotalKg: 0, kmTotal: 0, areaM2: 0 },
+        {
+          rotas: 0,
+          viagens: 0,
+          pesoTotalKg: 0,
+          kmTotal: 0,
+          areaM2: 0,
+          metroLinear: 0,
+          kmLinear: 0,
+          qtdArvore: 0,
+          quantitativo: 0,
+        },
       );
 
       return res.json({

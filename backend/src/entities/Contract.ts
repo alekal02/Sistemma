@@ -47,6 +47,10 @@ export class Contract {
     pesoMaximoKg?: { MINI?: number; TOCO?: number; BASCULANTE?: number; TRUCK?: number };
     /** Volume útil da caixa (L) por tipo — usado na caixa média da frota. */
     volumeL?: { MINI?: number; TOCO?: number; BASCULANTE?: number; TRUCK?: number };
+    /** Densidade do resíduo (kg/L) padrão do contrato — fallback quando o tipo não tem densidade própria. */
+    densidadeResiduoKgL?: number | null;
+    /** Densidade (kg/L) por tipo — peso ideal = volume (L) × densidade do tipo. */
+    densidadeKgL?: { MINI?: number; TOCO?: number; BASCULANTE?: number; TRUCK?: number };
   } | null;
 
   @OneToMany(() => Servico, (servico) => servico.contract)

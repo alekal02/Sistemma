@@ -7,6 +7,7 @@ import {
   corBarraReceita,
   diaSemanaDeIso,
   formatarMoeda,
+  formatarMoedaCompacta,
 } from './dashboardUtils';
 
 export interface DashboardGraficosProps {

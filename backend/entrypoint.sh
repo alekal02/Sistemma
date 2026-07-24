@@ -27,6 +27,12 @@ fi
 mkdir -p /app/uploads
 chown -R appuser:appgroup /app/uploads 2>/dev/null || true
 
+if [ -n "${WUZAPI_URL}" ] && [ -n "${WUZAPI_TOKEN}" ]; then
+  echo "WuzAPI: configurada (URL=${WUZAPI_URL})"
+else
+  echo "WuzAPI: NAO configurada — defina WUZAPI_URL e WUZAPI_TOKEN e recrie o container"
+fi
+
 echo "Executando migrations/seeds..."
 if [ "${SKIP_STARTUP_SEED}" = "true" ]; then
   echo "SKIP_STARTUP_SEED=true — seed do entrypoint ignorado"

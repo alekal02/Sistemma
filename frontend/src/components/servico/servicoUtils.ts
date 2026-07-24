@@ -6,6 +6,29 @@ export const CANDIDATOS_COLUNA_TIPO_CAMINHAO = [
   'TIPO DE CAMINHAO', 'TIPO DE CAMINHÃO', 'TIPO CAMINHAO', 'TIPO_CAMINHAO', 'CAMINHAO', 'CAMINHÃO',
 ];
 
+/** Rótulos amigáveis dos modelos de planilha de roçada detectados no backend. */
+export const MODELOS_ROCADA_OPCOES = [
+  { id: 'londrina', label: 'Londrina' },
+  { id: 'pindamonhangaba', label: 'Pinda' },
+  { id: 'qgis', label: 'QGIS' },
+  { id: 'betim_trator', label: 'Betim' },
+  { id: 'modelo_trecho', label: 'Padrão' },
+  { id: 'generico', label: 'Padrão' },
+] as const;
+
+export function labelModeloRocada(modelo: string | null | undefined): string {
+  switch (modelo) {
+    case 'londrina': return 'Londrina';
+    case 'pindamonhangaba': return 'Pindamonhangaba (Pinda)';
+    case 'qgis': return 'QGIS';
+    case 'betim_trator': return 'Betim';
+    case 'modelo_trecho':
+    case 'generico': return 'Padrão (área m²)';
+    case 'desconhecido': return 'Não reconhecido';
+    default: return modelo ? String(modelo) : 'Não identificado';
+  }
+}
+
 export function normalizarNomeColuna(s: string): string {
   return s.trim().toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, '');
 }

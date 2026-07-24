@@ -40,7 +40,7 @@ export class WuzapiService {
   }
 
   get isConfigured(): boolean {
-    return !!(this.baseUrl && this.token);
+    return !!(process.env.WUZAPI_URL?.trim() && process.env.WUZAPI_TOKEN?.trim());
   }
 
   get webhookSecret(): string {
@@ -49,11 +49,10 @@ export class WuzapiService {
 
   /** URL pública do webhook do Sistemma (para a WuzAPI chamar). */
   get webhookUrl(): string {
-    return (
-      process.env.WUZAPI_WEBHOOK_URL
-      || process.env.WEBHOOK_URL
-      || 'http://host.docker.internal:3200/api/wuzapi/webhook'
-    );
+    const fromEnv = (process.env.WUZAPI_WEBHOOK_URL || process.env.WEBHOOK_URL || '').trim();
+    if (fromEnv) return fromEnv;
+    // Fallback só para dev: WuzAPI no host → backend publicado em 3200
+    return 'http://host.docker.internal:3200/api/wuzapi/webhook';
   }
 
   private unwrap<T>(data: any): T {
@@ -65,10 +64,30 @@ export class WuzapiService {
 
   private erroMsg(prefixo: string, error: unknown): Error {
     if (error instanceof AxiosError) {
-      const detalhe =
-        (error.response?.data as { error?: string; message?: string })?.error
-        || (error.response?.data as { error?: string; message?: string })?.message
-        || error.message;
+      const data = error.response?.data as
+        | { error?: string; message?: string; code?: number }
+        | string
+        | undefined;
+      const detalheApi =
+        typeof data === 'string'
+          ? data
+          : (data?.error || data?.message || '');
+      const status = error.response?.status;
+      const code = error.code; // ECONNREFUSED, ETIMEDOUT, etc.
+      const partes = [
+        detalheApi,
+        status ? `HTTP ${status}` : '',
+        code && !error.response ? code : '',
+        !detalheApi && error.message ? error.message : '',
+      ].filter(Boolean);
+      let detalhe = partes.join(' · ') || 'erro desconhecido';
+
+      if (code === 'ECONNREFUSED' || code === 'ENOTFOUND' || code === 'EHOSTUNREACH') {
+        detalhe = `WuzAPI inacessível em ${this.baseUrl} (${code}). Verifique se a WuzAPI está rodando e se WUZAPI_URL está correto.`;
+      } else if (status === 401 || /unauthorized/i.test(detalhe)) {
+        detalhe = `Admin não autorizado. WUZAPI_ADMIN_TOKEN do Sistemma deve ser igual ao da WuzAPI (hoje: ${this.baseUrl}).`;
+      }
+
       return new Error(`${prefixo}: ${detalhe}`);
     }
     if (error instanceof Error) return new Error(`${prefixo}: ${error.message}`);
@@ -84,6 +103,16 @@ export class WuzapiService {
       loggedIn: !!(raw.loggedIn ?? raw.LoggedIn),
       jid: raw.jid || raw.JID || '',
     };
+  }
+
+  /** true se o token de instância já existe e responde na WuzAPI */
+  private async instanciaJaExiste(): Promise<boolean> {
+    try {
+      await this.getStatus();
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async getQRCode(): Promise<{ qrCode: string }> {
@@ -107,8 +136,26 @@ export class WuzapiService {
     }
   }
 
+  /** Extrai texto de erro da WuzAPI (body JSON ou string). */
+  private extrairErroApi(error: unknown): string {
+    if (!(error instanceof AxiosError)) {
+      return error instanceof Error ? error.message : String(error || '');
+    }
+    const data = error.response?.data as { error?: string; message?: string } | string | undefined;
+    if (typeof data === 'string') return data;
+    return String(data?.error || data?.message || error.message || '');
+  }
+
+  private ehJaConectado(error: unknown): boolean {
+    const msg = this.extrairErroApi(error).toLowerCase();
+    return msg.includes('already connected')
+      || msg.includes('já conectad')
+      || msg.includes('ja conectad');
+  }
+
   /**
    * Garante instância na WuzAPI (admin) e inicia sessão + webhook.
+   * Se a sessão já estiver conectada, só renova webhook e segue (QR disponível).
    */
   async conectarSessao(): Promise<{ connected: boolean; jid: string; message: string }> {
     if (!this.isConfigured) {
@@ -121,17 +168,28 @@ export class WuzapiService {
     );
 
     let jid = '';
+    let jaConectada = false;
+
     try {
-      const { data } = await this.client.post('/session/connect', {
-        Subscribe: ['Message', 'Connected', 'QR'],
-        Immediate: true,
-      });
-      const raw = this.unwrap<any>(data) || {};
-      jid = raw.jid || raw.JID || '';
-    } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error);
-      if (!msg.toLowerCase().includes('already connected') && !msg.toLowerCase().includes('connected')) {
-        throw this.erroMsg('Falha ao conectar sessão', error);
+      const st = await this.getStatus();
+      jid = st.jid || '';
+      jaConectada = !!st.connected;
+    } catch { /* tenta connect abaixo */ }
+
+    if (!jaConectada) {
+      try {
+        const { data } = await this.client.post('/session/connect', {
+          Subscribe: ['Message', 'Connected', 'QR'],
+          Immediate: true,
+        });
+        const raw = this.unwrap<any>(data) || {};
+        jid = raw.jid || raw.JID || jid;
+      } catch (error: unknown) {
+        // WuzAPI devolve HTTP 500 com "already connected" — não é falha real
+        if (!this.ehJaConectado(error)) {
+          throw this.erroMsg('Falha ao conectar sessão', error);
+        }
+        jaConectada = true;
       }
     }
 
@@ -144,24 +202,35 @@ export class WuzapiService {
     return {
       connected: true,
       jid,
-      message: 'Conexão iniciada. Escaneie o QR code no WhatsApp.',
+      message: jaConectada
+        ? 'Sessão já conectada. Escaneie o QR code no WhatsApp (se ainda não logado).'
+        : 'Conexão iniciada. Escaneie o QR code no WhatsApp.',
     };
   }
 
   async criarOuObterInstancia(nome: string, token: string): Promise<void> {
-    const adminToken = process.env.WUZAPI_ADMIN_TOKEN;
-    if (!adminToken) {
-      // Sem admin token: assume que a instância já existe
+    // Se o token de usuário já funciona, não precisa do admin
+    if (await this.instanciaJaExiste()) {
       return;
+    }
+
+    const adminToken = (process.env.WUZAPI_ADMIN_TOKEN || '').trim();
+    if (!adminToken) {
+      throw new Error(
+        `Instância WuzAPI não encontrada para o token informado. `
+        + `Crie o usuário na WuzAPI ou defina WUZAPI_ADMIN_TOKEN (URL: ${this.baseUrl}).`,
+      );
     }
 
     const adminHeaders = { Authorization: adminToken };
     try {
       const response = await this.client.get('/admin/users', { headers: adminHeaders });
-      const usuarios: Array<{ token?: string }> = response.data?.data ?? response.data ?? [];
-      if (Array.isArray(usuarios) && usuarios.some((u) => u.token === token)) return;
-    } catch {
-      /* tenta criar mesmo assim */
+      const raw = response.data?.data ?? response.data ?? [];
+      const usuarios: Array<{ token?: string }> = Array.isArray(raw) ? raw : [];
+      if (usuarios.some((u) => u.token === token)) return;
+    } catch (error: unknown) {
+      // Se admin falhar, ainda tenta criar (e reporta erro claro se falhar)
+      console.warn('[Wuzapi] Listagem admin falhou, tentando criar instância:', (error as Error)?.message || error);
     }
 
     try {
@@ -177,6 +246,8 @@ export class WuzapiService {
       );
     } catch (error: unknown) {
       if (error instanceof AxiosError && error.response?.status === 409) return;
+      // Última chance: às vezes a criação falha mas o token já passou a existir
+      if (await this.instanciaJaExiste()) return;
       throw this.erroMsg('Falha ao criar instância WuzAPI', error);
     }
   }
@@ -236,6 +307,39 @@ export class WuzapiService {
   /**
    * Lista grupos WhatsApp da conta conectada (GET /group/list).
    */
+  /**
+   * Encerra a sessão WhatsApp (logout). Remove o pareamento do aparelho.
+   * Em seguida tenta disconnect para limpar a conexão TCP.
+   */
+  async desconectarSessao(): Promise<{ message: string }> {
+    if (!this.isConfigured) {
+      throw new Error('WUZAPI_URL e WUZAPI_TOKEN não configurados');
+    }
+
+    try {
+      await this.client.post('/session/logout', {});
+    } catch (error: unknown) {
+      const msg = this.extrairErroApi(error).toLowerCase();
+      // Já deslogado / sem sessão — trata como sucesso
+      if (
+        !msg.includes('no session')
+        && !msg.includes('not logged')
+        && !msg.includes('not connected')
+        && !msg.includes('logged out')
+      ) {
+        throw this.erroMsg('Falha ao desconectar WhatsApp', error);
+      }
+    }
+
+    try {
+      await this.client.post('/session/disconnect', {});
+    } catch {
+      // Sem sessão após logout é esperado
+    }
+
+    return { message: 'WhatsApp desconectado. Escaneie o QR novamente para reconectar.' };
+  }
+
   async listarGruposWhatsApp(): Promise<Array<{ jid: string; nome: string; participantes: number }>> {
     try {
       const { data } = await this.client.get('/group/list');

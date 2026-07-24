@@ -14,6 +14,7 @@ import QualidadePlanilhaPreview from '../QualidadePlanilhaPreview';
 import { TIPOS_SERVICO_LABELS } from '../../types';
 import { gerarNomePdfArquivo, labelTipoServicoArquivo, formatarDataArquivoPdf } from '../../utils/gerarNomePdf';
 import type { EtapasStatus, PlanilhaItem, ConferenciaDiaria, ResumoImportacao, EtapaMiniFlow } from './servicoTypes';
+import { labelModeloRocada, MODELOS_ROCADA_OPCOES } from './servicoUtils';
 
 export interface ServicoUploadTabProps {
   contractId: string;
@@ -44,6 +45,8 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
 }: ServicoUploadTabProps) {
   const { adicionarToast } = useToast();
   const ehRocada = tipoServico === 'rocadeira';
+  /** Tipos que podem receber o layout unificado (não altera fluxo legado de roçada) */
+  const aceitaUnificado = ['rocadeira', 'capina', 'varricao', 'poda', 'geral'].includes(tipoServico);
 
   const [uploading, setUploading] = useState(false);
   const [uploadPct, setUploadPct] = useState(0);
@@ -62,10 +65,15 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
   const [conferindoDiaria, setConferindoDiaria] = useState(false);
   const [conferenciaDiaria, setConferenciaDiaria] = useState<ConferenciaDiaria | null>(null);
   const [resumoImportacao, setResumoImportacao] = useState<ResumoImportacao | null>(null);
+  const [modeloRocadaUi, setModeloRocadaUi] = useState<{ modelo: string; label: string } | null>(null);
   const validacaoInputRef = useRef<HTMLInputElement>(null);
 
 
-  const importarPlanilhaValidada = async (file: File, relatorio?: any): Promise<boolean> => {
+  const importarPlanilhaValidada = async (
+    file: File,
+    relatorio?: any,
+    optsRocada?: { modelo?: string; modeloLabel?: string; areaTotalM2?: number },
+  ): Promise<boolean> => {
     setUploading(true);
     setUploadPct(0);
     const iv = setInterval(() => setUploadPct(p => Math.min(p + 15, 85)), 200);
@@ -91,6 +99,22 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
         const importados = data.importados ?? data.importadas ?? 0;
         const uploadsRemovidos = data.consolidacao?.uploadsRemovidos ?? 0;
         const registrosPreservados = data.consolidacao?.registrosPreservados ?? 0;
+        const modeloRocada = (data as { modelo?: string }).modelo || optsRocada?.modelo || null;
+        const modeloRocadaLabel = optsRocada?.modeloLabel
+          || (modeloRocada ? labelModeloRocada(modeloRocada) : null);
+        const areaTotalM2 = (data as { areaTotalM2?: number }).areaTotalM2
+          ?? optsRocada?.areaTotalM2
+          ?? null;
+
+        const modoUnificado = (data as { modo?: string }).modo === 'servicos_unificados'
+          || modeloRocada === 'servicos_unificados';
+
+        if (ehRocada && modeloRocada && !modoUnificado) {
+          setModeloRocadaUi({ modelo: modeloRocada, label: modeloRocadaLabel || labelModeloRocada(modeloRocada) });
+        }
+        if (modoUnificado) {
+          setModeloRocadaUi({ modelo: 'servicos_unificados', label: 'Serviços unificados' });
+        }
 
         setResumoImportacao({
           importados,
@@ -98,10 +122,14 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
           inconsistentes,
           uploadsRemovidos,
           registrosPreservados,
+          modeloRocada: modoUnificado ? 'servicos_unificados' : modeloRocada,
+          modeloRocadaLabel: modoUnificado ? 'Serviços unificados' : modeloRocadaLabel,
+          areaTotalM2,
         });
         setImportacaoConcluida(true);
         onSetStatus(prev => ({ ...prev, upload: 'done', revisao: 'done' }));
-        onSetEtapa('revisao');
+        // Roçada / unificado: permanece no Upload para o usuário ver o resumo
+        if (!ehRocada && !modoUnificado) onSetEtapa('revisao');
         onRefreshData();
 
         const extras: string[] = [];
@@ -109,7 +137,17 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
         if (registrosPreservados > 0) extras.push(`${registrosPreservados} registro(s) de dias só no sistema preservados`);
         const sufixo = extras.length ? ` ${extras.join('; ')}.` : '';
 
-        if (inconsistentes > 0) {
+        if (modoUnificado) {
+          adicionarToast(data.mensagem || `Planilha unificada: ${importados} registro(s) importado(s).${sufixo}`, 'success');
+        } else if (ehRocada) {
+          const label = modeloRocadaLabel || 'desconhecido';
+          adicionarToast(
+            `Modelo detectado: ${label}. ${importados} registro(s) importado(s)`
+            + (areaTotalM2 != null ? ` · ${Number(areaTotalM2).toLocaleString('pt-BR')} m²` : '')
+            + `.${sufixo}`,
+            'success',
+          );
+        } else if (inconsistentes > 0) {
           adicionarToast(
             `${validasDashboard} viagem(ns) na planilha ativa. ${inconsistentes} linha(s) rejeitada(s).${sufixo}`,
             'warning'
@@ -160,8 +198,75 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
     }
   };
 
+  // ─── Layout unificado (roçada/capina/varrição/poda) — não passa pelo parser de roçada legado ───
+  const handleValidarUnificado = async (file: File): Promise<boolean> => {
+    if (!aceitaUnificado) return false;
+    try {
+      const preview = await coletaService.previewServicosUnificados(file, servicoId);
+      if (!preview.ehUnificado) return false;
+
+      setArquivoValidacao(file);
+      setValidando(true);
+      setValidacaoData(null);
+      setDadosViagens(null);
+      setConferenciaDiaria(null);
+      setImportacaoConcluida(false);
+      setResumoImportacao(null);
+      setModeloRocadaUi({ modelo: 'servicos_unificados', label: 'Serviços unificados' });
+      setModoValidacao(true);
+
+      const podeImportar = preview.podeImportar !== false && preview.sucesso && (preview.resumo?.registros ?? 0) > 0;
+      setValidacaoData({
+        sucesso: podeImportar,
+        ehUnificado: true,
+        mensagem: preview.mensagem,
+        arquivo: preview.arquivo,
+        avisos: preview.avisos,
+        abasUsadas: preview.abasUsadas,
+        modelo: 'servicos_unificados',
+        modeloLabel: 'Serviços unificados',
+        porTipo: preview.porTipo || preview.resumo?.porTipo || [],
+        podeImportar,
+        resumoUnificado: preview.resumo,
+      } as any);
+
+      if (!podeImportar) {
+        adicionarToast(preview.mensagem || 'Layout unificado sem linhas válidas.', 'error');
+        setValidando(false);
+        return true; // detectou unificado, não cair no fluxo legado
+      }
+
+      const partes = (preview.porTipo || []).map((p) =>
+        `${p.tipoLabel}: ${p.registros}`,
+      ).join(' · ');
+      adicionarToast(
+        `Layout unificado detectado. ${preview.resumo?.registros ?? 0} registro(s)${partes ? ` (${partes})` : ''}.`,
+        'success',
+      );
+
+      await importarPlanilhaValidada(
+        file,
+        {
+          viagensValidasDashboard: preview.resumo?.registros ?? 0,
+          viagensCompletas: preview.resumo?.registros ?? 0,
+        },
+        {
+          modelo: 'servicos_unificados',
+          modeloLabel: 'Serviços unificados',
+        },
+      );
+      setValidando(false);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   // ─── Roçada: preview multi-modelo → importação (sem validação de viagem) ───
   const handleValidarRocada = async (file: File) => {
+    // Se for o layout unificado, usa pipeline próprio (preserva Londrina/QGIS/etc.)
+    if (await handleValidarUnificado(file)) return;
+
     setArquivoValidacao(file);
     setValidando(true);
     setValidacaoData(null);
@@ -169,9 +274,14 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
     setConferenciaDiaria(null);
     setImportacaoConcluida(false);
     setResumoImportacao(null);
+    setModeloRocadaUi(null);
     setModoValidacao(true);
     try {
       const preview = await coletaService.previewRocada(file, servicoId);
+      const modeloKey = preview.modelo || preview.resumo?.modelo || '';
+      const modeloLabel = preview.resumo?.modeloLabel || labelModeloRocada(modeloKey);
+      if (modeloKey) setModeloRocadaUi({ modelo: modeloKey, label: modeloLabel });
+
       const podeImportar = preview.podeImportar !== false
         && preview.sucesso
         && (preview.resumo?.registros ?? 0) > 0
@@ -184,7 +294,8 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
         resumoRocada: preview.resumo,
         avisos: preview.avisos,
         abasUsadas: preview.abasUsadas,
-        modelo: preview.modelo,
+        modelo: modeloKey,
+        modeloLabel,
         linhasSemArea: preview.linhasSemArea ?? preview.resumo?.linhasSemArea ?? 0,
         semColunaArea: preview.semColunaArea ?? preview.resumo?.semColunaArea ?? false,
         amostraSemArea: preview.amostraSemArea || [],
@@ -195,8 +306,8 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
 
       if (!podeImportar) {
         const msg = preview.semColunaArea || preview.resumo?.semColunaArea
-          ? 'Planilha sem coluna de metragem (m²/área). Inclua a coluna e envie novamente.'
-          : preview.mensagem || 'Nenhuma linha com m²/área válida nesta planilha.';
+          ? `Modelo ${modeloLabel}: planilha sem coluna de metragem (m²/área). Inclua a coluna e envie novamente.`
+          : preview.mensagem || `Modelo ${modeloLabel}: nenhuma linha com m²/área válida.`;
         adicionarToast(msg, 'error');
         return;
       }
@@ -207,25 +318,25 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
         ? ` Manual ${porTipo.manual.registros} · Mecanizada ${porTipo.mecanizada.registros}.`
         : '';
       adicionarToast(
-        `Modelo ${preview.resumo.modelo}: ${preview.resumo.registros} registro(s), `
+        `Modelo detectado: ${modeloLabel}. ${preview.resumo.registros} registro(s), `
         + `${preview.resumo.areaTotalM2.toLocaleString('pt-BR')} m², ${preview.resumo.dias} dia(s).`
         + splitInfo
         + (semArea > 0 ? ` ${semArea} linha(s) sem m² ignorada(s).` : ''),
         semArea > 0 ? 'warning' : 'success',
       );
 
-      const importou = await importarPlanilhaValidada(file, {
-        viagensValidasDashboard: preview.resumo.registros,
-        viagensCompletas: preview.resumo.registros,
-      });
-      if (importou) {
-        adicionarToast(
-          splitInfo
-            ? 'Planilha importada: dashboards Manual e Mecanizada atualizados com os dados da planilha.'
-            : 'Planilha de roçada importada. Dashboard atualizado com área (m²) por dia/bairro.',
-          'info',
-        );
-      }
+      await importarPlanilhaValidada(
+        file,
+        {
+          viagensValidasDashboard: preview.resumo.registros,
+          viagensCompletas: preview.resumo.registros,
+        },
+        {
+          modelo: modeloKey,
+          modeloLabel,
+          areaTotalM2: preview.resumo.areaTotalM2,
+        },
+      );
     } catch (err) {
       const msg = isAxiosError(err)
         ? (err.response?.data as { error?: string })?.error || 'Erro ao validar planilha de roçada'
@@ -243,6 +354,9 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
       await handleValidarRocada(file);
       return;
     }
+
+    // Capina/varrição/poda: tenta layout unificado antes do pipeline de coleta/viagem
+    if (aceitaUnificado && await handleValidarUnificado(file)) return;
 
     setArquivoValidacao(file);
     setValidando(true);
@@ -517,11 +631,25 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
   };
 
   const mensagemProcessamentoUpload = () => {
-    if (validando) return 'Validando estrutura da planilha...';
+    const ehUnif = modeloRocadaUi?.modelo === 'servicos_unificados' || validacaoData?.ehUnificado;
+    if (validando) {
+      if (ehUnif) return 'Detectando layout unificado (tipos de serviço)...';
+      return ehRocada
+        ? 'Identificando modelo da planilha (Londrina, Pinda, QGIS, Betim ou Padrão)...'
+        : 'Validando estrutura da planilha...';
+    }
     if (analisandoViagens) return 'Analisando viagens (KM, peso, rota)...';
     if (conferindoDiaria) return 'Conferindo planilha vs sistema (dia a dia)...';
     if (gerandoPdfViagens) return 'Gerando PDF de saúde dos dados...';
-    if (uploading) return 'Importando viagens válidas para o dashboard...';
+    if (uploading) {
+      if (ehUnif) return 'Importando e distribuindo por tipo de serviço...';
+      if (ehRocada && modeloRocadaUi) {
+        return `Importando com modelo ${modeloRocadaUi.label}...`;
+      }
+      return ehRocada
+        ? 'Importando registros de roçada para o dashboard...'
+        : 'Importando viagens válidas para o dashboard...';
+    }
     return '';
   };
 
@@ -547,7 +675,7 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
         setQualidadeUploadId(null);
       }
 
-      adicionarToast('Planilha excluída!', 'success');
+      adicionarToast('Planilha e registros removidos do banco', 'success');
     } catch (err) {
       const msg = isAxiosError(err)
         ? (err.response?.data as { error?: string })?.error || 'Erro ao excluir planilha'
@@ -593,8 +721,58 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
             </p>
           )}
 
-          {/* Preview de qualidade (coleta) ou resumo multi-modelo (roçada) */}
-          {ehRocada && (validacaoData?.resumoRocada || validacaoData?.semColunaArea || (validacaoData?.linhasSemArea ?? 0) > 0) ? (
+          {/* Preview layout unificado */}
+          {validacaoData?.ehUnificado ? (
+            <div style={{
+              background: validacaoData?.podeImportar === false || validacaoData?.sucesso === false ? '#fff7ed' : '#eff6ff',
+              border: `1px solid ${validacaoData?.podeImportar === false || validacaoData?.sucesso === false ? '#fdba74' : '#93c5fd'}`,
+              borderRadius: '10px',
+              padding: '0.75rem 1rem', marginBottom: '0.5rem', fontSize: '0.78rem',
+              color: validacaoData?.podeImportar === false || validacaoData?.sucesso === false ? '#9a3412' : '#1e3a8a',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap' }}>
+                <strong style={{ fontSize: '0.85rem' }}>Aba CONSOLIDADO</strong>
+                <span style={{
+                  background: '#1e3a8a', color: '#bfdbfe',
+                  fontWeight: 800, fontSize: '0.72rem',
+                  padding: '0.28rem 0.65rem', borderRadius: '999px',
+                }}>
+                  Distribui por tipo de serviço
+                </span>
+              </div>
+              <div style={{ marginTop: '0.45rem' }}>
+                {validacaoData.mensagem}
+              </div>
+              <div style={{ marginTop: '0.35rem', fontSize: '0.7rem', opacity: 0.9 }}>
+                Só a aba CONSOLIDADO é importada. Cada linha vai para o serviço do contrato
+                com o mesmo tipo (ROÇADA → Roçada, CAPINA → Capina, etc.).
+              </div>
+              {Array.isArray(validacaoData.porTipo) && validacaoData.porTipo.length > 0 && (
+                <ul style={{ margin: '0.45rem 0 0', paddingLeft: '1.1rem' }}>
+                  {validacaoData.porTipo.map((p: any, i: number) => (
+                    <li key={i}>
+                      <strong>{p.tipoLabel}</strong>: {p.registros} reg. ·{' '}
+                      {Number(p.quantitativoTotal || 0).toLocaleString('pt-BR')}
+                      {p.undPrincipal ? ` ${p.undPrincipal}` : ''} · {p.dias} dia(s)
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {Array.isArray(validacaoData.abasUsadas) && validacaoData.abasUsadas.length > 0 && (
+                <div style={{ marginTop: '0.35rem', fontSize: '0.7rem', opacity: 0.85 }}>
+                  Fonte: {validacaoData.abasUsadas.join(', ')}
+                </div>
+              )}
+              {Array.isArray(validacaoData?.avisos) && validacaoData.avisos.length > 0 && (
+                <ul style={{ margin: '0.4rem 0 0', paddingLeft: '1.1rem', color: '#b45309', fontSize: '0.72rem' }}>
+                  {validacaoData.avisos.slice(0, 4).map((a: string, i: number) => (
+                    <li key={i}>{a}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          ) : /* Preview de qualidade (coleta) ou resumo multi-modelo (roçada) */
+          ehRocada && (validando || modeloRocadaUi || validacaoData?.resumoRocada || validacaoData?.semColunaArea || (validacaoData?.linhasSemArea ?? 0) > 0) ? (
             <div style={{
               background: validacaoData?.podeImportar === false || validacaoData?.sucesso === false ? '#fff7ed' : '#f0fdf4',
               border: `1px solid ${validacaoData?.podeImportar === false || validacaoData?.sucesso === false ? '#fdba74' : '#86efac'}`,
@@ -602,13 +780,53 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
               padding: '0.75rem 1rem', marginBottom: '0.5rem', fontSize: '0.78rem',
               color: validacaoData?.podeImportar === false || validacaoData?.sucesso === false ? '#9a3412' : '#166534',
             }}>
-              <strong>
-                {validacaoData?.podeImportar === false || validacaoData?.sucesso === false
-                  ? 'Roçada — metragem obrigatória'
-                  : `Modelo ${validacaoData.modelo || validacaoData.resumoRocada?.modelo}`}
-              </strong>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap' }}>
+                <strong style={{ fontSize: '0.85rem' }}>
+                  {validando && !modeloRocadaUi
+                    ? 'Detectando modelo...'
+                    : validacaoData?.podeImportar === false || validacaoData?.sucesso === false
+                      ? 'Roçada — metragem obrigatória'
+                      : 'Modelo da planilha'}
+                </strong>
+                {(modeloRocadaUi || validacaoData?.modeloLabel || validacaoData?.resumoRocada?.modeloLabel) && (
+                  <span style={{
+                    display: 'inline-flex', alignItems: 'center', gap: '0.3rem',
+                    background: '#14532d', color: '#bbf7d0',
+                    fontWeight: 800, fontSize: '0.78rem',
+                    padding: '0.28rem 0.65rem', borderRadius: '999px',
+                    letterSpacing: '0.02em',
+                  }}>
+                    {modeloRocadaUi?.label
+                      || validacaoData?.modeloLabel
+                      || validacaoData?.resumoRocada?.modeloLabel
+                      || labelModeloRocada(validacaoData?.modelo || validacaoData?.resumoRocada?.modelo)}
+                  </span>
+                )}
+              </div>
+
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem', marginTop: '0.55rem' }}>
+                {MODELOS_ROCADA_OPCOES.filter((m, i, arr) => arr.findIndex((x) => x.label === m.label) === i).map((m) => {
+                  const ativo = (modeloRocadaUi?.modelo || validacaoData?.modelo || validacaoData?.resumoRocada?.modelo) === m.id
+                    || (m.id === 'modelo_trecho' && (modeloRocadaUi?.modelo || validacaoData?.modelo) === 'generico');
+                  return (
+                    <span
+                      key={m.id}
+                      style={{
+                        fontSize: '0.65rem', fontWeight: ativo ? 800 : 600,
+                        padding: '0.18rem 0.45rem', borderRadius: '999px',
+                        border: ativo ? '1px solid #166534' : '1px solid #cbd5e1',
+                        background: ativo ? '#dcfce7' : '#f8fafc',
+                        color: ativo ? '#14532d' : '#64748b',
+                      }}
+                    >
+                      {m.label}{ativo ? ' ✓' : ''}
+                    </span>
+                  );
+                })}
+              </div>
+
               {validacaoData?.resumoRocada && (
-                <div style={{ marginTop: '0.35rem', color: validacaoData?.sucesso === false ? '#c2410c' : '#15803d' }}>
+                <div style={{ marginTop: '0.45rem', color: validacaoData?.sucesso === false ? '#c2410c' : '#15803d' }}>
                   {validacaoData.resumoRocada.registros} registro(s) com m² ·{' '}
                   {Number(validacaoData.resumoRocada.areaTotalM2 || 0).toLocaleString('pt-BR')} m² ·{' '}
                   {validacaoData.resumoRocada.dias} dia(s)
@@ -638,7 +856,7 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
                   ))}
                 </ul>
               )}
-              {Array.isArray(validacaoData.avisos) && validacaoData.avisos.length > 0 && (
+              {Array.isArray(validacaoData?.avisos) && validacaoData.avisos.length > 0 && (
                 <ul style={{ margin: '0.4rem 0 0', paddingLeft: '1.1rem', color: '#b45309', fontSize: '0.72rem' }}>
                   {validacaoData.avisos.slice(0, 4).map((a: string, i: number) => (
                     <li key={i}>{a}</li>
@@ -657,7 +875,9 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
             <div className="upload-progress" style={{ marginTop: '0.5rem' }}>
               <div className="upload-bar"><div className="upload-fill" style={{ width: `${uploadPct}%` }} /></div>
               <div className="upload-pct">
-                {ehRocada ? `Importando registros de roçada... ${uploadPct}%` : `Importando viagens válidas... ${uploadPct}%`}
+                {ehRocada
+                  ? `Importando${modeloRocadaUi ? ` (${modeloRocadaUi.label})` : ''}... ${uploadPct}%`
+                  : `Importando viagens válidas... ${uploadPct}%`}
               </div>
             </div>
           )}
@@ -667,19 +887,56 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
               background: '#f0fdf4', border: '1px solid #86efac', borderRadius: '8px',
               padding: '0.6rem 0.75rem', marginTop: '0.5rem', fontSize: '0.75rem', color: '#166534',
             }}>
-              <strong>Importação concluída.</strong>{' '}
-              <span style={{ color: '#15803d' }}>
-                {resumoImportacao.validasDashboard} viagem(ns) alimentam o dashboard.
-              </span>
-              {resumoImportacao.inconsistentes > 0 && (
-                <span style={{ color: '#b45309', display: 'block', marginTop: '0.2rem' }}>
-                  {resumoImportacao.inconsistentes} viagem(ns) inconsistente(s) ficaram fora dos cálculos. O PDF de saúde foi baixado automaticamente.
-                </span>
-              )}
-              {resumoImportacao.inconsistentes === 0 && (
-                <span style={{ color: '#15803d', display: 'block', marginTop: '0.2rem' }}>
-                  PDF de saúde baixado automaticamente.
-                </span>
+              {ehRocada ? (
+                <>
+                  <strong>Importação concluída</strong>
+                  {(resumoImportacao.modeloRocadaLabel || modeloRocadaUi?.label) && (
+                    <span style={{
+                      display: 'inline-block', marginLeft: '0.4rem',
+                      background: '#14532d', color: '#bbf7d0',
+                      fontWeight: 800, fontSize: '0.72rem',
+                      padding: '0.15rem 0.5rem', borderRadius: '999px',
+                    }}>
+                      Modelo {resumoImportacao.modeloRocadaLabel || modeloRocadaUi?.label}
+                    </span>
+                  )}
+                  <div style={{ color: '#15803d', marginTop: '0.3rem' }}>
+                    {resumoImportacao.importados} registro(s) no dashboard
+                    {resumoImportacao.areaTotalM2 != null
+                      ? ` · ${Number(resumoImportacao.areaTotalM2).toLocaleString('pt-BR')} m²`
+                      : ''}
+                    .
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onSetEtapa('revisao')}
+                    style={{
+                      marginTop: '0.45rem', fontSize: '0.72rem', fontWeight: 700,
+                      padding: '0.35rem 0.7rem', borderRadius: '6px',
+                      border: '1px solid #86efac', background: '#fff', color: '#166534',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Ir para Dados →
+                  </button>
+                </>
+              ) : (
+                <>
+                  <strong>Importação concluída.</strong>{' '}
+                  <span style={{ color: '#15803d' }}>
+                    {resumoImportacao.validasDashboard} viagem(ns) alimentam o dashboard.
+                  </span>
+                  {resumoImportacao.inconsistentes > 0 && (
+                    <span style={{ color: '#b45309', display: 'block', marginTop: '0.2rem' }}>
+                      {resumoImportacao.inconsistentes} viagem(ns) inconsistente(s) ficaram fora dos cálculos. O PDF de saúde foi baixado automaticamente.
+                    </span>
+                  )}
+                  {resumoImportacao.inconsistentes === 0 && (
+                    <span style={{ color: '#15803d', display: 'block', marginTop: '0.2rem' }}>
+                      PDF de saúde baixado automaticamente.
+                    </span>
+                  )}
+                </>
               )}
             </div>
           )}
@@ -1150,7 +1407,7 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
           textAlign: 'center',
         }}>
           {ehRocada
-            ? 'Roçada: detecta o modelo automaticamente, importa área (m²) por dia/bairro e atualiza o dashboard.'
+            ? 'Roçada: ao enviar, o sistema identifica o modelo (Londrina, Pinda, QGIS, Betim ou Padrão) e mostra qual foi usado.'
             : 'Fluxo automático: validação → PDF de saúde → importação (KM≤300, peso > 0; só viagens válidas entram no dashboard).'}
         </p>
         {uploading && (

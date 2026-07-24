@@ -832,7 +832,9 @@ export class PlanilhaService {
     const qb = this.coletaRepo.createQueryBuilder('c')
       .leftJoinAndSelect('c.planilhaUpload', 'upload')
       .innerJoin(PlanilhaUpload, 'u', 'u.id = c.planilhaUploadId AND u.servico_id = :servicoId', { servicoId })
-      .andWhere('c.dataSaida = :data', { data: dataIso });
+      // dataSaida é meio-dia UTC — igualdade com 'YYYY-MM-DD' (00:00) não encontra o registro
+      .andWhere('c.dataSaida >= :inicioDia', { inicioDia: `${dataIso}T00:00:00.000Z` })
+      .andWhere('c.dataSaida <= :fimDia', { fimDia: `${dataIso}T23:59:59.999Z` });
     if (apenasValidos) {
       aplicarFiltroViagensValidasDashboard(qb, 'c');
     }
@@ -908,10 +910,28 @@ export class PlanilhaService {
 
     // Enriquecer + converter para objetos planos; revalidar viagens (corrige validoDashboard=false legado)
     const objetos = dados.map(d => {
-      enriquecerCamposColeta(d);
+      const tipoLinhaPre = String(d.dados?._tipoServico || '');
+      const modeloUnificadoPre = String(d.dados?._modeloPlanilha || '') === 'servicos_unificados';
+      const ehServicoUnidadePre =
+        pularValidacaoViagem
+        || modeloUnificadoPre
+        || tipoLinhaPre === 'rocadeira'
+        || tipoLinhaPre === 'capina'
+        || tipoLinhaPre === 'varricao'
+        || tipoLinhaPre === 'poda'
+        || tipoLinhaPre === 'pintura_meio_fio';
+
+      // Capina/varrição/poda: NÃO enriquecer com regras de coleta
+      // (encontrarValorColuna fuzzy casa "id" com "KM SAIDA" etc. e corrompe campos)
+      if (!ehServicoUnidadePre) {
+        enriquecerCamposColeta(d);
+      }
+
       const obj: Record<string, any> = {};
 
       for (const [key, value] of Object.entries(d)) {
+        // Evita embutir relação TypeORM / JSONB bruto no topo
+        if (key === 'planilhaUpload' || key === 'dados') continue;
         obj[key] = value;
       }
 
@@ -948,13 +968,19 @@ export class PlanilhaService {
         obj._nomePlanilha = d.planilhaUpload.nomeArquivo;
       }
 
-      const ehRocada =
+      const tipoLinha = String(d.dados?._tipoServico || obj._tipoServico || '');
+      const modeloUnificado = String(d.dados?._modeloPlanilha || obj._modeloPlanilha || '') === 'servicos_unificados';
+      const ehServicoUnidade =
         pularValidacaoViagem
-        || d.dados?._tipoServico === 'rocadeira'
-        || obj._tipoServico === 'rocadeira';
+        || modeloUnificado
+        || tipoLinha === 'rocadeira'
+        || tipoLinha === 'capina'
+        || tipoLinha === 'varricao'
+        || tipoLinha === 'poda'
+        || tipoLinha === 'pintura_meio_fio';
 
-      if (ehRocada) {
-        // Roçada não usa regras de placa/KM/peso — respeita flag persistida
+      if (ehServicoUnidade) {
+        // Capina/varrição/poda/roçada não usam regras de placa/KM/peso da coleta
         const valido = d.validoDashboard !== false;
         obj.validoDashboard = valido;
         obj._validoDashboard = valido;
@@ -973,7 +999,16 @@ export class PlanilhaService {
     if (!apenasValidos) return objetos;
 
     return objetos.filter((obj) => {
-      if (pularValidacaoViagem || obj._tipoServico === 'rocadeira') {
+      const tipoLinha = String(obj._tipoServico || '');
+      const modeloUnificado = String(obj._modeloPlanilha || '') === 'servicos_unificados';
+      if (
+        pularValidacaoViagem
+        || modeloUnificado
+        || tipoLinha === 'rocadeira'
+        || tipoLinha === 'capina'
+        || tipoLinha === 'varricao'
+        || tipoLinha === 'poda'
+      ) {
         return obj.validoDashboard !== false;
       }
       return validarViagemParaDashboard(obj).validoDashboard;
@@ -1250,19 +1285,32 @@ export class PlanilhaService {
   /**
    * Exclui um upload e todos os dados de coleta vinculados
    */
-  async excluirUpload(id: number) {
+  async excluirUpload(id: number, opts?: { forcarCicloFechado?: boolean }) {
     const upload = await this.uploadRepo.findOne({ where: { id } });
     if (!upload) throw new Error('Upload não encontrado.');
-    if (upload.cicloFechadoEm) {
+    if (upload.cicloFechadoEm && !opts?.forcarCicloFechado) {
       throw new Error('Esta planilha pertence a um ciclo fechado e não pode ser excluída.');
     }
 
     const servicoId = upload.servico_id;
     const urlDownload = upload.urlDownload;
 
-    await AppDataSource.transaction(async (manager) => {
-      await manager.delete(ColetaData, { planilhaUploadId: id });
-      await manager.remove(upload);
+    const removidos = await AppDataSource.transaction(async (manager) => {
+      const delColeta = await manager
+        .createQueryBuilder()
+        .delete()
+        .from(ColetaData)
+        .where('"planilhaUploadId" = :id', { id })
+        .execute();
+
+      await manager
+        .createQueryBuilder()
+        .delete()
+        .from(PlanilhaUpload)
+        .where('id = :id', { id })
+        .execute();
+
+      return Number(delColeta.affected || 0);
     });
 
     if (urlDownload) {
@@ -1293,8 +1341,66 @@ export class PlanilhaService {
     return {
       message: 'Upload excluído com sucesso.',
       servicoId,
+      registrosRemovidos: removidos,
       registrosValidos: contagem.validos,
       registrosTotais: contagem.total,
+    };
+  }
+
+  /**
+   * Remove TODOS os uploads, coleta_dados e arquivos do storage de um serviço.
+   * Usado na exclusão do serviço (ignora ciclo fechado).
+   */
+  async excluirTodosDadosDoServico(servicoId: string): Promise<{
+    uploadsRemovidos: number;
+    registrosRemovidos: number;
+    urlsStorage: string[];
+  }> {
+    const uploads = await this.uploadRepo.find({
+      where: { servico_id: servicoId },
+      select: ['id', 'urlDownload'],
+    });
+    const uploadIds = uploads.map((u) => u.id);
+    const urlsStorage = uploads.map((u) => u.urlDownload).filter((u): u is string => !!u);
+
+    let registrosRemovidos = 0;
+
+    await AppDataSource.transaction(async (manager) => {
+      if (uploadIds.length > 0) {
+        const delColeta = await manager
+          .createQueryBuilder()
+          .delete()
+          .from(ColetaData)
+          .where('"planilhaUploadId" IN (:...ids)', { ids: uploadIds })
+          .execute();
+        registrosRemovidos = Number(delColeta.affected || 0);
+
+        await manager
+          .createQueryBuilder()
+          .delete()
+          .from(PlanilhaUpload)
+          .where('servico_id = :servicoId', { servicoId })
+          .execute();
+      }
+
+      // Linhas órfãs sem upload (legado) — não há vínculo direto; nada a fazer.
+    });
+
+    for (const url of urlsStorage) {
+      try {
+        await FileStorageService.removerImagem(url);
+      } catch (err) {
+        console.warn('[PlanilhaService] Erro ao remover arquivo do storage:', err);
+      }
+    }
+
+    invalidarCacheDadosServico(servicoId);
+    invalidarCacheDashboardServico(servicoId);
+
+    return {
+      uploadsRemovidos: uploadIds.length,
+      registrosRemovidos,
+      urlsStorage,
     };
   }
 
@@ -1420,7 +1526,18 @@ export class PlanilhaService {
     servicoId: string,
     dataInicio: string,
     dataFim: string,
-  ): Promise<{ data: string; rotas: number; viagens: number; pesoTotalKg: number; kmTotal: number; areaM2: number }[]> {
+  ): Promise<{
+    data: string;
+    rotas: number;
+    viagens: number;
+    pesoTotalKg: number;
+    kmTotal: number;
+    areaM2: number;
+    metroLinear: number;
+    kmLinear: number;
+    qtdArvore: number;
+    quantitativo: number;
+  }[]> {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(dataInicio) || !/^\d{4}-\d{2}-\d{2}$/.test(dataFim)) {
       return [];
     }
@@ -1428,13 +1545,44 @@ export class PlanilhaService {
     const uploadIds = await this.getUploadIdsPorServico(servicoId);
     if (uploadIds.length === 0) return [];
 
-    // Área m² fica no JSONB (roçada); COALESCE entre aliases canônicos
+    // Métricas por unidade ficam no JSONB (roçada/capina/varrição/poda)
     const areaExpr = `
       COALESCE(
         NULLIF(c.dados->>'Area m²', '')::double precision,
         NULLIF(c.dados->>'AREA_M2', '')::double precision,
         NULLIF(c.dados->>'M2', '')::double precision,
         NULLIF(c.dados->>'AREA_ROCADA', '')::double precision,
+        0
+      )
+    `;
+    const metroLinearExpr = `
+      COALESCE(
+        NULLIF(c.dados->>'Metro Linear', '')::double precision,
+        NULLIF(c.dados->>'METRO_LINEAR', '')::double precision,
+        NULLIF(c.dados->>'COMPRIMENTO', '')::double precision,
+        0
+      )
+    `;
+    const kmLinearExpr = `
+      COALESCE(
+        NULLIF(c.dados->>'KM Linear', '')::double precision,
+        NULLIF(c.dados->>'KM_LINEAR', '')::double precision,
+        NULLIF(c.dados->>'QUILOMETROS_VARRIDOS', '')::double precision,
+        c.kmTotal,
+        0
+      )
+    `;
+    const qtdArvoreExpr = `
+      COALESCE(
+        NULLIF(c.dados->>'Quantidade de Arvore', '')::double precision,
+        NULLIF(c.dados->>'QTD_ARVORE', '')::double precision,
+        NULLIF(c.dados->>'ARVORES_PODADAS', '')::double precision,
+        0
+      )
+    `;
+    const quantitativoExpr = `
+      COALESCE(
+        NULLIF(c.dados->>'QUANTITATIVO', '')::double precision,
         0
       )
     `;
@@ -1447,6 +1595,10 @@ export class PlanilhaService {
         'COALESCE(SUM(c.pesoTotal), 0) as peso_total_kg',
         'COALESCE(SUM(c.kmTotal), 0) as km_total',
         `COALESCE(SUM(${areaExpr}), 0) as area_m2`,
+        `COALESCE(SUM(${metroLinearExpr}), 0) as metro_linear`,
+        `COALESCE(SUM(${kmLinearExpr}), 0) as km_linear`,
+        `COALESCE(SUM(${qtdArvoreExpr}), 0) as qtd_arvore`,
+        `COALESCE(SUM(${quantitativoExpr}), 0) as quantitativo`,
       ])
       .where('c.planilhaUploadId IN (:...uploadIds)', { uploadIds });
     aplicarFiltroViagensValidasDashboard(qb, 'c');
@@ -1472,6 +1624,10 @@ export class PlanilhaService {
       pesoTotalKg: Number(r.peso_total_kg || 0),
       kmTotal: Number(r.km_total || 0),
       areaM2: Number(r.area_m2 || 0),
+      metroLinear: Number(r.metro_linear || 0),
+      kmLinear: Number(r.km_linear || 0),
+      qtdArvore: Number(r.qtd_arvore || 0),
+      quantitativo: Number(r.quantitativo || 0),
     }));
   }
 

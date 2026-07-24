@@ -6,60 +6,49 @@ import { FiTruck, FiBarChart2 } from 'react-icons/fi';
 import type { KpiValor } from '../hooks/useKpiCalculator';
 
 import { analisarOperacaoDia, isKpiMetricaBaseOperacao } from '../utils/operacaoDia';
-
 import { fmtNum } from '../utils/relatorioDiario';
-
 import type { RegistroDiaLinha } from '../utils/dadosPorDia';
-
 import { formatarIsoParaBr } from '../utils/periodoDados';
-
 import { ehPlacaReserva, resumirFrotaOperacao } from '../utils/placasReserva';
-
+import type { CenarioCaixaMediaDia } from '../utils/cenarioCaixaMediaDia';
+import {
+  PCT_IDEAL_MAX,
+  PCT_IDEAL_MIN,
+  PCT_PESSIMO_ALTO,
+  PCT_PESSIMO_BAIXO,
+  pctIdealForaDaMargem,
+  type MapaLimiteCaminhao,
+} from '../utils/limitesCaminhaoContrato';
 import GraficosOperacaoDia from './GraficosOperacaoDia';
-
-import { GraficoOperacaoPorPlaca } from './GraficosSvg';
-
-
+import GraficoViagemPorTipo from './GraficoViagemPorTipo';
+import GraficoRankingViagensTipo from './GraficoRankingViagensTipo';
 
 interface OperacaoDiaPanelProps {
-
   dataIso: string;
-
   registros: Record<string, unknown>[];
-
   linhas: RegistroDiaLinha[];
-
   kpisOperacao: KpiValor[];
-
   loadingKpis?: boolean;
-
   carregandoRegistros: boolean;
-
   mostrarRegistros: boolean;
-
   onToggleRegistros: () => void;
-
   incluirTodos: boolean;
-
   onIncluirTodos: (v: boolean) => void;
-
   onRecarregar: () => void;
-
   validacao: { ok: boolean; mensagens: string[] } | null;
-
   placasReserva?: string[];
-
   /** Quando presente, usa agregação SQL (escala 600k) em vez de analisar registros. */
   analiseSql?: ReturnType<typeof analisarOperacaoDia> | null;
-
   totalRegistros?: number;
-
   pagina?: number;
-
   totalPaginas?: number;
-
   onPaginaChange?: (pagina: number) => void;
-
+  /** Caixa média × densidade = peso ideal — comparar coleta do dia. */
+  cenarioCaixaMedia?: CenarioCaixaMediaDia | null;
+  volumeL?: MapaLimiteCaminhao | null;
+  densidadeResiduoKgL?: number | null;
+  densidadeKgL?: MapaLimiteCaminhao | null;
+  limitesPesoKg?: MapaLimiteCaminhao | null;
 }
 
 
@@ -95,19 +84,17 @@ export default function OperacaoDiaPanel({
   validacao,
 
   placasReserva = [],
-
   analiseSql = null,
-
   totalRegistros,
-
   pagina = 1,
-
   totalPaginas = 1,
-
   onPaginaChange,
-
+  cenarioCaixaMedia = null,
+  volumeL = null,
+  densidadeResiduoKgL = null,
+  densidadeKgL = null,
+  limitesPesoKg = null,
 }: OperacaoDiaPanelProps) {
-
   const analise = useMemo(() => {
     if (analiseSql) return analiseSql;
     return analisarOperacaoDia(registros);
@@ -201,7 +188,120 @@ export default function OperacaoDiaPanel({
 
       </div>
 
-
+      {cenarioCaixaMedia && cenarioCaixaMedia.pesoIdealKg > 0 && (
+        <div style={{
+          background: cenarioCaixaMedia.cenario === 'PERDA'
+            ? 'linear-gradient(135deg, #fef2f2 0%, #fff7ed 100%)'
+            : cenarioCaixaMedia.cenario === 'SUPERÁVIT'
+              ? 'linear-gradient(135deg, #f0fdf4 0%, #ecfdf5 100%)'
+              : 'linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%)',
+          border: `1px solid ${cenarioCaixaMedia.cenario === 'PERDA' ? '#fecaca' : cenarioCaixaMedia.cenario === 'SUPERÁVIT' ? '#bbf7d0' : '#fde68a'}`,
+          borderRadius: '10px',
+          padding: '0.7rem 0.85rem',
+          marginBottom: '0.75rem',
+        }}>
+          <div style={{
+            fontSize: '0.65rem', fontWeight: 800, color: '#92400e',
+            textTransform: 'uppercase', letterSpacing: '0.03em', marginBottom: '0.4rem',
+          }}>
+            Coleta vs peso ideal da caixa média
+          </div>
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))',
+            gap: '0.45rem',
+          }}>
+            {[
+              { lbl: 'Caixa média', val: `${fmtNum(cenarioCaixaMedia.caixaMediaL, 0)} L` },
+              { lbl: 'Densidade', val: `${fmtNum(cenarioCaixaMedia.densidadeKgL, 2)} kg/L` },
+              { lbl: 'Peso ideal', val: `${fmtNum(cenarioCaixaMedia.pesoIdealKg, 0)} kg` },
+              { lbl: 'Peso médio dia', val: `${fmtNum(cenarioCaixaMedia.pesoMedioDiaKg, 0)} kg` },
+              {
+                lbl: '% do ideal',
+                val: cenarioCaixaMedia.ocupacaoVsIdealPct != null
+                  ? `${fmtNum(cenarioCaixaMedia.ocupacaoVsIdealPct, 0)}%`
+                  : '—',
+              },
+              {
+                lbl: 'Resultado',
+                val: `${cenarioCaixaMedia.resultadoTon < 0 ? '−' : cenarioCaixaMedia.resultadoTon > 0 ? '+' : ''}${fmtNum(Math.abs(cenarioCaixaMedia.resultadoTon), 2)} t · ${cenarioCaixaMedia.cenario}`,
+              },
+            ].map((item) => (
+              <div key={item.lbl} style={{
+                background: 'rgba(255,255,255,0.7)',
+                borderRadius: '7px',
+                padding: '0.35rem 0.45rem',
+              }}>
+                <div style={{ fontSize: '0.58rem', fontWeight: 700, color: '#78716c', textTransform: 'uppercase' }}>
+                  {item.lbl}
+                </div>
+                <div style={{
+                  fontSize: '0.82rem', fontWeight: 800, color: '#1c1917',
+                  fontFamily: 'ui-monospace, monospace', marginTop: '0.1rem',
+                }}>
+                  {item.val}
+                </div>
+              </div>
+            ))}
+          </div>
+          {cenarioCaixaMedia.porTipo.length > 0 && (
+            <div style={{ marginTop: '0.55rem', overflowX: 'auto' }}>
+              <table style={{
+                width: '100%', borderCollapse: 'collapse', fontSize: '0.65rem',
+                background: 'rgba(255,255,255,0.65)', borderRadius: '6px',
+              }}>
+                <thead>
+                  <tr style={{ color: '#78716c', textAlign: 'left' }}>
+                    <th style={{ padding: '0.3rem 0.4rem' }}>Tipo</th>
+                    <th style={{ padding: '0.3rem 0.4rem', textAlign: 'right' }}>Ideal</th>
+                    <th style={{ padding: '0.3rem 0.4rem', textAlign: 'right' }}>Médio</th>
+                    <th style={{ padding: '0.3rem 0.4rem', textAlign: 'right' }}>% ideal</th>
+                    <th style={{ padding: '0.3rem 0.4rem', textAlign: 'center' }}>Cenário</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {cenarioCaixaMedia.porTipo.map((t) => {
+                    const abaixo = pctIdealForaDaMargem(t.ocupacaoVsIdealPct);
+                    return (
+                      <tr key={t.tipo} style={{ borderTop: '1px solid #f5f5f4' }}>
+                        <td style={{ padding: '0.3rem 0.4rem', fontWeight: 700 }}>{t.label}</td>
+                        <td style={{
+                          padding: '0.3rem 0.4rem', textAlign: 'right',
+                          fontFamily: 'ui-monospace, monospace', color: '#5b21b6', fontWeight: 700,
+                        }}>
+                          {fmtNum(t.pesoIdealKg, 0)} kg
+                        </td>
+                        <td style={{
+                          padding: '0.3rem 0.4rem', textAlign: 'right',
+                          fontFamily: 'ui-monospace, monospace', fontWeight: 700,
+                        }}>
+                          {fmtNum(t.pesoMedioKg, 0)} kg
+                        </td>
+                        <td style={{
+                          padding: '0.3rem 0.4rem', textAlign: 'right', fontWeight: 800,
+                          color: abaixo ? '#991b1b' : '#166534',
+                          fontFamily: 'ui-monospace, monospace',
+                        }}>
+                          {t.ocupacaoVsIdealPct != null ? `${fmtNum(t.ocupacaoVsIdealPct, 0)}%` : '—'}
+                        </td>
+                        <td style={{
+                          padding: '0.3rem 0.4rem', textAlign: 'center', fontWeight: 700,
+                          color: t.cenario === 'PERDA' ? '#991b1b' : t.cenario === 'SUPERÁVIT' ? '#166534' : '#78716c',
+                        }}>
+                          {t.cenario}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <div style={{ fontSize: '0.62rem', color: '#a16207', marginTop: '0.4rem', lineHeight: 1.35 }}>
+            Ideal por tipo = volume × densidade. Escala: &lt;{PCT_PESSIMO_BAIXO}% péssimo · {PCT_PESSIMO_BAIXO}–{PCT_IDEAL_MIN}% ruim · {PCT_IDEAL_MIN}–{PCT_IDEAL_MAX}% ótimo · {PCT_IDEAL_MAX}–{PCT_PESSIMO_ALTO}% ruim · &gt;{PCT_PESSIMO_ALTO}% péssimo.
+          </div>
+        </div>
+      )}
 
       <div style={{
 
@@ -259,47 +359,27 @@ export default function OperacaoDiaPanel({
 
 
 
-      <GraficosOperacaoDia analise={analise} />
+      <GraficoViagemPorTipo
+        analise={analise}
+        volumeL={volumeL}
+        densidadeResiduoKgL={densidadeResiduoKgL}
+        densidadeKgL={densidadeKgL}
+      />
 
-
-
-      {analise.porPlaca.filter((l) => l.chave !== '—').length > 0 && (
-
+      {registros.length > 0 && (
         <>
-
-          <SecaoTitulo icone={<FiTruck size={12} />} titulo="Produção por veículo (PLACA)" />
-
-          <GraficoOperacaoPorPlaca
-
-            titulo="Toneladas por placa"
-
-            linhas={analise.porPlaca
-
-              .filter((l) => l.chave !== '—')
-
-              .map((l) => ({
-
-                placa: l.chave,
-
-                viagens: l.viagens,
-
-                toneladas: l.toneladas,
-
-                km: l.km,
-
-                horas: l.horas,
-
-                ehReserva: ehPlacaReserva(l.chave, placasReserva),
-
-              }))}
-
-            formatoNum={fmtNum}
-
+          <SecaoTitulo icone={<FiTruck size={12} />} titulo="Ranking por viagem (Mini / Toco / …)" />
+          <GraficoRankingViagensTipo
+            registros={registros}
+            volumeL={volumeL}
+            densidadeResiduoKgL={densidadeResiduoKgL}
+            densidadeKgL={densidadeKgL}
+            limitesPesoKg={limitesPesoKg}
           />
-
         </>
-
       )}
+
+      <GraficosOperacaoDia analise={analise} />
 
 
 

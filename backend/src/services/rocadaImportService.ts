@@ -22,6 +22,7 @@ import { inferirFiltroExecucaoServico } from '../utils/rocadaTipoExecucao';
 import { obterUploadIdsModificaveis } from './cicloPlanilhaService';
 import { invalidarCacheDadosServico } from './servicoDadosCache';
 import { invalidarCacheDashboardServico } from '../controllers/ServicoController';
+import { invalidarCacheSaudeContratos } from '../controllers/ContractController';
 import { dashboardCache } from './DashboardCacheManager';
 import { agendarWarmupPosUpload } from './executivoCacheWarmupService';
 
@@ -98,11 +99,13 @@ class RocadaImportService {
     const coleta = new ColetaData();
     coleta.planilhaUploadId = uploadId;
     coleta.dataSaida = linha.dataSaida;
-    coleta.regional = this.trunc(linha.bairro, 50);
-    coleta.distrito = this.trunc(linha.distrito || linha.logradouro, 50);
+    // Local principal: bairro → trecho → logradouro (cada modelo usa um)
+    const local = linha.bairro || (linha.dados?.TRECHO as string) || linha.logradouro || null;
+    coleta.regional = this.trunc(local, 50);
+    coleta.distrito = this.trunc(linha.distrito || linha.logradouro || local, 50);
     coleta.motorista = this.trunc(linha.operador, 100);
-    coleta.tipoCaminhao = this.trunc(linha.tipo || linha.equipamento, 30);
-    coleta.turno = this.trunc(linha.equipe, 20);
+    coleta.tipoCaminhao = this.trunc(linha.equipamento || (linha.tipo !== 'ROÇADA' ? linha.tipo : null), 30);
+    coleta.turno = this.trunc(linha.equipe || (linha.dados?.PERIODICIDADE as string) || null, 20);
     coleta.placa = null;
     coleta.pesoTotal = null;
     coleta.kmTotal = null;
@@ -112,8 +115,9 @@ class RocadaImportService {
     coleta.motivosInconsistencia = null;
     coleta.dados = {
       ...linha.dados,
-      BAIRRO: linha.bairro,
+      BAIRRO: linha.bairro || local,
       LOGRADOURO: linha.logradouro,
+      LOCAL: local,
       Equipamento: linha.equipamento,
       EQUIPAMENTO: linha.equipamento,
       Operador: linha.operador,
@@ -269,6 +273,7 @@ class RocadaImportService {
     invalidarCacheDashboardServico(servicoId);
     dashboardCache.invalidar(servicoId);
     agendarWarmupPosUpload(servicoId);
+    invalidarCacheSaudeContratos(servico.contract_id);
 
     return {
       servicoId,

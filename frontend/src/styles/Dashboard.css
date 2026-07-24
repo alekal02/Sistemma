@@ -1615,6 +1615,14 @@
   color: var(--color-text-light);
 }
 
+.vg-peso-densidade-hint {
+  margin: 0 0 0.75rem;
+  font-size: 0.72rem;
+  line-height: 1.4;
+  color: #64748b;
+}
+
+
 .vg-peso-painel-vazio-msg {
   margin: 0;
   padding: 0.75rem 1rem;

@@ -18,6 +18,12 @@ const COLUNAS_CONTADOR = [
 
 const COLUNAS_PESO = ['PESO 1', 'PESO 2', 'PESO 3', 'PESO 4'] as const;
 
+/**
+ * Peso máximo plausível de UMA viagem (kg).
+ * Acima disso costuma ser PESO TOTAL da rota — não usar como viagem.
+ */
+export const MAX_PESO_VIAGEM_KG = 25_000;
+
 const normalizar = (s: string) =>
   s.toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, '');
 
@@ -98,4 +104,58 @@ export function contarViagensPorRotaRegistro(registro: Record<string, unknown>):
 
 export function sumarizarViagensPorRota(dados: Record<string, unknown>[]): number {
   return dados.reduce((acc, reg) => acc + contarViagensPorRotaRegistro(reg), 0);
+}
+
+/**
+ * Pesos das viagens 1–4 (kg), alinhado ao backend.
+ * NÃO usa PESO TOTAL nem divide total pelo contador — evita falso 23.649 kg
+ * quando o total da rota / planilha é lido como se fosse uma viagem.
+ */
+export function extrairPesosViagemKgSeguros(registro: Record<string, unknown>): number[] {
+  const individuais: number[] = [];
+  for (let i = 1; i <= 4; i++) {
+    const campo = `peso${i}`;
+    const col = `PESO ${i}`;
+    const tipado = paraNumero(registro[campo]);
+    let n = tipado > 0 ? tipado : 0;
+    if (!(n > 0)) {
+      const v = encontrarValor(registro, col);
+      n = paraNumero(v);
+    }
+    // Match estrito PESO1 ≡ PESO 1 (nunca "contains" → PESO TOTAL)
+    if (!(n > 0)) {
+      const alvo = `PESO${i}`;
+      const nested = registro.dados;
+      const fontes: Record<string, unknown>[] = [registro];
+      if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+        fontes.push(nested as Record<string, unknown>);
+      }
+      for (const src of fontes) {
+        for (const [k, v] of Object.entries(src)) {
+          if (v == null || v === '') continue;
+          if (normalizar(k) === alvo) {
+            n = paraNumero(v);
+            break;
+          }
+        }
+        if (n > 0) break;
+      }
+    }
+    if (n > 0 && n <= MAX_PESO_VIAGEM_KG) individuais.push(n);
+  }
+  if (individuais.length > 0) {
+    const vg = contarViagensPorRotaRegistro(registro);
+    if (vg > 0) return individuais.slice(0, Math.min(vg, individuais.length));
+    return individuais;
+  }
+
+  // Sem PESO 1–4: só aceita PESO TOTAL se for plausível como UMA viagem
+  const total = paraNumero(
+    obterValorRegistro(registro, undefined, 'pesoTotal') ?? encontrarValor(registro, 'PESO TOTAL'),
+  );
+  if (total > 0 && total <= MAX_PESO_VIAGEM_KG) {
+    const vg = contarViagensPorRotaRegistro(registro);
+    if (vg <= 1) return [total];
+  }
+  return [];
 }

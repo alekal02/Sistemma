@@ -78,6 +78,33 @@ export function gerarNomePdfRelatorioRocadaDia(opts: {
   ].join('_');
 }
 
+/** Nome do PDF diário de serviço por unidade. Ex.: Capina_Diario_01-06-2026 */
+export function gerarNomePdfRelatorioUnidadeDia(opts: {
+  servicoNome: string;
+  dataIso: string;
+}): string {
+  const dataFmt = sufixoPeriodoPdf({ dataInicio: opts.dataIso, dataFim: opts.dataIso }) || opts.dataIso;
+  return [
+    sanitizarParteNome(opts.servicoNome || 'Servico'),
+    'Diario',
+    sanitizarParteNome(dataFmt),
+  ].join('_');
+}
+
+/** Nome do PDF de ciclo por unidade. Ex.: Capina_Ciclo_01-06-2026_a_30-06-2026 */
+export function gerarNomePdfRelatorioUnidadeCiclo(opts: {
+  servicoNome: string;
+  dataInicio: string;
+  dataFim: string;
+}): string {
+  const periodo = sufixoPeriodoPdf({ dataInicio: opts.dataInicio, dataFim: opts.dataFim });
+  return [
+    sanitizarParteNome(opts.servicoNome || 'Servico'),
+    'Ciclo',
+    periodo ? sanitizarParteNome(periodo.replace(/^Ciclo_/, '')) : null,
+  ].filter(Boolean).join('_');
+}
+
 /** Nome do PDF comparativo de análise de peso. Ex.: Comparativo_Analise_Peso_Coleta_18-06-2026 */
 export function gerarNomePdfAnalisePesoComparativo(opts?: {
   tipoServico?: string;

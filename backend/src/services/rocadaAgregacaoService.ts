@@ -24,7 +24,7 @@ export const TEXTO_TIPO_EXEC_SQL = `UPPER(TRIM(BOTH FROM CONCAT_WS(' ',
   COALESCE(c.dados->>'_tipoExecucao', ''),
   COALESCE(c.dados->>'TIPO', ''),
   COALESCE(c.dados->>'Tipo', ''),
-  COALESCE(c.tipoCaminhao, ''),
+  COALESCE(c."tipoCaminhao", ''),
   COALESCE(c.dados->>'Equipamento', ''),
   COALESCE(c.dados->>'EQUIPAMENTO', '')
 )))`;
@@ -116,15 +116,18 @@ function toIsoDate(v: Date | string | null | undefined): string | null {
 }
 
 function mapGrupo(rows: any[]): LinhaRocadaAgregada[] {
-  return rows.map((r) => {
-    const label = String(r.label || 'Não informado').trim() || 'Não informado';
-    return {
-      chave: label,
-      label,
-      registros: Number(r.registros || 0),
-      areaM2: Math.round(Number(r.area_m2 || 0) * 100) / 100,
-    };
-  });
+  return rows
+    .map((r) => {
+      const label = String(r.label || 'Não informado').trim() || 'Não informado';
+      return {
+        chave: label,
+        label,
+        registros: Number(r.registros || 0),
+        areaM2: Math.round(Number(r.area_m2 || 0) * 100) / 100,
+      };
+    })
+    // Não polui o dashboard com dimensão vazia
+    .filter((r) => r.label !== 'Não informado' && r.areaM2 > 0);
 }
 
 function filtroTipoSql(tipo?: 'manual' | 'mecanizada' | null): string | null {
@@ -162,16 +165,61 @@ async function agregarEscopo(
     const qb = repo.createQueryBuilder(alias)
       .where(`${alias}.planilhaUploadId IN (:...uploadIds)`, { uploadIds });
     aplicarFiltroViagensValidasDashboard(qb, alias);
-    if (dataInicio) qb.andWhere(`${alias}.dataSaida >= :inicio`, { inicio: dataInicio });
-    if (dataFim) qb.andWhere(`${alias}.dataSaida <= :fim`, { fim: dataFim });
+    // dataSaida é gravada ao meio-dia UTC — comparar com início/fim do dia, não só a data
+    if (dataInicio) {
+      qb.andWhere(`${alias}.dataSaida >= :inicio`, { inicio: `${dataInicio}T00:00:00.000Z` });
+    }
+    if (dataFim) {
+      qb.andWhere(`${alias}.dataSaida <= :fim`, { fim: `${dataFim}T23:59:59.999Z` });
+    }
     if (tipoSql) qb.andWhere(tipoSql.replace(/\bc\./g, `${alias}.`));
     return qb;
   };
 
-  const labelBairro = `COALESCE(NULLIF(TRIM(c.regional), ''), NULLIF(TRIM(c.dados->>'BAIRRO'), ''), 'Não informado')`;
-  const labelOperador = `COALESCE(NULLIF(TRIM(c.motorista), ''), NULLIF(TRIM(c.dados->>'Operador'), ''), NULLIF(TRIM(c.dados->>'OPERADOR'), ''), 'Não informado')`;
-  const labelEquipe = `COALESCE(NULLIF(TRIM(c.turno), ''), NULLIF(TRIM(c.dados->>'Equipe'), ''), NULLIF(TRIM(c.dados->>'EQUIPE'), ''), 'Não informado')`;
-  const labelEquip = `COALESCE(NULLIF(TRIM(c.tipoCaminhao), ''), NULLIF(TRIM(c.dados->>'Equipamento'), ''), NULLIF(TRIM(c.dados->>'EQUIPAMENTO'), ''), 'Não informado')`;
+  // Fallbacks alinhados aos modelos: Londrina/Pinda/Betim/QGIS/padrão (TRECHO)
+  const labelBairro = `COALESCE(
+    NULLIF(TRIM(c.regional), ''),
+    NULLIF(TRIM(c.dados->>'BAIRRO'), ''),
+    NULLIF(TRIM(c.dados->>'TRECHO'), ''),
+    NULLIF(TRIM(c.dados->>'LOCAL'), ''),
+    NULLIF(TRIM(c.dados->>'LOGRADOURO'), ''),
+    NULLIF(TRIM(c.dados->>'LOCALIZACAO'), ''),
+    NULLIF(TRIM(c.dados->>'LOCALIZAÇÃO'), ''),
+    'Não informado'
+  )`;
+  const labelOperador = `COALESCE(
+    NULLIF(TRIM(c.motorista), ''),
+    NULLIF(TRIM(c.dados->>'Operador'), ''),
+    NULLIF(TRIM(c.dados->>'OPERADOR'), ''),
+    NULLIF(TRIM(CONCAT_WS(' → ', NULLIF(TRIM(c.dados->>'INICIO'), ''), NULLIF(TRIM(c.dados->>'TERMINO'), ''))), ''),
+    NULLIF(TRIM(c.dados->>'ENDERECO'), ''),
+    NULLIF(TRIM(c.dados->>'ENDEREÇO'), ''),
+    'Não informado'
+  )`;
+  const labelEquipe = `COALESCE(
+    NULLIF(TRIM(c.turno), ''),
+    NULLIF(TRIM(c.dados->>'Equipe'), ''),
+    NULLIF(TRIM(c.dados->>'EQUIPE'), ''),
+    NULLIF(TRIM(c.dados->>'PERIODICIDADE'), ''),
+    NULLIF(TRIM(c.dados->>'_aba'), ''),
+    'Não informado'
+  )`;
+  // Aspas obrigatórias em "tipoCaminhao" (Postgres lowercase sem aspas → tipocaminhao)
+  const colTipo = 'c."tipoCaminhao"';
+  const labelEquip = `COALESCE(
+    NULLIF(
+      TRIM(CASE
+        WHEN UPPER(TRIM(COALESCE(${colTipo}, ''))) IN ('ROCADA', 'ROÇADA', 'MANUAL', 'MECANIZADA', '') THEN NULL
+        ELSE ${colTipo}
+      END),
+      ''
+    ),
+    NULLIF(TRIM(c.dados->>'Equipamento'), ''),
+    NULLIF(TRIM(c.dados->>'EQUIPAMENTO'), ''),
+    'Não informado'
+  )`;
+  const distintoUtil = (expr: string) =>
+    `COUNT(DISTINCT CASE WHEN (${expr}) IS DISTINCT FROM 'Não informado' THEN (${expr}) END)::int`;
 
   const [resumoRaw, porBairro, porOperador, porEquipe, porEquipamento] = await Promise.all([
     baseWhere()
@@ -184,10 +232,10 @@ async function agregarEscopo(
         `COALESCE(SUM(CASE WHEN ${IS_MANUAL_SQL} THEN 1 ELSE 0 END), 0)::int AS registros_manual`,
         `COALESCE(SUM(CASE WHEN NOT (${IS_MANUAL_SQL}) AND ${IS_MECANIZADA_SQL} THEN 1 ELSE 0 END), 0)::int AS registros_mecanizada`,
         `COALESCE(SUM(CASE WHEN NOT (${IS_MANUAL_SQL}) AND NOT (${IS_MECANIZADA_SQL}) THEN 1 ELSE 0 END), 0)::int AS registros_desconhecido`,
-        `COUNT(DISTINCT ${labelBairro})::int AS bairros`,
-        `COUNT(DISTINCT ${labelOperador})::int AS operadores`,
-        `COUNT(DISTINCT ${labelEquipe})::int AS equipes`,
-        `COUNT(DISTINCT ${labelEquip})::int AS equipamentos`,
+        `${distintoUtil(labelBairro)} AS bairros`,
+        `${distintoUtil(labelOperador)} AS operadores`,
+        `${distintoUtil(labelEquipe)} AS equipes`,
+        `${distintoUtil(labelEquip)} AS equipamentos`,
         'MIN(c.dataSaida) AS min_d',
         'MAX(c.dataSaida) AS max_d',
       ])
@@ -340,10 +388,22 @@ export async function getAgregacaoRocada(
       areaM2: resumo.areaMecanizadaM2,
     });
   }
-  if (resumo.areaDesconhecidaM2 > 0 || resumo.registrosDesconhecido > 0) {
+  // Sem Manual/Mecanizada na planilha: trata como "Roçada" (não "Não classificado")
+  if (
+    (resumo.areaDesconhecidaM2 > 0 || resumo.registrosDesconhecido > 0)
+    && resumo.registrosManual === 0
+    && resumo.registrosMecanizada === 0
+  ) {
+    porTipo.push({
+      chave: 'rocada',
+      label: 'Roçada',
+      registros: resumo.registrosDesconhecido,
+      areaM2: resumo.areaDesconhecidaM2,
+    });
+  } else if (resumo.areaDesconhecidaM2 > 0 || resumo.registrosDesconhecido > 0) {
     porTipo.push({
       chave: 'desconhecido',
-      label: 'Não classificado',
+      label: 'Outros',
       registros: resumo.registrosDesconhecido,
       areaM2: resumo.areaDesconhecidaM2,
     });

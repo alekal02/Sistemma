@@ -209,8 +209,22 @@ const servicoService = {
   },
 
   /** Lista serviços de um contrato (id, nome, tipo) */
-  async listarServicosContrato(contratoId: string): Promise<Array<{ id: string; nome: string; tipo: string }>> {
-    const { data } = await api.get<{ servicos: Array<{ id: string; nome: string; tipo: string }> }>(
+  async listarServicosContrato(contratoId: string): Promise<Array<{
+    id: string;
+    nome: string;
+    tipo: string;
+    descricao?: string | null;
+    configFaturamento?: unknown;
+    criadoEm?: string;
+  }>> {
+    const { data } = await api.get<{ servicos: Array<{
+      id: string;
+      nome: string;
+      tipo: string;
+      descricao?: string | null;
+      configFaturamento?: unknown;
+      criadoEm?: string;
+    }> }>(
       `/contracts/${contratoId}/servicos`,
     );
     return data.servicos || [];
@@ -592,8 +606,29 @@ const servicoService = {
       { params, signal: nextAbortSignal('servico:getResumoCicloPorDia') },
     );
     return data as {
-      dias: Array<{ data: string; rotas: number; viagens: number; pesoTotalKg: number; kmTotal: number; areaM2?: number }>;
-      totais: { rotas: number; viagens: number; pesoTotalKg: number; kmTotal: number; areaM2?: number };
+      dias: Array<{
+        data: string;
+        rotas: number;
+        viagens: number;
+        pesoTotalKg: number;
+        kmTotal: number;
+        areaM2?: number;
+        metroLinear?: number;
+        kmLinear?: number;
+        qtdArvore?: number;
+        quantitativo?: number;
+      }>;
+      totais: {
+        rotas: number;
+        viagens: number;
+        pesoTotalKg: number;
+        kmTotal: number;
+        areaM2?: number;
+        metroLinear?: number;
+        kmLinear?: number;
+        qtdArvore?: number;
+        quantitativo?: number;
+      };
       dataInicio: string;
       dataFim: string;
       tipoServico?: string | null;
@@ -743,8 +778,30 @@ const servicoService = {
     return data;
   },
 
+  /** Garante Roçada, Capina, Varrição e Poda no contrato (idempotente). */
+  async garantirServicosPadrao(contractId: string) {
+    const { data } = await api.post(`/contracts/${contractId}/servicos/garantir-padrao`);
+    return data as {
+      sucesso: boolean;
+      mensagem: string;
+      criados: Array<{ id: string; nome: string; tipo: string }>;
+      jaExistiam: Array<{ id: string; nome: string; tipo: string }>;
+      servicos: Array<{
+        id: string;
+        nome: string;
+        tipo: string;
+        configFaturamento?: unknown;
+      }>;
+    };
+  },
+
   async excluirServico(contractId: string, servicoId: string) {
-    await api.delete(`/contracts/${contractId}/servicos/${servicoId}`);
+    const { data } = await api.delete<{
+      message?: string;
+      uploadsRemovidos?: number;
+      registrosRemovidos?: number;
+    }>(`/contracts/${contractId}/servicos/${servicoId}`);
+    return data;
   },
 };
 

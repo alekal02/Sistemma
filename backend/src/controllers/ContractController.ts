@@ -13,7 +13,12 @@ import {
   normalizarListaPlacasAtivas,
 } from '../utils/configOperacional';
 import { normalizarMapaLimitesContrato } from '../config/pesoMaximoCaminhao';
+import {
+  normalizarDensidadeResiduoKgL,
+  normalizarMapaDensidadesKgL,
+} from '../services/analisePesoColetaService';
 import { invalidarCacheComparacaoContrato } from '../services/comparacaoCache';
+import { garantirServicosPadraoContrato } from '../services/servicosPadraoContratoService';
 
 const cacheSaude = new Map<string, { data: any; timestamp: number }>();
 const CACHE_SAUDE_TTL_MS = 120_000;
@@ -99,6 +104,13 @@ export class ContractController {
       const novoContract = await this.repository.save(contract);
       invalidarCacheSaudeContratos(novoContract.id);
 
+      // Já cria Roçada / Capina / Varrição / Poda
+      try {
+        await garantirServicosPadraoContrato(novoContract.id);
+      } catch (err) {
+        console.warn('[ContractController] Falha ao garantir serviços padrão:', err);
+      }
+
       return res.status(201).json(novoContract);
     } catch (error: any) {
       console.error('❌ Erro ao criar contrato:', error?.message || error);
@@ -161,6 +173,15 @@ export class ContractController {
           ...(configOperacional.volumeL !== undefined
             ? { volumeL: normalizarMapaLimitesContrato(configOperacional.volumeL) ?? {} }
             : {}),
+          ...(configOperacional.densidadeResiduoKgL !== undefined
+            ? {
+                densidadeResiduoKgL:
+                  normalizarDensidadeResiduoKgL(configOperacional.densidadeResiduoKgL) ?? null,
+              }
+            : {}),
+          ...(configOperacional.densidadeKgL !== undefined
+            ? { densidadeKgL: normalizarMapaDensidadesKgL(configOperacional.densidadeKgL) ?? {} }
+            : {}),
         };
         contract.configOperacional = novoConfig;
         await this.repository.update(id, { configOperacional: novoConfig as any });
@@ -194,9 +215,38 @@ export class ContractController {
         return res.status(404).json({ error: 'Contrato não encontrado' });
       }
 
+      const servicoRepo = AppDataSource.getRepository(Servico);
+      const servicos = await servicoRepo.find({ where: { contract_id: id }, select: ['id'] });
+
+      let uploadsRemovidos = 0;
+      let registrosRemovidos = 0;
+      for (const s of servicos) {
+        const limpeza = await PlanilhaService.excluirTodosDadosDoServico(s.id);
+        uploadsRemovidos += limpeza.uploadsRemovidos;
+        registrosRemovidos += limpeza.registrosRemovidos;
+      }
+
+      // WhatsApp mapas caem via CASCADE do serviço; remove explícito por segurança
+      if (servicos.length > 0) {
+        const { WhatsappGrupoMapa } = await import('../entities/WhatsappGrupoMapa');
+        await AppDataSource.getRepository(WhatsappGrupoMapa)
+          .createQueryBuilder()
+          .delete()
+          .where('"servicoId" IN (:...ids)', { ids: servicos.map((s) => s.id) })
+          .execute();
+      }
+
       await this.repository.remove(contract);
       invalidarCacheSaudeContratos(id);
-      return res.json({ message: 'Contrato excluído com sucesso' });
+      invalidarCacheComparacaoContrato(id);
+      invalidarPdfCache();
+
+      return res.json({
+        message: 'Contrato excluído com sucesso',
+        servicosRemovidos: servicos.length,
+        uploadsRemovidos,
+        registrosRemovidos,
+      });
     } catch (error: any) {
       console.error('Erro ao excluir contrato:', error?.message || error);
       return res.status(500).json({ error: 'Erro ao excluir contrato' });

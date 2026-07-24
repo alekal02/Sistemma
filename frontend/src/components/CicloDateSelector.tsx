@@ -11,6 +11,7 @@ import { useToast } from '../contexts/ToastContext';
 import pdfService from '../services/pdfService';
 import { gerarHtmlRelatorioOperacionalPeriodo } from '../utils/gerarHtmlRelatorioOperacionalPeriodo';
 import { gerarHtmlRelatorioRocadaCiclo } from '../utils/gerarHtmlRelatorioRocadaCiclo';
+import { gerarHtmlRelatorioUnidadeCiclo } from '../utils/gerarHtmlRelatorioUnidadeCiclo';
 import { analisarOperacaoDia } from '../utils/operacaoDia';
 import {
   calcularPeriodoOperacional,
@@ -28,8 +29,13 @@ import {
 } from '../utils/periodoCicloContrato';
 import { agruparCicloPorDiaFromApi, fmtNum, type DadoDiario } from '../utils/relatorioDiario';
 import {
+  formatarMetricaUnidade,
+  unidadeOperacionalDoTipo,
+} from '../utils/unidadeServico';
+import {
   gerarNomePdfRelatorioOperacionalPeriodo,
   gerarNomePdfRelatorioRocadaCiclo,
+  gerarNomePdfRelatorioUnidadeCiclo,
 } from '../utils/gerarNomePdf';
 import servicoService from '../services/servicoService';
 
@@ -119,7 +125,11 @@ export default function CicloDateSelector({
   onCicloChange,
   onCicloFechado,
 }: CicloDateSelectorProps) {
-  const ehRocada = tipoServico === 'rocadeira';
+  const unidade = unidadeOperacionalDoTipo(tipoServico);
+  const ehRocada = unidade.modo === 'rocada';
+  const modoCiclo = unidade.modo;
+  const ehPorUnidade = unidade.semViagemColeta;
+  const ehUnidadeNaoRocada = ehPorUnidade && !ehRocada;
   const navigate = useNavigate();
   const { adicionarToast } = useToast();
   const [exportando, setExportando] = useState<TipoPeriodoOperacional | null>(null);
@@ -209,8 +219,9 @@ export default function CicloDateSelector({
           tarifas.valorToco,
           tarifas.valorBasculante,
           {
-            modo: ehRocada ? 'rocada' : 'coleta',
+            modo: modoCiclo,
             valorM2: configFaturamento?.valorM2 ?? null,
+            tipoServico,
           },
         ));
       }),
@@ -241,7 +252,7 @@ export default function CicloDateSelector({
       if (!cancelado) setCarregandoResumo(false);
     });
     return () => { cancelado = true; };
-  }, [contractId, servicoId, ciclo.dataInicio, ciclo.dataFim, tarifas, ehRocada, configFaturamento?.valorM2]);
+  }, [contractId, servicoId, ciclo.dataInicio, ciclo.dataFim, tarifas, ehRocada, modoCiclo, tipoServico, configFaturamento?.valorM2]);
 
   const relatorioVazio = useMemo(
     () => agruparCicloPorDiaFromApi(
@@ -253,9 +264,9 @@ export default function CicloDateSelector({
       undefined,
       undefined,
       undefined,
-      { modo: ehRocada ? 'rocada' : 'coleta', valorM2: configFaturamento?.valorM2 ?? null },
+      { modo: modoCiclo, valorM2: configFaturamento?.valorM2 ?? null, tipoServico },
     ),
-    [ciclo.dataInicio, ciclo.dataFim, tarifas.valorTonelada, ehRocada, configFaturamento?.valorM2],
+    [ciclo.dataInicio, ciclo.dataFim, tarifas.valorTonelada, modoCiclo, tipoServico, configFaturamento?.valorM2],
   );
   const relatorio = relatorioApi ?? relatorioVazio;
 
@@ -263,8 +274,8 @@ export default function CicloDateSelector({
 
   const handleFecharCiclo = useCallback(async () => {
     if (!contractId || !servicoId || cicloFechado || fechandoCiclo) return;
-    const temOperacao = ehRocada
-      ? ((totais.areaM2 || 0) > 0 || totais.rotas > 0)
+    const temOperacao = ehPorUnidade
+      ? ((totais.metricaUnidade || 0) > 0 || totais.rotas > 0 || (totais.areaM2 || 0) > 0)
       : totais.viagens > 0;
     if (!temOperacao) {
       adicionarToast('Não há dados operacionais neste ciclo para fechar', 'warning');
@@ -306,8 +317,10 @@ export default function CicloDateSelector({
   );
 
   const diaTemOperacao = useCallback((d: DadoDiario) => (
-    ehRocada ? ((d.areaM2 || 0) > 0 || d.rotas > 0) : d.viagens > 0
-  ), [ehRocada]);
+    ehPorUnidade
+      ? ((d.metricaUnidade || 0) > 0 || d.rotas > 0 || (d.areaM2 || 0) > 0)
+      : d.viagens > 0
+  ), [ehPorUnidade]);
 
   const diasExibidos = useMemo(
     () => (mostrarSemDados ? dias : dias.filter(diaTemOperacao)),
@@ -429,10 +442,75 @@ export default function CicloDateSelector({
     contractId, servicoId,
   ]);
 
+  const exportarRelatorioUnidadeCiclo = useCallback(async () => {
+    if (!contractId || !servicoId) {
+      adicionarToast('Contrato/serviço não disponível para exportar', 'warning');
+      return;
+    }
+    setExportando('ciclo');
+    try {
+      const resumoApi = await servicoService.getResumoCicloPorDia(contractId, servicoId, {
+        dataInicio: ciclo.dataInicio,
+        dataFim: ciclo.dataFim,
+      });
+      const relatorioPeriodo = agruparCicloPorDiaFromApi(
+        resumoApi.dias,
+        ciclo.dataInicio,
+        ciclo.dataFim,
+        tarifas.valorTonelada,
+        tarifas.valorMini,
+        tarifas.valorTruck,
+        tarifas.valorToco,
+        tarifas.valorBasculante,
+        {
+          modo: modoCiclo === 'coleta' ? 'metro_linear' : modoCiclo,
+          tipoServico,
+        },
+      );
+      const metricaTotal = Number(relatorioPeriodo.totais.metricaUnidade || 0);
+      if (metricaTotal <= 0 && relatorioPeriodo.totais.rotas <= 0) {
+        adicionarToast(
+          `Nenhum dado entre ${formatarIsoParaBr(ciclo.dataInicio)} e ${formatarIsoParaBr(ciclo.dataFim)}`,
+          'warning',
+        );
+        return;
+      }
+      const html = gerarHtmlRelatorioUnidadeCiclo({
+        servicoNome: servicoNome || 'Serviço',
+        tipoServico,
+        cicloLabel: ciclo.label,
+        dataInicio: ciclo.dataInicio,
+        dataFim: ciclo.dataFim,
+        dias: relatorioPeriodo.dias,
+        diasComDados: relatorioPeriodo.diasComDados,
+        totais: relatorioPeriodo.totais,
+      });
+      const nomeArquivo = gerarNomePdfRelatorioUnidadeCiclo({
+        servicoNome: servicoNome || 'Servico',
+        dataInicio: ciclo.dataInicio,
+        dataFim: ciclo.dataFim,
+      });
+      await pdfService.gerarEBaixar(html, nomeArquivo, 'default', false);
+      adicionarToast('Relatório de ciclo exportado em PDF', 'success');
+    } catch (err) {
+      console.error('Erro PDF ciclo unidade:', err);
+      adicionarToast('Erro ao gerar relatório de ciclo', 'error');
+    } finally {
+      setExportando(null);
+    }
+  }, [
+    adicionarToast, servicoNome, ciclo, tarifas, contractId, servicoId, modoCiclo, tipoServico,
+  ]);
+
   const exportarRelatorioOperacional = useCallback(async (tipo: TipoPeriodoOperacional) => {
     if (ehRocada) {
       if (tipo === 'ciclo') await exportarRelatorioRocadaCiclo();
       else adicionarToast('Para roçada, use o PDF do ciclo completo', 'info');
+      return;
+    }
+    if (ehUnidadeNaoRocada) {
+      if (tipo === 'ciclo') await exportarRelatorioUnidadeCiclo();
+      else adicionarToast('Para este serviço, use o PDF do ciclo ou abra o dia', 'info');
       return;
     }
 
@@ -511,14 +589,14 @@ export default function CicloDateSelector({
       setExportando(null);
     }
   }, [
-    adicionarToast, servicoNome, ciclo, dias, tarifas, ehRocada,
-    contractId, servicoId, placasReserva, exportarRelatorioRocadaCiclo,
+    adicionarToast, servicoNome, ciclo, dias, tarifas, ehRocada, ehUnidadeNaoRocada,
+    contractId, servicoId, placasReserva, exportarRelatorioRocadaCiclo, exportarRelatorioUnidadeCiclo,
   ]);
 
   if (!diaInicioCiclo || diaInicioCiclo <= 0) return null;
 
   const maxVg = Math.max(
-    ...diasExibidos.map((d) => (ehRocada ? (d.areaM2 || 0) : d.viagens)),
+    ...diasExibidos.map((d) => (ehPorUnidade ? (d.metricaUnidade || d.areaM2 || 0) : d.viagens)),
     1,
   );
 
@@ -562,8 +640,8 @@ export default function CicloDateSelector({
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem', justifyContent: 'flex-end', alignItems: 'center' }}>
             {(() => {
-              const semDados = ehRocada
-                ? ((totais.areaM2 || 0) <= 0 && totais.rotas <= 0)
+              const semDados = ehPorUnidade
+                ? ((totais.metricaUnidade || 0) <= 0 && (totais.areaM2 || 0) <= 0 && totais.rotas <= 0)
                 : totais.viagens <= 0;
               return (
             <>
@@ -595,6 +673,17 @@ export default function CicloDateSelector({
               >
                 <FiDownload size={13} />
                 {exportando === 'ciclo' ? 'Gerando...' : 'PDF Ciclo Roçada'}
+              </button>
+            ) : ehUnidadeNaoRocada ? (
+              <button
+                type="button"
+                onClick={() => exportarRelatorioUnidadeCiclo()}
+                disabled={exportando !== null || semDados}
+                title={semDados ? 'Sem dados no ciclo' : `PDF do ciclo — ${formatarIsoParaBr(ciclo.dataInicio)} a ${formatarIsoParaBr(ciclo.dataFim)}`}
+                style={btnPdfHeader(exportando === 'ciclo', semDados, true)}
+              >
+                <FiDownload size={13} />
+                {exportando === 'ciclo' ? 'Gerando...' : 'PDF Ciclo'}
               </button>
             ) : (
               <>
@@ -655,23 +744,28 @@ export default function CicloDateSelector({
       </div>
 
       {/* KPIs do ciclo */}
-      {((ehRocada ? ((totais.areaM2 || 0) > 0 || totais.rotas > 0) : totais.viagens > 0)) && (
+      {((ehPorUnidade
+        ? ((totais.metricaUnidade || 0) > 0 || totais.rotas > 0 || (totais.areaM2 || 0) > 0)
+        : totais.viagens > 0)) && (
         <div style={{
           display: 'flex', flexWrap: 'wrap', gap: '0.5rem',
           padding: '0.85rem 1.1rem',
           background: '#f8fafc',
           borderBottom: '1px solid #e2e8f0',
         }}>
-          {ehRocada ? (
+          {ehPorUnidade ? (
             <>
               <KpiCard label="Registros" valor={fmtNum(totais.rotas, 0)} cor="#6366f1" icone={<FiList size={11} />} />
               <KpiCard
-                label="Área total"
-                valor={`${fmtNum(totais.areaM2 || 0, 0)} m²`}
+                label={totais.metricaLabel || unidade.labelMetrica}
+                valor={formatarMetricaUnidade(
+                  totais.metricaUnidade || totais.areaM2 || 0,
+                  totais.metricaSufixo || unidade.sufixo,
+                )}
                 cor="#22c55e"
                 icone={<FiTrendingUp size={11} />}
               />
-              {(rocadaSplit?.areaManualM2 || 0) > 0 && (
+              {ehRocada && (rocadaSplit?.areaManualM2 || 0) > 0 && (
                 <KpiCard
                   label={`Manual (${fmtNum(rocadaSplit?.registrosManual || 0, 0)})`}
                   valor={`${fmtNum(rocadaSplit?.areaManualM2 || 0, 0)} m²`}
@@ -679,7 +773,7 @@ export default function CicloDateSelector({
                   icone={<FiTrendingUp size={11} />}
                 />
               )}
-              {(rocadaSplit?.areaMecanizadaM2 || 0) > 0 && (
+              {ehRocada && (rocadaSplit?.areaMecanizadaM2 || 0) > 0 && (
                 <KpiCard
                   label={`Mecanizada (${fmtNum(rocadaSplit?.registrosMecanizada || 0, 0)})`}
                   valor={`${fmtNum(rocadaSplit?.areaMecanizadaM2 || 0, 0)} m²`}
@@ -688,8 +782,13 @@ export default function CicloDateSelector({
                 />
               )}
               <KpiCard
-                label="Média m² / dia"
-                valor={relatorio.diasComDados > 0 ? fmtNum((totais.areaM2 || 0) / relatorio.diasComDados, 0) : '—'}
+                label={`Média / dia`}
+                valor={relatorio.diasComDados > 0
+                  ? formatarMetricaUnidade(
+                    (totais.metricaUnidade || totais.areaM2 || 0) / relatorio.diasComDados,
+                    totais.metricaSufixo || unidade.sufixo,
+                  )
+                  : '—'}
                 cor="#8b5cf6"
                 icone={<FiCalendar size={11} />}
               />
@@ -828,10 +927,10 @@ export default function CicloDateSelector({
                   <tr style={{ background: '#f1f5f9', color: '#475569' }}>
                     <th style={thStyle}>Data</th>
                     <th style={{ ...thStyle, textAlign: 'center', width: '48px' }}>Dia</th>
-                    <th style={{ ...thStyle, textAlign: 'center' }} title={ehRocada ? 'Linhas importadas no dia' : 'Linhas (rotas) importadas no dia'}>
-                      {ehRocada ? 'Registros' : 'Rotas'}
+                    <th style={{ ...thStyle, textAlign: 'center' }} title={ehPorUnidade ? 'Linhas importadas no dia' : 'Linhas (rotas) importadas no dia'}>
+                      {ehPorUnidade ? 'Registros' : 'Rotas'}
                     </th>
-                    {!ehRocada && (
+                    {!ehPorUnidade && (
                       <th
                         style={{ ...thStyle, textAlign: 'center' }}
                         title="Soma da coluna CONTADOR DE VIAGENS da planilha (viagens dentro de cada rota)"
@@ -840,7 +939,10 @@ export default function CicloDateSelector({
                       </th>
                     )}
                     <th style={{ ...thStyle, textAlign: 'right' }}>
-                      {ehRocada ? 'Área (m²)' : 'Toneladas'}
+                      {ehPorUnidade
+                        ? (totais.metricaLabel || unidade.labelMetrica)
+                          + (totais.metricaSufixo || unidade.sufixo ? ` (${totais.metricaSufixo || unidade.sufixo})` : '')
+                        : 'Toneladas'}
                     </th>
                     <th style={{ ...thStyle, width: '90px' }} />
                   </tr>
@@ -854,7 +956,7 @@ export default function CicloDateSelector({
                       hoje={hoje}
                       selecionado={dataSelecionada === d.data}
                       maxVg={maxVg}
-                      modoRocada={ehRocada}
+                      modoUnidade={ehPorUnidade}
                       onClick={() => handleRowClick(d)}
                     />
                   ))}
@@ -867,13 +969,18 @@ export default function CicloDateSelector({
                     <td style={{ padding: '0.6rem', textAlign: 'center', fontWeight: 800, color: '#4338ca' }}>
                       {fmtNum(totais.rotas, 0)}
                     </td>
-                    {!ehRocada && (
+                    {!ehPorUnidade && (
                       <td style={{ padding: '0.6rem', textAlign: 'center', fontWeight: 800, color: '#1e40af' }}>
                         {fmtNum(totais.viagens, 0)}
                       </td>
                     )}
                     <td style={{ padding: '0.6rem 1.1rem', textAlign: 'right', fontWeight: 800, color: '#166534' }}>
-                      {ehRocada ? `${fmtNum(totais.areaM2 || 0, 0)} m²` : `${fmtNum(totais.toneladas, 1)} t`}
+                      {ehPorUnidade
+                        ? formatarMetricaUnidade(
+                          totais.metricaUnidade || totais.areaM2 || 0,
+                          totais.metricaSufixo || unidade.sufixo,
+                        )
+                        : `${fmtNum(totais.toneladas, 1)} t`}
                     </td>
                     <td />
                   </tr>
@@ -943,19 +1050,21 @@ const btnSecundario: CSSProperties = {
 };
 
 function LinhaDia({
-  d, idx, hoje, selecionado, maxVg, modoRocada, onClick,
+  d, idx, hoje, selecionado, maxVg, modoUnidade, onClick,
 }: {
   d: DadoDiario;
   idx: number;
   hoje: string;
   selecionado?: boolean;
   maxVg: number;
-  modoRocada?: boolean;
+  modoUnidade?: boolean;
   onClick: () => void;
 }) {
-  const temResumo = modoRocada ? ((d.areaM2 || 0) > 0 || d.rotas > 0) : d.viagens > 0;
+  const temResumo = modoUnidade
+    ? ((d.metricaUnidade || 0) > 0 || d.rotas > 0 || (d.areaM2 || 0) > 0)
+    : d.viagens > 0;
   const ehHoje = d.data === hoje;
-  const metricaBarra = modoRocada ? (d.areaM2 || 0) : d.viagens;
+  const metricaBarra = modoUnidade ? (d.metricaUnidade || d.areaM2 || 0) : d.viagens;
 
   let bg = idx % 2 === 0 ? '#fff' : '#fafbfc';
   if (ehHoje && temResumo) bg = '#f0fdf4';
@@ -989,7 +1098,7 @@ function LinhaDia({
       <td style={{ padding: '0.55rem 0.6rem', textAlign: 'center', fontWeight: temResumo ? 700 : 400, color: temResumo ? '#4338ca' : '#cbd5e1' }}>
         {temResumo ? fmtNum(d.rotas, 0) : '—'}
       </td>
-      {!modoRocada && (
+      {!modoUnidade && (
         <td style={{ padding: '0.55rem 0.6rem', textAlign: 'center' }}>
           {temResumo ? (
             <div>
@@ -1005,9 +1114,11 @@ function LinhaDia({
       )}
       <td style={{ padding: '0.55rem 1.1rem', textAlign: 'right', fontWeight: temResumo ? 700 : 400, color: temResumo ? '#166534' : '#cbd5e1' }}>
         {temResumo
-          ? (modoRocada ? `${fmtNum(d.areaM2 || 0, 0)} m²` : `${fmtNum(d.toneladas, 1)} t`)
+          ? (modoUnidade
+            ? formatarMetricaUnidade(d.metricaUnidade || d.areaM2 || 0, d.metricaSufixo || '')
+            : `${fmtNum(d.toneladas, 1)} t`)
           : '—'}
-        {modoRocada && temResumo && (
+        {modoUnidade && temResumo && (
           <div style={{ height: '3px', background: '#e2e8f0', borderRadius: '2px', marginTop: '4px', maxWidth: '80px', marginLeft: 'auto' }}>
             <div style={{ width: `${barW}%`, height: '100%', background: '#22c55e', borderRadius: '2px' }} />
           </div>

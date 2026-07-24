@@ -5,13 +5,22 @@
 import { resumirFrotaOperacao } from '../../utils/placasReserva';
 import { esc, fmtNum, formatarIsoParaBr } from './fmt';
 import {
+  blocoDesempenhoPorTipoHtml,
+  blocoRankingViagensHtml,
+  type ResumoCapacidadeDia,
+} from './capacidadeViagemDia';
+import { PCT_IDEAL_MAX, PCT_IDEAL_MIN, textoEscalaIdealCurto } from './escalaIdealPeso';
+import {
   gerarInsightsOperacao,
+  montarEficienciaGrupos,
   montarEficienciaPlacas,
   type InsightOperacao,
   type LinhaEficienciaPlaca,
   type LinhaOperacaoGrupo,
   type OperacaoDiaAnalise,
+  type OptsEficienciaContrato,
 } from './operacaoDia';
+import type { TipoCaminhaoPeso } from '../../config/pesoMaximoCaminhao';
 
 export interface KpiValorPdf {
   nome: string;
@@ -180,15 +189,10 @@ function insightsHtml(insights: InsightOperacao[]): string {
 }
 
 function statusBadge(status: 'bom' | 'medio' | 'ruim'): string {
-  const map = { bom: ['st-bom', 'OK'], medio: ['st-medio', 'Atenção'], ruim: ['st-ruim', 'Gargalo'] };
+  // Alinhado à escala ideal: ótimo / ruim / péssimo
+  const map = { bom: ['st-bom', 'Ótimo'], medio: ['st-medio', 'Ruim'], ruim: ['st-ruim', 'Péssimo'] };
   const [cls, lbl] = map[status];
   return `<span class="${cls}">${lbl}</span>`;
-}
-
-function statusVsMediaPdf(pct: number): 'bom' | 'medio' | 'ruim' {
-  if (pct >= 90) return 'bom';
-  if (pct >= 75) return 'medio';
-  return 'ruim';
 }
 
 function graficoPizzaTipoOpHtml(linhas: LinhaOperacaoGrupo[], totalViagens: number): string {
@@ -241,102 +245,65 @@ function graficoBarrasHorizontaisOpHtml(
     </div>`;
 }
 
-function graficoOperacaoPlacaHtml(linhas: LinhaEficienciaPlaca[], mediaTonViag: number): string {
+/** Quadro resumido por placa — vs ideal do tipo (não média geral do dia). */
+function tabelaEficienciaPlacaHtml(linhas: LinhaEficienciaPlaca[]): string {
   if (!linhas.length) return '';
-
-  const maxVal = Math.max(...linhas.map((l) => l.toneladas), 0.01);
-  const totalTon = linhas.reduce((s, l) => s + l.toneladas, 0);
-
+  const piores = [...linhas]
+    .filter((l) => l.status !== 'bom')
+    .slice(0, 12);
+  if (!piores.length) return '';
   return `
     <div class="bloco">
-      <div class="sec">Ranking de produção por veículo</div>
-      <table class="bloco-hd-tbl">
-        <tr>
-          <td>Toneladas por placa (vs média ${fmtNum(mediaTonViag, 2)} t/viag)</td>
-          <td class="r"><span class="badge" style="color:#1d4ed8;background:#dbeafe">Total: ${fmtNum(totalTon, 1)} t</span></td>
-        </tr>
-      </table>
-      ${linhas.map((l) => {
-        const barW = Math.max(4, Math.round((l.toneladas / maxVal) * 100));
-        const pctTon = totalTon > 0 ? (l.toneladas / totalTon) * 100 : 0;
-        const lbl = l.chave.length > 9 ? l.chave.slice(0, 9) + '…' : l.chave;
-        const detalhe = `${fmtNum(l.viagens, 0)} viag. · ${fmtNum(l.tonMediaViagem, 2)} t/viag · ${fmtNum(l.tonHora, 2)} t/h`;
-        return `
-          <div class="bar-row">
-            <div class="bar-lbl">${placaComReservaHtml(lbl, l.ehReserva)} ${statusBadge(l.status)}</div>
-            <div class="bar-track"><span class="bar-fill ${l.status}" style="width:${barW}%"></span></div>
-            <div class="bar-val op">${fmtNum(l.toneladas, 1)} t</div>
-          </div>
-          <div class="bar-detail">${detalhe} · ${fmtNum(pctTon, 1)}% do volume · ${fmtNum(l.pctMediaTonViag, 0)}% da média</div>`;
-      }).join('')}
-    </div>`;
-}
-
-function tabelaEficienciaPlacaHtml(linhas: LinhaEficienciaPlaca[], mediaTonViag: number): string {
-  if (!linhas.length) return '';
-  return `
-    <div class="bloco">
-      <div class="bloco-hd">Quadro de eficiência — onde agir primeiro</div>
+      <div class="bloco-hd">Placas a monitorar — vs ideal do tipo</div>
       <table class="data">
-        <colgroup>
-          <col style="width:16%"/><col style="width:8%"/><col style="width:12%"/>
-          <col style="width:12%"/><col style="width:10%"/><col style="width:10%"/>
-          <col style="width:10%"/><col style="width:12%"/><col style="width:10%"/>
-        </colgroup>
         <thead><tr>
-          <th>Placa</th><th class="c">Viag.</th><th class="r">Ton</th>
-          <th class="r op-h">t/viag</th><th class="r">KM/viag</th><th class="r">t/h</th>
-          <th class="r">% média</th><th class="c">Status</th><th class="r">Prioridade</th>
+          <th>Placa</th><th>Tipo</th><th class="c">Viag.</th><th class="r">Ton</th>
+          <th class="r op-h">t/viag</th><th class="c">% ideal</th><th class="c">Status</th>
         </tr></thead>
-        <tbody>${linhas.map((l, i) => {
-          const prioridade = l.status === 'ruim' ? 1 : l.status === 'medio' ? 2 : 3;
-          return `
+        <tbody>${piores.map((l, i) => `
           <tr style="background:${i % 2 === 0 ? '#f8fafc' : '#fff'}">
             <td style="font-weight:700">${placaComReservaHtml(l.chave, l.ehReserva)}</td>
-            <td class="c">${fmtNum(l.viagens, 0)}</td>
-            <td class="r nowrap">${fmtNum(l.toneladas, 1)} t</td>
-            <td class="r nowrap" style="font-weight:700;color:${l.status === 'ruim' ? '#991b1b' : l.status === 'medio' ? '#92400e' : '#166534'}">${fmtNum(l.tonMediaViagem, 2)}</td>
-            <td class="r nowrap">${fmtNum(l.kmMedioViagem, 1)}</td>
-            <td class="r nowrap">${fmtNum(l.tonHora, 2)}</td>
-            <td class="r nowrap">${fmtNum(l.pctMediaTonViag, 0)}%</td>
-            <td class="c">${statusBadge(l.status)}</td>
-            <td class="r nowrap" style="font-weight:700;color:${prioridade === 1 ? '#ef4444' : prioridade === 2 ? '#f59e0b' : '#64748b'}">P${prioridade}</td>
-          </tr>`;
-        }).join('')}
-        </tbody>
-      </table>
-      <div style="font-size:6px;color:#94a3b8;margin-top:4px">Referência t/viag do dia: ${fmtNum(mediaTonViag, 2)} t · P1 = ação imediata · P2 = monitorar · P3 = dentro da média</div>
-    </div>`;
-}
-
-function tabelaGrupoEficienciaHtml(titulo: string, linhas: LinhaOperacaoGrupo[], mediaTonViag: number): string {
-  const lista = linhas.filter((l) => l.chave && l.chave !== '—' && l.viagens > 0);
-  if (!lista.length) return '';
-
-  const ordenada = [...lista].sort((a, b) => a.tonMediaViagem - b.tonMediaViagem);
-
-  return `
-    <div class="bloco">
-      <div class="bloco-hd">${esc(titulo)}</div>
-      <table class="data">
-        <thead><tr>
-          <th>Grupo</th><th class="c">Viag.</th><th class="r">Ton</th>
-          <th class="r op-h">t/viag</th><th class="c">vs média</th>
-        </tr></thead>
-        <tbody>${ordenada.map((l, i) => {
-          const pct = mediaTonViag > 0 ? (l.tonMediaViagem / mediaTonViag) * 100 : 100;
-          const st = statusVsMediaPdf(pct);
-          return `
-          <tr style="background:${i % 2 === 0 ? '#f8fafc' : '#fff'}">
-            <td style="font-weight:600">${esc(l.chave)}</td>
+            <td style="font-size:6px;color:#64748b">${esc(l.mediaRefLabel || '—')}</td>
             <td class="c">${fmtNum(l.viagens, 0)}</td>
             <td class="r nowrap">${fmtNum(l.toneladas, 1)} t</td>
             <td class="r nowrap" style="font-weight:700">${fmtNum(l.tonMediaViagem, 2)}</td>
-            <td class="c">${statusBadge(st)}</td>
-          </tr>`;
-        }).join('')}
+            <td class="c">${l.pctIdeal != null ? `${fmtNum(l.pctIdeal, 0)}%` : '—'}</td>
+            <td class="c">${statusBadge(l.status)}</td>
+          </tr>`).join('')}
         </tbody>
       </table>
+      <div style="font-size:6px;color:#94a3b8;margin-top:4px">
+        Mini compara com ideal Mini; Toco com Toco. Escala: ${esc(textoEscalaIdealCurto())}.
+      </div>
+    </div>`;
+}
+
+function tabelaGrupoEficienciaHtml(titulo: string, linhas: LinhaEficienciaPlaca[]): string {
+  if (!linhas.length) return '';
+
+  return `
+    <div class="bloco">
+      <div class="bloco-hd">${esc(titulo)} — vs ideal do tipo</div>
+      <table class="data">
+        <thead><tr>
+          <th>Grupo</th><th>Tipo</th><th class="c">Viag.</th><th class="r">Ton</th>
+          <th class="r op-h">t/viag</th><th class="c">% ideal</th><th class="c">Status</th>
+        </tr></thead>
+        <tbody>${linhas.map((l, i) => `
+          <tr style="background:${i % 2 === 0 ? '#f8fafc' : '#fff'}">
+            <td style="font-weight:600">${esc(l.chave)}</td>
+            <td style="font-size:6px;color:#64748b">${esc(l.mediaRefLabel || '—')}</td>
+            <td class="c">${fmtNum(l.viagens, 0)}</td>
+            <td class="r nowrap">${fmtNum(l.toneladas, 1)} t</td>
+            <td class="r nowrap" style="font-weight:700">${fmtNum(l.tonMediaViagem, 2)}</td>
+            <td class="c">${l.pctIdeal != null ? `${fmtNum(l.pctIdeal, 0)}%` : '—'}</td>
+            <td class="c">${statusBadge(l.status)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+      <div style="font-size:6px;color:#94a3b8;margin-top:4px">
+        Motorista de Mini é julgado pelo ideal Mini — não pela média geral do dia.
+      </div>
     </div>`;
 }
 
@@ -367,11 +334,26 @@ function blocoOperacao(opts: {
   dataIso: string;
   kpisOperacao?: KpiValorPdf[];
   placasReserva?: string[];
+  capacidade?: ResumoCapacidadeDia | null;
+  eficienciaOpts?: OptsEficienciaContrato;
 }): string {
   const op = opts.operacao.resumo;
   const insights = gerarInsightsOperacao(opts.operacao, opts.placasReserva);
-  const eficiencia = montarEficienciaPlacas(opts.operacao, opts.placasReserva);
-  const mediaTonViag = op.tonMediaColeta;
+  // Fallback tipo por placa a partir das viagens PESO 1–4
+  const tipoPorPlaca = new Map<string, TipoCaminhaoPeso>();
+  for (const v of opts.capacidade?.viagens || []) {
+    if (!v.tipo || !v.placa) continue;
+    const k = v.placa.trim().toUpperCase();
+    if (!tipoPorPlaca.has(k)) tipoPorPlaca.set(k, v.tipo);
+  }
+  const effOpts: OptsEficienciaContrato = {
+    ...opts.eficienciaOpts,
+    tipoPorPlaca,
+  };
+  const eficiencia = montarEficienciaPlacas(opts.operacao, opts.placasReserva, effOpts);
+  const eficienciaMotorista = montarEficienciaGrupos(opts.operacao.porMotorista, effOpts);
+  const eficienciaTurno = montarEficienciaGrupos(opts.operacao.porTurno, effOpts);
+  const eficienciaRegional = montarEficienciaGrupos(opts.operacao.porRegional, effOpts);
   const frota = resumirFrotaOperacao(
     opts.operacao.porPlaca.filter((p) => p.chave !== '—').map((p) => p.chave),
     opts.placasReserva,
@@ -383,7 +365,28 @@ function blocoOperacao(opts: {
   const temTurno = opts.operacao.porTurno.some((l) => l.chave !== '—' && l.viagens > 0);
   const temRegional = opts.operacao.porRegional.some((l) => l.chave !== '—' && l.viagens > 0);
   const temMotorista = opts.operacao.porMotorista.some((l) => l.chave !== '—' && l.viagens > 0);
-  const temTipo = opts.operacao.porTipoCaminhao.some((l) => l.viagens > 0);
+  const temTipo = opts.operacao.porTipoCaminhao.some((l) => l.viagens > 0)
+    || (opts.capacidade?.porTipo?.length ?? 0) > 0;
+
+  // Insights da escala ideal (quando há PESO 1–4)
+  const insightsCap: InsightOperacao[] = [];
+  if (opts.capacidade && opts.capacidade.viagensComPeso > 0) {
+    const c = opts.capacidade;
+    if (c.pessimo > 0 || c.ruim > 0) {
+      insightsCap.push({
+        severidade: c.pessimo > 0 ? 'critico' : 'atencao',
+        titulo: 'Viagens fora da faixa ótima do ideal',
+        texto: `${fmtNum(c.pessimo, 0)} péssima(s) · ${fmtNum(c.ruim, 0)} ruim · ${fmtNum(c.otimo, 0)} ótima(s). Escala: ${textoEscalaIdealCurto()}.`,
+      });
+    } else {
+      insightsCap.push({
+        severidade: 'info',
+        titulo: 'Viagens dentro da faixa ótima',
+        texto: `${fmtNum(c.otimo, 0)} viagem(ns) entre ${PCT_IDEAL_MIN}–${PCT_IDEAL_MAX}% do peso ideal do tipo.`,
+      });
+    }
+  }
+  const insightsAll = [...insightsCap, ...insights].slice(0, 6);
 
   return `
   <div class="banner op">
@@ -394,12 +397,15 @@ function blocoOperacao(opts: {
   </div>
 
   ${heroOperacaoHtml(op)}
-  ${insightsHtml(insights)}
+  ${insightsHtml(insightsAll)}
+
+  ${blocoDesempenhoPorTipoHtml(opts.capacidade)}
+  ${blocoRankingViagensHtml(opts.capacidade)}
 
   <div class="sec">Onde está o volume do dia</div>
   <table class="chart-tbl">
     <tr>
-      <td colspan="2">${temTipo ? graficoPizzaTipoOpHtml(opts.operacao.porTipoCaminhao, op.viagens) : ''}</td>
+      <td colspan="2">${temTipo && opts.operacao.porTipoCaminhao.length ? graficoPizzaTipoOpHtml(opts.operacao.porTipoCaminhao, op.viagens) : ''}</td>
     </tr>
     ${temTurno || temRegional ? `
     <tr>
@@ -408,25 +414,24 @@ function blocoOperacao(opts: {
     </tr>` : ''}
   </table>
 
-  ${graficoOperacaoPlacaHtml(eficiencia, mediaTonViag)}
-  ${tabelaEficienciaPlacaHtml(eficiencia, mediaTonViag)}
+  ${tabelaEficienciaPlacaHtml(eficiencia)}
 
-  <div class="sec">Comparativo por dimensão</div>
+  <div class="sec">Comparativo por dimensão (vs ideal do tipo)</div>
   <table class="layout2-tbl">
     <tr>
-      <td>${temTurno ? tabelaGrupoEficienciaHtml('Turno — eficiência', opts.operacao.porTurno, mediaTonViag) : ''}</td>
-      <td>${temRegional ? tabelaGrupoEficienciaHtml('Regional — eficiência', opts.operacao.porRegional, mediaTonViag) : ''}</td>
+      <td>${temTurno ? tabelaGrupoEficienciaHtml('Turno — eficiência', eficienciaTurno) : ''}</td>
+      <td>${temRegional ? tabelaGrupoEficienciaHtml('Regional — eficiência', eficienciaRegional) : ''}</td>
     </tr>
     ${temMotorista ? `
     <tr>
-      <td colspan="2">${tabelaGrupoEficienciaHtml('Motorista — eficiência', opts.operacao.porMotorista, mediaTonViag)}</td>
+      <td colspan="2">${tabelaGrupoEficienciaHtml('Motorista — eficiência', eficienciaMotorista)}</td>
     </tr>` : ''}
   </table>
 
   ${kpisHtml(opts.kpisOperacao || [], 'Indicadores complementares')}`;
 }
 
-/** PDF do dia — aba Operação (mesmo HTML do frontend). */
+/** PDF do dia — aba Operação (alinhado ao frontend: ranking por viagem + escala ideal). */
 export function gerarHtmlRelatorioDia(opts: {
   aba: 'operacao';
   servicoNome: string;
@@ -435,6 +440,11 @@ export function gerarHtmlRelatorioDia(opts: {
   operacao: OperacaoDiaAnalise;
   kpisOperacao?: KpiValorPdf[];
   placasReserva?: string[];
+  /** PESO 1–4 tipados + ideal do contrato — ranking viagem a viagem. */
+  capacidade?: ResumoCapacidadeDia | null;
+  volumeL?: OptsEficienciaContrato['volumeL'];
+  densidadeResiduoKgL?: number | null;
+  densidadeKgL?: OptsEficienciaContrato['densidadeKgL'];
   geradoEm?: Date;
 }): string {
   const { servicoNome, dataIso, diaSemana, operacao } = opts;
@@ -450,6 +460,12 @@ export function gerarHtmlRelatorioDia(opts: {
     dataIso,
     kpisOperacao: opts.kpisOperacao,
     placasReserva: opts.placasReserva,
+    capacidade: opts.capacidade,
+    eficienciaOpts: {
+      volumeL: opts.volumeL,
+      densidadeResiduoKgL: opts.densidadeResiduoKgL,
+      densidadeKgL: opts.densidadeKgL,
+    },
   });
   const resumo = operacao.resumo;
   const footerExtra = `${fmtNum(resumo.viagens, 0)} viagem${resumo.viagens !== 1 ? 's' : ''}`;

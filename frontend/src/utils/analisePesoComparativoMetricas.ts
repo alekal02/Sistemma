@@ -2,6 +2,35 @@ import type { AnalisePesoColeta } from '../services/servicoService';
 
 const FAIXA_CORES = ['vermelho', 'amarelo', 'verde', 'amarelo', 'vermelho'] as const;
 
+/** Padrão alinhado ao backend (DENSIDADE_OTIMA_PADRAO). */
+export const DENSIDADE_RESIDUO_PADRAO = 0.55;
+
+/** Recalcula peso ideal e resultado do cenário com nova densidade (kg/L). */
+export function aplicarDensidadeNaAnalisePeso(
+  analise: AnalisePesoColeta,
+  densidadeKgL: number,
+): AnalisePesoColeta {
+  const densidadeOtima = densidadeKgL > 0
+    ? Math.round(densidadeKgL * 1000) / 1000
+    : DENSIDADE_RESIDUO_PADRAO;
+  const mediaIdealKg = Math.round(analise.caixaMediaKg * densidadeOtima * 100) / 100;
+  const perdaTon = Math.round(
+    (((analise.pesoMedioKg - mediaIdealKg) * analise.numeroViagens) / 1000) * 100,
+  ) / 100;
+  return {
+    ...analise,
+    densidadeOtima,
+    mediaIdealKg,
+    perdaTon,
+  };
+}
+
+export function parseDensidadeResiduoInput(raw: string): number | null {
+  const n = Number(String(raw || '').replace(',', '.').trim());
+  if (!Number.isFinite(n) || n <= 0 || n > 5) return null;
+  return Math.round(n * 1000) / 1000;
+}
+
 export type SecaoPeso = 'operacao' | 'faixa' | 'frota' | 'cenario';
 
 export interface LinhaMetricaPeso {

@@ -12,24 +12,69 @@
    URL: /contratos/:id
    ============================================ */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   FiPlus, FiTrash2, FiArrowLeft,
-  FiAlertCircle, FiChevronDown, FiChevronRight, FiCheck,
+  FiAlertCircle, FiCheck, FiX,
   FiDatabase, FiBarChart2, FiRefreshCw,
   FiClock, FiSettings,
-  FiUpload, FiInfo, FiDollarSign, FiTruck, FiUsers,
+  FiUpload, FiDollarSign, FiTruck, FiUsers,
 } from 'react-icons/fi';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { useBreadcrumbs } from '../contexts/BreadcrumbContext';
-import ServicoMiniFlow from '../components/ServicoMiniFlow';
 import type { EtapasStatus } from '../components/ServicoMiniFlow';
+import ContratoOperacaoUnificada from '../components/ContratoOperacaoUnificada';
+import DataTable from '../components/DataTable';
 import { TIPOS_SERVICO, TIPOS_SERVICO_LABELS, TIPOS_SERVICO_OPCOES, TIPOS_SERVICO_META } from '../types';
 import type { TipoServico } from '../types';
 import contractService from '../services/contractService';
 import servicoService from '../services/servicoService';
+
+const ORDEM_TIPOS_PADRAO = [
+  'coleta_caminhao',
+  'rocadeira',
+  'capina',
+  'varricao',
+  'poda',
+  'pintura_meio_fio',
+  'remocao',
+] as const;
+
+const TIPOS_PADRAO_CONTRATO = new Set<string>(ORDEM_TIPOS_PADRAO);
+
+/** Um card por tipo padrão (mantém o com mais registros); extras (geral etc.) passam todos. */
+function deduplicarServicosPadrao<T extends { tipo: string; nome?: string; totalRegistros?: number }>(lista: T[]): T[] {
+  const vistos = new Map<string, T>();
+  const extras: T[] = [];
+  for (const s of lista) {
+    if (!TIPOS_PADRAO_CONTRATO.has(s.tipo)) {
+      extras.push(s);
+      continue;
+    }
+    const atual = vistos.get(s.tipo);
+    if (!atual) {
+      vistos.set(s.tipo, s);
+      continue;
+    }
+    const regAtual = Number(atual.totalRegistros || 0);
+    const regNovo = Number(s.totalRegistros || 0);
+    if (regNovo > regAtual) vistos.set(s.tipo, s);
+  }
+  return ordenarServicosPadrao([...vistos.values(), ...extras]);
+}
+
+function ordenarServicosPadrao<T extends { tipo: string; nome?: string }>(lista: T[]): T[] {
+  return [...lista].sort((a, b) => {
+    const ia = ORDEM_TIPOS_PADRAO.indexOf(a.tipo as typeof ORDEM_TIPOS_PADRAO[number]);
+    const ib = ORDEM_TIPOS_PADRAO.indexOf(b.tipo as typeof ORDEM_TIPOS_PADRAO[number]);
+    const ra = ia === -1 ? 999 : ia;
+    const rb = ib === -1 ? 999 : ib;
+    if (ra !== rb) return ra - rb;
+    return String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR');
+  });
+}
 import {
   extrairPlacasReservaContrato,
   parsePlacasReservaTexto,
@@ -41,13 +86,19 @@ import {
   parseListaNomesTexto,
   parseListaPlacasTexto,
 } from '../utils/configOperacional';
+import { DENSIDADE_RESIDUO_PADRAO, parseDensidadeResiduoInput } from '../utils/analisePesoComparativoMetricas';
 import {
   TIPOS_LIMITE_CAMINHAO,
   LABEL_TIPO_CAMINHAO,
   PESO_MAX_KG_PADRAO,
   VOLUME_L_PADRAO,
-  mapaLimitesParaForm,
+  calcularPesoIdealKg,
+  formDensidadesParaMapa,
   formLimitesParaMapa,
+  mapaDensidadesParaForm,
+  mapaLimitesParaForm,
+  resolverDensidadePorTipo,
+  resolverDensidadeResiduoKgL,
   type TipoLimiteCaminhao,
 } from '../utils/limitesCaminhaoContrato';
 import '../styles/FluxoUnificado.css';
@@ -61,6 +112,7 @@ interface Servico {
   descricao: string | null;
   tipo: string;
   criadoEm: string;
+  configFaturamento?: unknown;
 }
 
 interface Contrato {
@@ -81,6 +133,8 @@ interface Contrato {
     coletores?: string[];
     pesoMaximoKg?: { MINI?: number; TOCO?: number; BASCULANTE?: number; TRUCK?: number };
     volumeL?: { MINI?: number; TOCO?: number; BASCULANTE?: number; TRUCK?: number };
+    densidadeResiduoKgL?: number | null;
+    densidadeKgL?: { MINI?: number; TOCO?: number; BASCULANTE?: number; TRUCK?: number };
   } | null;
 }
 
@@ -240,7 +294,12 @@ export default function ContratoDetalhe() {
   const [volumeForm, setVolumeForm] = useState<Record<TipoLimiteCaminhao, string>>(
     () => mapaLimitesParaForm(null, VOLUME_L_PADRAO),
   );
+  const [densidadeForm, setDensidadeForm] = useState(String(DENSIDADE_RESIDUO_PADRAO).replace('.', ','));
+  const [densidadePorTipoForm, setDensidadePorTipoForm] = useState<Record<TipoLimiteCaminhao, string>>(
+    () => mapaDensidadesParaForm(null, DENSIDADE_RESIDUO_PADRAO),
+  );
   const [salvandoLimites, setSalvandoLimites] = useState(false);
+  const [salvandoDensidade, setSalvandoDensidade] = useState(false);
 
   // ─── Valores (modal de criação) ───
   const [tipoValor, setTipoValor] = useState<TipoValor>('caminhao');
@@ -256,27 +315,45 @@ export default function ContratoDetalhe() {
   const [valorPorEquipe, setValorPorEquipe] = useState('');
 
   // ─── Serviço ───
-  const [servicoExpandidoId, setServicoExpandidoId] = useState<string | null>(null);
   const [excluindoId, setExcluindoId] = useState<string | null>(null);
-  const [servicoExclusaoInfo, setServicoExclusaoInfo] = useState<any>(null);
+  const [excluindoServico, setExcluindoServico] = useState(false);
+  const [servicoExclusaoInfo, setServicoExclusaoInfo] = useState<{
+    nome: string;
+    tipo: string;
+    tipoLabel: string;
+    qtdPlanilhas: number;
+    qtdRegistros: number;
+    temKpis: boolean;
+    temDados: boolean;
+  } | null>(null);
 
   // ═══ CRIAÇÃO — Modal rápido ═══
   const [modalCriacaoAberto, setModalCriacaoAberto] = useState(false);
   const [nomeServico, setNomeServico] = useState('');
   const [tipoSelecionado, setTipoSelecionado] = useState<string>(TIPOS_SERVICO.COLETA_CAMINHAO);
   const [salvandoServico, setSalvandoServico] = useState(false);
+  const [configAberta, setConfigAberta] = useState(false);
+  const [servicoRegistrosId, setServicoRegistrosId] = useState<string | null>(null);
 
   const { setBreadcrumbs } = useBreadcrumbs();
 
   /* ═══ Carregar dados ═══ */
-  const carregarDados = useCallback(async () => {
+  const carregarDados = useCallback(async (opts?: { silencioso?: boolean }) => {
     if (!id) return;
-    setCarregando(true);
+    if (!opts?.silencioso) setCarregando(true);
     try {
-      const [contratoData, lista] = await Promise.all([
+      // Garante todos os tipos padrão do contrato antes de listar
+      try {
+        await servicoService.garantirServicosPadrao(id);
+      } catch {
+        /* contrato inexistente ou rede — listagem abaixo trata */
+      }
+
+      const [contratoData, listaRaw] = await Promise.all([
         contractService.buscar(id),
         servicoService.listarServicosContrato(id),
       ]);
+      const lista = Array.isArray(listaRaw) ? listaRaw : (listaRaw as any)?.servicos || [];
 
       setContrato(contratoData);
       setTextoPlacasReserva(placasReservaParaTexto(extrairPlacasReservaContrato(contratoData)));
@@ -286,6 +363,17 @@ export default function ContratoDetalhe() {
       setTextoColetores(listaParaTexto(cadastro.coletores));
       setPesoMaxForm(mapaLimitesParaForm(contratoData.configOperacional?.pesoMaximoKg, PESO_MAX_KG_PADRAO));
       setVolumeForm(mapaLimitesParaForm(contratoData.configOperacional?.volumeL, VOLUME_L_PADRAO));
+      {
+        const dens = contratoData.configOperacional?.densidadeResiduoKgL;
+        setDensidadeForm(
+          dens && dens > 0
+            ? String(dens).replace('.', ',')
+            : String(DENSIDADE_RESIDUO_PADRAO).replace('.', ','),
+        );
+        setDensidadePorTipoForm(
+          mapaDensidadesParaForm(contratoData.configOperacional?.densidadeKgL, dens),
+        );
+      }
 
       const resultados = await Promise.allSettled(
         lista.map(async (s: Servico) => {
@@ -324,13 +412,15 @@ export default function ContratoDetalhe() {
         );
 
         setServicos(
-          resultados.map(r => (r.status === 'fulfilled' ? r.value : {
-            ...(r.reason as any),
-            etapasStatus: { upload: 'pending', indicadoresAuto: 'pending', revisao: 'pending', config: 'pending' },
-            planilhas: [],
-            totalRegistros: 0,
-            ultimoUpload: null,
-          }))
+          deduplicarServicosPadrao(
+            resultados.map(r => (r.status === 'fulfilled' ? r.value : {
+              ...(r.reason as any),
+              etapasStatus: { upload: 'pending', indicadoresAuto: 'pending', revisao: 'pending', config: 'pending' },
+              planilhas: [],
+              totalRegistros: 0,
+              ultimoUpload: null,
+            })),
+          ),
         );
     } catch {
       adicionarToast('Erro ao carregar dados', 'error');
@@ -374,25 +464,93 @@ export default function ContratoDetalhe() {
     }
   };
 
+  const densFormNum = useMemo(() => {
+    const n = Number(String(densidadeForm || '').replace(',', '.'));
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }, [densidadeForm]);
+
+  const pesosIdeaisForm = useMemo(() => {
+    const densMapa = formDensidadesParaMapa(densidadePorTipoForm);
+    const out = {} as Record<TipoLimiteCaminhao, number>;
+    for (const tipo of TIPOS_LIMITE_CAMINHAO) {
+      const vol = Number(String(volumeForm[tipo] || '').replace(',', '.'));
+      const dens = resolverDensidadePorTipo(tipo, {
+        global: densFormNum,
+        porTipo: densMapa,
+      });
+      out[tipo] = calcularPesoIdealKg(
+        Number.isFinite(vol) && vol > 0 ? vol : VOLUME_L_PADRAO[tipo],
+        dens,
+      );
+    }
+    return out;
+  }, [volumeForm, densFormNum, densidadePorTipoForm]);
+
   const salvarLimitesCaminhao = async () => {
     if (!id || !contrato) return;
     setSalvandoLimites(true);
     try {
+      const densParsed = parseDensidadeResiduoInput(densidadeForm);
       const atualizado = await contractService.atualizar(id, {
         configOperacional: {
           ...(contrato.configOperacional || {}),
           pesoMaximoKg: formLimitesParaMapa(pesoMaxForm),
           volumeL: formLimitesParaMapa(volumeForm),
+          densidadeKgL: formDensidadesParaMapa(densidadePorTipoForm),
+          ...(densParsed != null ? { densidadeResiduoKgL: densParsed } : {}),
         },
       });
       setContrato(atualizado);
       setPesoMaxForm(mapaLimitesParaForm(atualizado.configOperacional?.pesoMaximoKg, PESO_MAX_KG_PADRAO));
       setVolumeForm(mapaLimitesParaForm(atualizado.configOperacional?.volumeL, VOLUME_L_PADRAO));
-      adicionarToast('Limites de caminhão salvos no contrato', 'success');
+      {
+        const dens = atualizado.configOperacional?.densidadeResiduoKgL;
+        if (dens && dens > 0) setDensidadeForm(String(dens).replace('.', ','));
+        setDensidadePorTipoForm(
+          mapaDensidadesParaForm(atualizado.configOperacional?.densidadeKgL, dens),
+        );
+      }
+      adicionarToast('Limites, densidades e pesos ideais do contrato salvos', 'success');
     } catch {
       adicionarToast('Erro ao salvar limites de caminhão', 'error');
     } finally {
       setSalvandoLimites(false);
+    }
+  };
+
+  const salvarDensidadeResiduo = async () => {
+    if (!id || !contrato) return;
+    const densParsed = parseDensidadeResiduoInput(densidadeForm);
+    if (densParsed == null) {
+      adicionarToast('Densidade inválida (use valor entre 0,01 e 5 kg/L)', 'warning');
+      return;
+    }
+    setSalvandoDensidade(true);
+    try {
+      const atualizado = await contractService.atualizar(id, {
+        configOperacional: {
+          ...(contrato.configOperacional || {}),
+          densidadeResiduoKgL: densParsed,
+        },
+      });
+      setContrato(atualizado);
+      const dens = atualizado.configOperacional?.densidadeResiduoKgL;
+      setDensidadeForm(
+        dens && dens > 0
+          ? String(dens).replace('.', ',')
+          : String(DENSIDADE_RESIDUO_PADRAO).replace('.', ','),
+      );
+      setDensidadePorTipoForm(
+        mapaDensidadesParaForm(atualizado.configOperacional?.densidadeKgL, dens),
+      );
+      adicionarToast(
+        `Densidade padrão ${String(densParsed).replace('.', ',')} kg/L salva (fallback dos tipos)`,
+        'success',
+      );
+    } catch {
+      adicionarToast('Erro ao salvar densidade do resíduo', 'error');
+    } finally {
+      setSalvandoDensidade(false);
     }
   };
 
@@ -570,59 +728,72 @@ export default function ContratoDetalhe() {
   };
 
   /* ═══ Excluir serviço ═══ */
-  const prepararExclusao = async (servico: ServicoComStatus) => {
+  const TEXTO_CONFIRMA_EXCLUSAO = 'EXCLUIR';
+
+  const fecharModalExclusao = () => {
+    if (excluindoServico) return;
+    setExcluindoId(null);
+    setServicoExclusaoInfo(null);
+    setConfirmacaoExclusao('');
+  };
+
+  const prepararExclusao = (servico: ServicoComStatus) => {
+    const qtdPlanilhas = servico.planilhas?.length || 0;
+    const qtdRegistros = servico.totalRegistros || 0;
     setExcluindoId(servico.id);
+    setConfirmacaoExclusao('');
     setServicoExclusaoInfo({
       nome: servico.nome,
-      qtdPlanilhas: servico.planilhas?.length || 0,
-      qtdRegistros: servico.totalRegistros || 0,
-      qtdKpis: servico.etapasStatus?.config === 'done' ? 'Sim' : 'Nenhum',
+      tipo: servico.tipo,
+      tipoLabel: TIPOS_SERVICO_LABELS[servico.tipo as TipoServico] || servico.tipo,
+      qtdPlanilhas,
+      qtdRegistros,
+      temKpis: servico.etapasStatus?.config === 'done',
+      temDados: qtdPlanilhas > 0 || qtdRegistros > 0,
     });
   };
 
   const [confirmacaoExclusao, setConfirmacaoExclusao] = useState('');
 
+  const confirmacaoExclusaoOk = Boolean(
+    servicoExclusaoInfo
+    && confirmacaoExclusao.trim().toUpperCase() === TEXTO_CONFIRMA_EXCLUSAO,
+  );
+
   const excluirServico = async () => {
-    if (!excluindoId) return;
-    if (confirmacaoExclusao !== servicoExclusaoInfo?.nome) {
-      adicionarToast('Digite o nome do serviço para confirmar', 'warning');
+    if (!excluindoId || !servicoExclusaoInfo || !id) return;
+    if (!confirmacaoExclusaoOk) {
+      adicionarToast(
+        servicoExclusaoInfo.temDados
+          ? `Digite ${TEXTO_CONFIRMA_EXCLUSAO} para confirmar`
+          : 'Confirme a exclusão',
+        'warning',
+      );
       return;
     }
+    setExcluindoServico(true);
     try {
-      await servicoService.excluirServico(id, excluindoId);
-      adicionarToast('Serviço excluído!', 'success');
-        if (servicoExpandidoId === excluindoId) setServicoExpandidoId(null);
-        setExcluindoId(null);
-        setServicoExclusaoInfo(null);
-        setConfirmacaoExclusao('');
-        await carregarDados();
-    } catch { adicionarToast('Erro ao excluir', 'error'); }
+      const resultado = await servicoService.excluirServico(id, excluindoId);
+      const uploads = resultado?.uploadsRemovidos ?? servicoExclusaoInfo.qtdPlanilhas;
+      const regs = resultado?.registrosRemovidos ?? servicoExclusaoInfo.qtdRegistros;
+      adicionarToast(
+        regs > 0 || uploads > 0
+          ? `“${servicoExclusaoInfo.nome}” excluído · ${uploads} planilha(s) e ${regs.toLocaleString('pt-BR')} registro(s) removidos`
+          : `“${servicoExclusaoInfo.nome}” excluído`,
+        'success',
+      );
+      if (servicoRegistrosId === excluindoId) setServicoRegistrosId(null);
+      setExcluindoId(null);
+      setServicoExclusaoInfo(null);
+      setConfirmacaoExclusao('');
+      await carregarDados();
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      adicionarToast(msg || 'Erro ao excluir serviço', 'error');
+    } finally {
+      setExcluindoServico(false);
+    }
   };
-
-  /* ═══ Status change handler ═══ */
-  const handleStatusChange = useCallback((servicoId: string, status: EtapasStatus) => {
-    setServicos(prev => prev.map(s => s.id === servicoId ? { ...s, etapasStatus: status } : s));
-  }, []);
-
-  const handlePlanilhasChange = useCallback((
-    servicoId: string,
-    info: { totalRegistros: number; planilhas: PlanilhaItem[]; temUpload: boolean },
-  ) => {
-    setServicos(prev => prev.map(s => {
-      if (s.id !== servicoId) return s;
-      return {
-        ...s,
-        totalRegistros: info.totalRegistros,
-        planilhas: info.planilhas,
-        ultimoUpload: info.planilhas[0]?.criadoEm || null,
-        etapasStatus: {
-          ...s.etapasStatus,
-          upload: info.temUpload ? 'done' : 'pending',
-          revisao: info.temUpload ? 'done' : 'pending',
-        } satisfies EtapasStatus,
-      };
-    }));
-  }, []);
 
   /* ═══ Render: Carregando ═══ */
   if (carregando) {
@@ -651,136 +822,101 @@ export default function ContratoDetalhe() {
 
   /* ═══ Render principal ═══ */
   return (
-    <div className="fluxo-unificado">
-      {/* ══ CABEÇALHO DO CONTRATO ══ */}
-      <div className="topo-contrato" style={{ marginBottom: '0.5rem' }}>
-        <div className="topo-info">
-          <button className="btn-link" onClick={() => navigate('/contratos')}>
+    <div className="fluxo-unificado contrato-page-clean">
+      <header className="contrato-page-head">
+        <div className="contrato-page-head-row">
+          <button type="button" className="btn-link" onClick={() => navigate('/contratos')}>
             <FiArrowLeft size={14} /> Contratos
           </button>
           <h1>{contrato.numeroContrato}</h1>
           <span className={'status-badge ' + contrato.status}>{contrato.status}</span>
-          <button className="btn btn-sm btn-ghost" onClick={carregarDados} title="Recarregar">
+          <button type="button" className="btn btn-sm btn-ghost" onClick={() => void carregarDados()} title="Recarregar">
             <FiRefreshCw size={12} />
           </button>
         </div>
-      </div>
+        <div className="contrato-page-meta">
+          <span><FiDatabase size={12} /> {totalServicos} serviços</span>
+          <span><FiBarChart2 size={12} /> {totalRegistros.toLocaleString('pt-BR')} registros</span>
+          <span><FiUpload size={12} /> {totalPlanilhas} planilhas</span>
+          <span>
+            <FiClock size={12} />{' '}
+            {ultimoUploadGeral ? new Date(ultimoUploadGeral).toLocaleDateString('pt-BR') : 'sem upload'}
+          </span>
+        </div>
+      </header>
 
-      {/* ══ Resumo compacto ══ */}
-      <div style={{
-        display: 'flex', gap: '0.5rem', marginBottom: '0.75rem',
-        flexWrap: 'wrap', alignItems: 'stretch',
-      }}>
-        <div style={{
-          flex: 1, minWidth: 120, background: '#fff', borderRadius: '8px',
-          padding: '0.55rem 0.75rem', border: '1px solid #e2e8f0',
-          borderTop: '3px solid #6366f1', boxShadow: '0 1px 3px rgba(0,0,0,0.03)',
-        }}>
-          <div style={{ fontSize: '0.65rem', color: '#64748b', fontWeight: 600, textTransform: 'uppercase', marginBottom: '0.05rem' }}>
-            <FiDatabase size={10} style={{ marginRight: '0.2rem' }} /> Serviços
-          </div>
-          <div style={{ fontSize: '1.3rem', fontWeight: 800, color: '#0f172a' }}>{totalServicos}</div>
+      {id && totalServicos > 0 && (
+        <ContratoOperacaoUnificada
+          contractId={id}
+          servicos={servicos}
+          tarifasContrato={contrato}
+          onRefresh={() => { void carregarDados({ silencioso: true }); }}
+        />
+      )}
+
+      {temAlertas && (
+        <div className="contrato-page-alert">
+          <FiAlertCircle size={14} />
+          {[
+            servicosUploadPendente > 0 ? `${servicosUploadPendente} sem planilha` : null,
+            servicosSemKpi > 0 ? `${servicosSemKpi} sem KPIs` : null,
+            servicosDesatualizados > 0 ? `${servicosDesatualizados} desatualizados` : null,
+          ].filter(Boolean).join(' · ')}
         </div>
-        <div style={{
-          flex: 1, minWidth: 120, background: '#fff', borderRadius: '8px',
-          padding: '0.55rem 0.75rem', border: '1px solid #e2e8f0',
-          borderTop: '3px solid #14b8a6', boxShadow: '0 1px 3px rgba(0,0,0,0.03)',
-        }}>
-          <div style={{ fontSize: '0.65rem', color: '#64748b', fontWeight: 600, textTransform: 'uppercase', marginBottom: '0.05rem' }}>
-            <FiDatabase size={10} style={{ marginRight: '0.2rem' }} /> Registros
-          </div>
-          <div style={{ fontSize: '1.3rem', fontWeight: 800, color: '#0f172a' }}>
-            {totalRegistros.toLocaleString('pt-BR')}
-          </div>
-        </div>
-        <div style={{
-          flex: 1, minWidth: 120, background: '#fff', borderRadius: '8px',
-          padding: '0.55rem 0.75rem', border: '1px solid #e2e8f0',
-          borderTop: '3px solid #f59e0b', boxShadow: '0 1px 3px rgba(0,0,0,0.03)',
-        }}>
-          <div style={{ fontSize: '0.65rem', color: '#64748b', fontWeight: 600, textTransform: 'uppercase', marginBottom: '0.05rem' }}>
-            <FiClock size={10} style={{ marginRight: '0.2rem' }} /> Último Upload
-          </div>
-          <div style={{ fontSize: '1.1rem', fontWeight: 800, color: '#0f172a' }}>
-            {ultimoUploadGeral
-              ? new Date(ultimoUploadGeral).toLocaleDateString('pt-BR')
-              : '—'}
-          </div>
-        </div>
-        <div style={{
-          flex: 1, minWidth: 80, background: '#fff', borderRadius: '8px',
-          padding: '0.55rem 0.75rem', border: '1px solid #e2e8f0',
-          borderTop: '3px solid #a855f7', boxShadow: '0 1px 3px rgba(0,0,0,0.03)',
-        }}>
-          <div style={{ fontSize: '0.65rem', color: '#64748b', fontWeight: 600, textTransform: 'uppercase', marginBottom: '0.05rem' }}>
-            <FiUpload size={10} style={{ marginRight: '0.2rem' }} /> Planilhas
-          </div>
-          <div style={{ fontSize: '1.3rem', fontWeight: 800, color: '#0f172a' }}>{totalPlanilhas}</div>
-        </div>
-        <div style={{
-          flex: 1.4, minWidth: 200, background: '#fff', borderRadius: '8px',
-          padding: '0.55rem 0.75rem', border: '1px solid #e2e8f0',
-          borderTop: '3px solid #0d9488', boxShadow: '0 1px 3px rgba(0,0,0,0.03)',
-        }}>
-          <div style={{ fontSize: '0.65rem', color: '#64748b', fontWeight: 600, textTransform: 'uppercase', marginBottom: '0.25rem' }}>
-            <FiClock size={10} style={{ marginRight: '0.2rem' }} /> Ciclo de medição
-          </div>
+      )}
+
+      {/* Configurações avançadas — recolhidas por padrão */}
+      <section className="contrato-config-panel">
+        <button
+          type="button"
+          className="contrato-config-toggle"
+          onClick={() => setConfigAberta((v) => !v)}
+          aria-expanded={configAberta}
+        >
+          <span>
+            <FiSettings size={15} />
+            Configurações do contrato
+            <small>Ciclo, frota, limites e cadastro operacional</small>
+          </span>
+          <span className="contrato-hub-collapse-chevron">{configAberta ? '−' : '+'}</span>
+        </button>
+        {configAberta && (
+          <div className="contrato-config-body">
+      <div className="contrato-config-grid-topo">
+        <div className="contrato-config-mini">
+          <label>
+            <FiClock size={12} /> Ciclo de medição
+          </label>
           <select
             value={contrato.diaInicioCiclo ?? 1}
             disabled={salvandoCiclo}
-            onChange={(e) => salvarDiaInicioCiclo(Number(e.target.value))}
-            style={{
-              width: '100%', fontSize: '0.8rem', fontWeight: 600,
-              border: '1px solid #e2e8f0', borderRadius: '6px', padding: '0.3rem 0.4rem',
-              color: '#0f172a', background: '#f8fafc',
-            }}
+            onChange={(e) => void salvarDiaInicioCiclo(Number(e.target.value))}
           >
             <option value={1}>Dia 1 — mês civil</option>
-            {Array.from({ length: 27 }, (_, i) => i + 2).map(d => (
+            {Array.from({ length: 27 }, (_, i) => i + 2).map((d) => (
               <option key={d} value={d}>Dia {d} — início do ciclo</option>
             ))}
           </select>
-          <div style={{ fontSize: '0.62rem', color: '#64748b', marginTop: '0.2rem' }}>
-            Usado no comparativo entre contratos
-          </div>
         </div>
-        <div style={{
-          flex: 1.6, minWidth: 220, background: '#fff', borderRadius: '8px',
-          padding: '0.55rem 0.75rem', border: '1px solid #e2e8f0',
-          borderTop: '3px solid #f59e0b', boxShadow: '0 1px 3px rgba(0,0,0,0.03)',
-        }}>
-          <div style={{ fontSize: '0.65rem', color: '#64748b', fontWeight: 600, textTransform: 'uppercase', marginBottom: '0.25rem' }}>
-            <FiTruck size={10} style={{ marginRight: '0.2rem' }} /> Placas reserva
-          </div>
+        <div className="contrato-config-mini contrato-config-mini--wide">
+          <label>
+            <FiTruck size={12} /> Placas reserva
+          </label>
           <textarea
             value={textoPlacasReserva}
             disabled={salvandoPlacasReserva}
             onChange={(e) => setTextoPlacasReserva(e.target.value)}
             placeholder={'ABC1234\nDEF5678'}
             rows={2}
-            style={{
-              width: '100%', fontSize: '0.75rem', fontWeight: 600,
-              border: '1px solid #e2e8f0', borderRadius: '6px', padding: '0.35rem 0.45rem',
-              color: '#0f172a', background: '#f8fafc', resize: 'vertical', minHeight: '44px',
-            }}
           />
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '0.25rem', gap: '0.35rem' }}>
-            <div style={{ fontSize: '0.62rem', color: '#64748b' }}>
-              Uma placa por linha — aparece como RESERVA no relatório operacional
-            </div>
-            <button
-              type="button"
-              onClick={salvarPlacasReserva}
-              disabled={salvandoPlacasReserva}
-              style={{
-                fontSize: '0.65rem', fontWeight: 700, padding: '0.25rem 0.5rem',
-                border: 'none', borderRadius: '5px', cursor: salvandoPlacasReserva ? 'wait' : 'pointer',
-                background: '#f59e0b', color: '#fff', flexShrink: 0,
-              }}
-            >
-              {salvandoPlacasReserva ? 'Salvando…' : 'Salvar'}
-            </button>
-          </div>
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={() => void salvarPlacasReserva()}
+            disabled={salvandoPlacasReserva}
+          >
+            {salvandoPlacasReserva ? 'Salvando…' : 'Salvar placas'}
+          </button>
         </div>
       </div>
 
@@ -795,24 +931,82 @@ export default function ContratoDetalhe() {
           Limites por tipo de caminhão
         </div>
         <div style={{ fontSize: '0.62rem', color: '#64748b', marginBottom: '0.55rem', lineHeight: 1.4 }}>
-          Defina o <strong>peso máximo (kg)</strong> e o <strong>volume da caixa (L)</strong> de cada tipo neste contrato.
-          A <strong>CAIXA MÉDIA (L)</strong> na Visão Geral usa a coluna Volume — média ponderada só dos tipos
-          que existem na frota da planilha (se não houver TOCO nos dados, mudar o volume do TOCO não altera o número).
-          Depois de salvar, clique em <strong>Atualizar</strong> na comparação.
+          Informe o <strong>volume da caixa (L)</strong> e a <strong>densidade (kg/L) por tipo</strong> —
+          o <strong>peso ideal</strong> é <strong>volume × densidade do tipo</strong>
+          (ex.: basculante pode ter densidade menor que compactadores).
+          A densidade padrão abaixo é o fallback. O <strong>peso máx.</strong> é o teto do contrato.
+        </div>
+        <div style={{
+          display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.5rem 0.75rem',
+          marginBottom: '0.55rem', padding: '0.45rem 0.55rem',
+          background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '6px',
+        }}>
+          <label style={{ fontSize: '0.68rem', fontWeight: 700, color: '#92400e' }}>
+            Densidade padrão (fallback) kg/L
+          </label>
+          <input
+            type="text"
+            inputMode="decimal"
+            disabled={salvandoDensidade || salvandoLimites}
+            value={densidadeForm}
+            onChange={(e) => setDensidadeForm(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                void salvarDensidadeResiduo();
+              }
+            }}
+            placeholder={String(DENSIDADE_RESIDUO_PADRAO).replace('.', ',')}
+            title="Usada quando o tipo não tiver densidade própria"
+            style={{
+              width: 90, fontSize: '0.72rem', fontWeight: 700, fontFamily: 'ui-monospace, monospace',
+              border: '1px solid #f59e0b', borderRadius: '6px',
+              padding: '0.3rem 0.45rem', background: '#fff', color: '#92400e', textAlign: 'center',
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => { void salvarDensidadeResiduo(); }}
+            disabled={salvandoDensidade || salvandoLimites}
+            title="Salvar densidade padrão do contrato (fallback)"
+            style={{
+              fontSize: '0.65rem', fontWeight: 700, padding: '0.28rem 0.55rem',
+              border: 'none', borderRadius: '5px',
+              cursor: salvandoDensidade || salvandoLimites ? 'wait' : 'pointer',
+              background: '#d97706', color: '#fff', flexShrink: 0,
+            }}
+          >
+            {salvandoDensidade ? 'Salvando…' : 'Salvar padrão'}
+          </button>
+          <span style={{ fontSize: '0.62rem', color: '#a16207', flex: '1 1 12rem' }}>
+            Fallback se o tipo estiver vazio. Padrão do sistema: {String(DENSIDADE_RESIDUO_PADRAO).replace('.', ',')}.
+            Densidades por tipo ficam na tabela e salvam em <strong>Salvar limites</strong>.
+          </span>
         </div>
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.72rem' }}>
             <thead>
               <tr style={{ background: '#f8fafc', color: '#64748b', textAlign: 'left' }}>
                 <th style={{ padding: '0.35rem 0.4rem', fontWeight: 700 }}>Tipo</th>
-                <th style={{ padding: '0.35rem 0.4rem', fontWeight: 700 }}>Peso máx. (kg)</th>
                 <th style={{ padding: '0.35rem 0.4rem', fontWeight: 700, color: '#b91c1c' }}>
-                  Volume caixa (L) → CAIXA MÉDIA
+                  Volume caixa (L)
                 </th>
+                <th style={{ padding: '0.35rem 0.4rem', fontWeight: 700, color: '#b45309' }}>
+                  Densidade (kg/L)
+                </th>
+                <th style={{ padding: '0.35rem 0.4rem', fontWeight: 700, color: '#7c3aed' }}>
+                  Peso ideal (kg) = vol × dens
+                </th>
+                <th style={{ padding: '0.35rem 0.4rem', fontWeight: 700 }}>Peso máx. (kg)</th>
               </tr>
             </thead>
             <tbody>
-              {TIPOS_LIMITE_CAMINHAO.map((tipo) => (
+              {TIPOS_LIMITE_CAMINHAO.map((tipo) => {
+                const densTipo = resolverDensidadePorTipo(tipo, {
+                  global: densFormNum,
+                  porTipo: formDensidadesParaMapa(densidadePorTipoForm),
+                });
+                return (
                 <tr key={tipo} style={{ borderTop: '1px solid #f1f5f9' }}>
                   <td style={{
                     padding: '0.4rem',
@@ -820,30 +1014,6 @@ export default function ContratoDetalhe() {
                     color: tipo === 'BASCULANTE' ? '#dc2626' : '#0f172a',
                   }}>
                     {LABEL_TIPO_CAMINHAO[tipo]}
-                    {tipo === 'BASCULANTE' && (
-                      <span style={{
-                        marginLeft: '0.35rem', fontSize: '0.58rem', fontWeight: 600,
-                        color: '#991b1b', background: '#fee2e2', padding: '0.1rem 0.35rem', borderRadius: '4px',
-                      }}>
-                        padrão 14.000 kg
-                      </span>
-                    )}
-                  </td>
-                  <td style={{ padding: '0.3rem 0.4rem' }}>
-                    <input
-                      type="number"
-                      min={1}
-                      step={100}
-                      disabled={salvandoLimites}
-                      value={pesoMaxForm[tipo]}
-                      onChange={(e) => setPesoMaxForm((prev) => ({ ...prev, [tipo]: e.target.value }))}
-                      placeholder={String(PESO_MAX_KG_PADRAO[tipo])}
-                      style={{
-                        width: '100%', maxWidth: 140, fontSize: '0.72rem',
-                        border: '1px solid #e2e8f0', borderRadius: '6px',
-                        padding: '0.3rem 0.45rem', background: '#f8fafc', color: '#0f172a',
-                      }}
-                    />
                   </td>
                   <td style={{ padding: '0.3rem 0.4rem' }}>
                     <input
@@ -861,8 +1031,61 @@ export default function ContratoDetalhe() {
                       }}
                     />
                   </td>
+                  <td style={{ padding: '0.3rem 0.4rem' }}>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      disabled={salvandoLimites}
+                      value={densidadePorTipoForm[tipo]}
+                      onChange={(e) => setDensidadePorTipoForm((prev) => ({
+                        ...prev,
+                        [tipo]: e.target.value,
+                      }))}
+                      placeholder={String(resolverDensidadeResiduoKgL(densFormNum)).replace('.', ',')}
+                      title={`Densidade do ${LABEL_TIPO_CAMINHAO[tipo]} (kg/L)`}
+                      style={{
+                        width: '100%', maxWidth: 100, fontSize: '0.72rem', fontWeight: 700,
+                        fontFamily: 'ui-monospace, monospace',
+                        border: '1px solid #fbbf24', borderRadius: '6px',
+                        padding: '0.3rem 0.45rem', background: '#fffbeb', color: '#92400e',
+                        textAlign: 'center',
+                      }}
+                    />
+                  </td>
+                  <td style={{ padding: '0.3rem 0.4rem' }}>
+                    <div
+                      title={`Volume ${volumeForm[tipo] || VOLUME_L_PADRAO[tipo]} L × densidade ${String(densTipo).replace('.', ',')} kg/L`}
+                      style={{
+                        width: '100%', maxWidth: 140, fontSize: '0.78rem', fontWeight: 800,
+                        fontFamily: 'ui-monospace, monospace', color: '#5b21b6',
+                        background: '#f5f3ff', border: '1px solid #c4b5fd', borderRadius: '6px',
+                        padding: '0.35rem 0.45rem', textAlign: 'center',
+                      }}
+                    >
+                      {pesosIdeaisForm[tipo] > 0
+                        ? pesosIdeaisForm[tipo].toLocaleString('pt-BR')
+                        : '—'}
+                    </div>
+                  </td>
+                  <td style={{ padding: '0.3rem 0.4rem' }}>
+                    <input
+                      type="number"
+                      min={1}
+                      step={100}
+                      disabled={salvandoLimites}
+                      value={pesoMaxForm[tipo]}
+                      onChange={(e) => setPesoMaxForm((prev) => ({ ...prev, [tipo]: e.target.value }))}
+                      placeholder={String(PESO_MAX_KG_PADRAO[tipo])}
+                      style={{
+                        width: '100%', maxWidth: 140, fontSize: '0.72rem',
+                        border: '1px solid #e2e8f0', borderRadius: '6px',
+                        padding: '0.3rem 0.45rem', background: '#f8fafc', color: '#0f172a',
+                      }}
+                    />
+                  </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -967,253 +1190,155 @@ export default function ContratoDetalhe() {
           </button>
         </div>
       </div>
-
-      {/* ══ Alertas ══ */}
-      {temAlertas && (
-        <div style={{ marginBottom: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-          {servicosUploadPendente > 0 && (
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: '0.4rem',
-              padding: '0.4rem 0.7rem', borderRadius: '6px',
-              background: '#fef2f2', border: '1px solid #fecaca',
-              fontSize: '0.72rem', color: '#991b1b', fontWeight: 500,
-            }}>
-              <FiAlertCircle size={13} style={{ color: '#ef4444', flexShrink: 0 }} />
-              {servicosUploadPendente} serviço(s) sem upload de planilha
-            </div>
-          )}
-          {servicosSemKpi > 0 && (
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: '0.4rem',
-              padding: '0.4rem 0.7rem', borderRadius: '6px',
-              background: '#eef2ff', border: '1px solid #c7d2fe',
-              fontSize: '0.72rem', color: '#3730a3', fontWeight: 500,
-            }}>
-              <FiSettings size={13} style={{ color: '#6366f1', flexShrink: 0 }} />
-              {servicosSemKpi} serviço(s) sem indicadores configurados
-            </div>
-          )}
-          {servicosDesatualizados > 0 && (
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: '0.4rem',
-              padding: '0.4rem 0.7rem', borderRadius: '6px',
-              background: '#fefce8', border: '1px solid #fde68a',
-              fontSize: '0.72rem', color: '#92400e', fontWeight: 500,
-            }}>
-              <FiClock size={13} style={{ color: '#f59e0b', flexShrink: 0 }} />
-              {servicosDesatualizados} serviço(s) desatualizado(s) — sem upload há mais de 7 dias
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ══ CORPO DA PÁGINA ══ */}
+          </div>
+        )}
+      </section>
 
       {totalServicos === 0 ? (
         <div className="welcome-section">
           <div className="welcome-icon">
             <FiBarChart2 size={32} />
           </div>
-          <h2>Comece aqui</h2>
+          <h2>Preparando serviços padrão…</h2>
           <p>
-            Crie seu primeiro serviço para começar a gerenciar os dados deste contrato.
-          </p>
-          <p style={{ fontSize: '0.85rem', color: '#94a3b8' }}>
-            Um serviço representa uma atividade operacional — como coleta com caminhão,
-            roçadeira ou poda — onde você fará upload de planilhas, configurará KPIs e
-            visualizará dashboards.
+            Este contrato receberá automaticamente todos os tipos de serviço (Coleta, Roçada, Capina, Varrição, Poda, Pintura e Remoção).
           </p>
           <div className="welcome-actions">
-            <button className="btn-welcome" onClick={abrirModalCriacao}>
-              <FiPlus size={18} /> Criar Primeiro Serviço
+            <button className="btn-welcome" onClick={() => void carregarDados()}>
+              <FiRefreshCw size={18} /> Tentar novamente
             </button>
           </div>
         </div>
       ) : (
-        <div className="servicos-bloco">
+        <section className="servicos-bloco">
           <div className="servicos-topo">
             <div className="servicos-topo-left">
               <h2>Serviços</h2>
               <span className="servicos-count">{totalServicos}</span>
             </div>
-            <button className="btn btn-primary btn-sm" onClick={abrirModalCriacao} style={{
-              display: 'inline-flex', alignItems: 'center', gap: '0.35rem',
-              padding: '0.4rem 0.85rem', fontSize: '0.78rem', fontWeight: 600,
-              background: 'linear-gradient(135deg, #6366f1, #818cf8)',
-              border: 'none', borderRadius: '6px', color: '#fff', cursor: 'pointer',
-              boxShadow: '0 2px 6px rgba(99,102,241,0.25)',
-            }}>
-              <FiPlus size={14} /> Novo Serviço
+            <button
+              type="button"
+              className="btn btn-sm contrato-btn-ghost"
+              onClick={abrirModalCriacao}
+              title="Adicionar serviço genérico ou cópia adicional"
+            >
+              <FiPlus size={14} /> Extra
             </button>
           </div>
 
-          {servicos.map(servico => {
-            const etapas = servico.etapasStatus || { upload: 'pending', indicadoresAuto: 'pending', revisao: 'pending', config: 'pending' };
-            const expandido = servicoExpandidoId === servico.id;
-            const temUpload = (servico.totalRegistros || 0) > 0 || (servico.planilhas?.length || 0) > 0;
-            const temKpi = etapas.config === 'done';
-            const desatualizado = servico.ultimoUpload
-              ? Date.now() - new Date(servico.ultimoUpload).getTime() > 7 * 24 * 60 * 60 * 1000
-              : true;
+          <div className="contrato-servicos-tiles">
+            {servicos.map((servico) => {
+              const etapas = servico.etapasStatus || {
+                upload: 'pending', indicadoresAuto: 'pending', revisao: 'pending', config: 'pending',
+              };
+              const temUpload = (servico.totalRegistros || 0) > 0 || (servico.planilhas?.length || 0) > 0;
+              const temKpi = etapas.config === 'done';
+              const ehPadraoContrato = TIPOS_PADRAO_CONTRATO.has(servico.tipo);
+              const selecionado = servicoRegistrosId === servico.id;
+              const statusCls = !temUpload ? 'is-empty' : temKpi ? 'is-ok' : 'is-warn';
 
-            let classeCard = 'servico-card';
-            if (!temUpload) classeCard += ' error';
-            else if (!temKpi || desatualizado) classeCard += ' attention';
-            else classeCard += ' complete';
-            if (expandido) classeCard += ' expanded';
-
-            const etapasList = [
-              { key: 'criado', label: 'Criado', done: true },
-              { key: 'upload', label: 'Upload Feito', done: etapas.upload === 'done' },
-              { key: 'kpis', label: 'KPIs Configurados', done: etapas.config === 'done' },
-              { key: 'dashboard', label: 'Dashboard Pronto', done: etapas.config === 'done' && etapas.upload === 'done' },
-            ];
-
-            return (
-              <div key={servico.id} className={classeCard}>
-                <div
-                  className="servico-card-header"
-                  onClick={() => setServicoExpandidoId(expandido ? null : servico.id)}
+              return (
+                <article
+                  key={servico.id}
+                  className={`contrato-servico-tile ${statusCls}${selecionado ? ' is-selected' : ''}`}
                 >
-                  <div className="servico-progresso">
-                    {etapasList.map((etp, idx) => (
-                      <div key={etp.key} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                        <div
-                          className={'ponto ' + (etp.done ? 'done' : 'pending')}
-                          data-tooltip={etp.label}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (!etp.done) {
-                              if (etp.key === 'upload') {
-                                setServicoExpandidoId(servico.id);
-                              } else if (etp.key === 'kpis') {
-                                navigate(`/contratos/${id}/servicos/${servico.id}/configurar`);
-                              } else if (etp.key === 'dashboard') {
-                                navigate(`/contratos/${id}/servicos/${servico.id}`);
-                              }
-                            } else {
-                              if (etp.key === 'dashboard') {
-                                navigate(`/contratos/${id}/servicos/${servico.id}`);
-                              } else if (etp.key === 'upload') {
-                                setServicoExpandidoId(servico.id);
-                              }
-                            }
-                          }}
-                          title={etp.label}
-                        />
-                        {idx < etapasList.length - 1 && (
-                          <div className={'linha ' + (etp.done ? 'done' : '')} />
-                        )}
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="servico-info">
-                    <div className="servico-info-nome">
-                      <strong>{servico.nome}</strong>
-                      {!temUpload && (
-                        <span className="badge-status upload-pendente">Sem upload</span>
-                      )}
-                      {temUpload && (
-                        <span className="badge-status upload-feito">{servico.totalRegistros?.toLocaleString('pt-BR')} registros</span>
-                      )}
-                    </div>
-                    <div className="servico-info-badges">
-                      {servico.tipo && servico.tipo !== 'geral' && (
-                        servico.tipo.split(',').map(t => t.trim()).filter(Boolean).map(t => (
-                          <span key={t} className="badge-tipo">
-                            {(TIPOS_SERVICO_LABELS as any)[t] || t}
-                          </span>
-                        ))
-                      )}
-                      {servico.ultimoUpload && (
-                        <span style={{
-                          fontSize: '0.6rem', color: desatualizado ? '#dc2626' : '#64748b',
-                          display: 'flex', alignItems: 'center', gap: '0.15rem',
-                        }}>
-                          <FiClock size={9} />
-                          {new Date(servico.ultimoUpload).toLocaleDateString('pt-BR')}
-                        </span>
-                      )}
-                      {temKpi && (
-                        <span style={{
-                          fontSize: '0.6rem', fontWeight: 600,
-                          padding: '0.05rem 0.3rem', borderRadius: '3px',
-                          background: '#f0fdf4', color: '#15803d',
-                        }}>
-                          <FiCheck size={9} style={{ marginRight: '0.15rem' }} />
-                          KPIs OK
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="servico-acoes">
-                    {!temUpload ? (
+                  <button
+                    type="button"
+                    className="contrato-servico-tile-main"
+                    onClick={() => setServicoRegistrosId((atual) => (atual === servico.id ? null : servico.id))}
+                    title={`Ver registros de ${servico.nome}`}
+                  >
+                    <strong>{servico.nome}</strong>
+                    <span className="contrato-servico-tile-meta">
+                      {temUpload
+                        ? `${(servico.totalRegistros || 0).toLocaleString('pt-BR')} reg.`
+                        : 'Sem planilha'}
+                    </span>
+                  </button>
+                  <div className="contrato-servico-tile-actions">
+                    <button
+                      type="button"
+                      title="Abrir dashboard"
+                      onClick={() => navigate(`/contratos/${id}/servicos/${servico.id}`)}
+                    >
+                      <FiBarChart2 size={13} />
+                    </button>
+                    <button
+                      type="button"
+                      title="Configurar"
+                      onClick={() => navigate(`/contratos/${id}/servicos/${servico.id}/configurar`)}
+                    >
+                      <FiSettings size={13} />
+                    </button>
+                    {!ehPadraoContrato && (
                       <button
-                        className="btn-servico-acao primaria sem-dados"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setServicoExpandidoId(servico.id);
-                        }}
-                        title="Fazer Upload"
+                        type="button"
+                        title="Excluir"
+                        className="is-danger"
+                        onClick={() => prepararExclusao(servico)}
                       >
-                        <FiUpload size={12} /> Upload
-                      </button>
-                    ) : (
-                      <button
-                        className="btn-servico-acao primaria"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          navigate(`/contratos/${id}/servicos/${servico.id}`);
-                        }}
-                        title="Ver Dashboard"
-                      >
-                        <FiBarChart2 size={12} /> Dashboard
+                        <FiTrash2 size={13} />
                       </button>
                     )}
-                    <button
-                      className="btn-servico-acao config"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        navigate(`/contratos/${id}/servicos/${servico.id}/configurar`);
-                      }}
-                      title="Configurar"
-                    >
-                      <FiSettings size={12} />
-                    </button>
-                    <button
-                      className="btn-servico-acao danger"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        prepararExclusao(servico);
-                      }}
-                      title="Excluir"
-                    >
-                      <FiTrash2 size={12} />
-                    </button>
-                    <span style={{ color: '#94a3b8', fontSize: '0.7rem', marginLeft: '0.15rem' }}>
-                      {expandido ? <FiChevronDown size={14} /> : <FiChevronRight size={14} />}
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+
+          {servicoRegistrosId && id && (() => {
+            const servicoSel = servicos.find((s) => s.id === servicoRegistrosId);
+            if (!servicoSel) return null;
+            const qtd = servicoSel.totalRegistros || 0;
+            return (
+              <div className="contrato-registros-panel">
+                <div className="contrato-registros-panel-head">
+                  <div>
+                    <strong>{servicoSel.nome}</strong>
+                    <span>
+                      {qtd > 0
+                        ? `${qtd.toLocaleString('pt-BR')} registro(s)`
+                        : 'Nenhum registro importado ainda'}
                     </span>
                   </div>
+                  <div className="contrato-registros-panel-actions">
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={() => navigate(`/contratos/${id}/servicos/${servicoSel.id}`)}
+                    >
+                      <FiBarChart2 size={13} /> Dashboard
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost"
+                      onClick={() => setServicoRegistrosId(null)}
+                      title="Fechar"
+                    >
+                      <FiX size={16} />
+                    </button>
+                  </div>
                 </div>
-
-                {expandido && (
-                  <div className="servico-expandido">
-                    <ServicoMiniFlow
-                      contractId={id!}
-                      servicoId={servico.id}
-                      servicoNome={servico.nome}
-                      tipoServico={servico.tipo}
-                      onStatusChange={(status) => handleStatusChange(servico.id, status)}
-                      onPlanilhasChange={(info) => handlePlanilhasChange(servico.id, info)}
-                    />
+                {qtd > 0 ? (
+                  <DataTable
+                    key={servicoSel.id}
+                    servicoId={servicoSel.id}
+                    contractId={id}
+                    token={token}
+                    adicionarToast={adicionarToast}
+                    colunasPadrao={[]}
+                  />
+                ) : (
+                  <div className="contrato-registros-vazio">
+                    <FiUpload size={22} />
+                    <p>Envie uma planilha no upload automático acima para popular este serviço.</p>
                   </div>
                 )}
               </div>
             );
-          })}
-        </div>
+          })()}
+
+        </section>
       )}
 
       {/* ══ MODAL CRIAÇÃO ══ */}
@@ -1432,58 +1557,103 @@ export default function ContratoDetalhe() {
 
       {/* ═══ MODAL EXCLUSÃO ═══ */}
       {excluindoId && servicoExclusaoInfo && (
-        <div className="modal-overlay" onClick={() => { setExcluindoId(null); setServicoExclusaoInfo(null); setConfirmacaoExclusao(''); }}>
-          <div className="modal-card modal-exclusao-detalhada" onClick={e => e.stopPropagation()}>
+        <div className="modal-overlay" onClick={fecharModalExclusao}>
+          <div
+            className="modal-card modal-exclusao-detalhada"
+            onClick={e => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="titulo-excluir-servico"
+          >
             <div className="exclusao-header">
               <div className="exclusao-icon">
                 <FiTrash2 size={24} />
               </div>
-              <h3>Excluir serviço?</h3>
+              <h3 id="titulo-excluir-servico">Excluir serviço?</h3>
               <p className="exclusao-sub">
-                Esta ação não pode ser desfeita.
+                {servicoExclusaoInfo.temDados
+                  ? 'Isso apaga o serviço, planilhas e registros do banco. Ação permanente.'
+                  : 'Este serviço ainda não tem dados importados. A exclusão é permanente.'}
               </p>
             </div>
 
-            <div className="exclusao-detalhes">
+            <div className="exclusao-servico-nome">{servicoExclusaoInfo.nome}</div>
+            <div className="exclusao-servico-tipo">{servicoExclusaoInfo.tipoLabel}</div>
+
+            <div className={'exclusao-detalhes' + (servicoExclusaoInfo.temDados ? ' com-dados' : '')}>
               <div className="exclusao-detalhe-item">
-                <span className="label"><FiInfo size={13} /> Serviço</span>
-                <span className="value">{servicoExclusaoInfo.nome}</span>
+                <span className="label"><FiUpload size={13} /> Planilhas</span>
+                <span className={'value' + (servicoExclusaoInfo.qtdPlanilhas > 0 ? ' destaque' : '')}>
+                  {servicoExclusaoInfo.qtdPlanilhas}
+                </span>
               </div>
               <div className="exclusao-detalhe-item">
-                <span className="label"><FiUpload size={13} /> Planilhas vinculadas</span>
-                <span className="value">{servicoExclusaoInfo.qtdPlanilhas}</span>
+                <span className="label"><FiDatabase size={13} /> Registros</span>
+                <span className={'value' + (servicoExclusaoInfo.qtdRegistros > 0 ? ' destaque' : '')}>
+                  {servicoExclusaoInfo.qtdRegistros.toLocaleString('pt-BR')}
+                </span>
               </div>
               <div className="exclusao-detalhe-item">
-                <span className="label"><FiDatabase size={13} /> Registros importados</span>
-                <span className="value">{servicoExclusaoInfo.qtdRegistros.toLocaleString('pt-BR')}</span>
-              </div>
-              <div className="exclusao-detalhe-item">
-                <span className="label"><FiBarChart2 size={13} /> KPIs configurados</span>
-                <span className="value">{servicoExclusaoInfo.qtdKpis}</span>
+                <span className="label"><FiBarChart2 size={13} /> KPIs</span>
+                <span className="value">{servicoExclusaoInfo.temKpis ? 'Configurados' : 'Não configurados'}</span>
               </div>
             </div>
 
-            <div className="exclusao-confirmacao">
-              Digite <strong>{servicoExclusaoInfo.nome}</strong> para confirmar a exclusão
-            </div>
-            <input
-              className={'exclusao-input' + (confirmacaoExclusao === servicoExclusaoInfo.nome ? ' correto' : '')}
-              type="text"
-              value={confirmacaoExclusao}
-              onChange={e => setConfirmacaoExclusao(e.target.value)}
-              placeholder="Digite o nome do serviço"
-              autoFocus
-            />
+            {servicoExclusaoInfo.temDados ? (
+              <>
+                <div className="exclusao-confirmacao">
+                  Para confirmar, digite <strong>{TEXTO_CONFIRMA_EXCLUSAO}</strong>
+                </div>
+                <input
+                  className={'exclusao-input' + (confirmacaoExclusaoOk ? ' correto' : '')}
+                  type="text"
+                  value={confirmacaoExclusao}
+                  onChange={e => setConfirmacaoExclusao(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && confirmacaoExclusaoOk && !excluindoServico) {
+                      e.preventDefault();
+                      void excluirServico();
+                    }
+                    if (e.key === 'Escape') fecharModalExclusao();
+                  }}
+                  placeholder={`Digite ${TEXTO_CONFIRMA_EXCLUSAO}`}
+                  autoFocus
+                  disabled={excluindoServico}
+                  autoComplete="off"
+                />
+              </>
+            ) : (
+              <label className="exclusao-check">
+                <input
+                  type="checkbox"
+                  checked={confirmacaoExclusao === TEXTO_CONFIRMA_EXCLUSAO}
+                  onChange={(e) => setConfirmacaoExclusao(e.target.checked ? TEXTO_CONFIRMA_EXCLUSAO : '')}
+                  disabled={excluindoServico}
+                />
+                Confirmo que quero excluir este serviço
+              </label>
+            )}
 
-            <div className="modal-actions" style={{ marginTop: '0.75rem' }}>
-              <button className="btn btn-danger" onClick={excluirServico} disabled={confirmacaoExclusao !== servicoExclusaoInfo.nome} style={{ flex: 1, justifyContent: 'center' }}>
-                <FiTrash2 size={14} /> Excluir Serviço
-              </button>
+            <div className="modal-actions exclusao-actions">
               <button
+                type="button"
                 className="btn btn-secondary"
-                onClick={() => { setExcluindoId(null); setServicoExclusaoInfo(null); setConfirmacaoExclusao(''); }}
+                onClick={fecharModalExclusao}
+                disabled={excluindoServico}
               >
                 Cancelar
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                onClick={() => void excluirServico()}
+                disabled={!confirmacaoExclusaoOk || excluindoServico}
+              >
+                {excluindoServico ? (
+                  <><FiRefreshCw size={14} className="spin" /> Excluindo...</>
+                ) : (
+                  <><FiTrash2 size={14} /> Excluir definitivamente</>
+                )}
               </button>
             </div>
           </div>
