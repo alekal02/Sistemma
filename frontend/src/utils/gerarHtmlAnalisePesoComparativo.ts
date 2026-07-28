@@ -20,6 +20,7 @@ const PCT_BG: Record<string, { bg: string; color: string }> = {
   vermelho: { bg: '#fecaca', color: '#991b1b' },
   amarelo: { bg: '#fef08a', color: '#854d0e' },
   verde: { bg: '#bbf7d0', color: '#166534' },
+  laranja: { bg: '#fed7aa', color: '#9a3412' },
 };
 
 function renderCelulaHtml(celula: ReturnType<typeof formatarCelulaMetricaPeso>): string {
@@ -35,12 +36,15 @@ function renderCelulaHtml(celula: ReturnType<typeof formatarCelulaMetricaPeso>):
 export function gerarHtmlAnalisePesoComparativo(opts: {
   servicos: CompararPorTipoServico[];
   tipoServicoLabel?: string;
+  /** Ex.: "1ª quinzena (01/07/2026 a 15/07/2026)" */
+  periodoLabel?: string;
   geradoEm?: Date;
 }): string {
   const comDados = opts.servicos.filter((s) => s.analisePeso);
   if (comDados.length === 0) return '';
 
   const tipoLabel = opts.tipoServicoLabel || 'Coleta com caminhão';
+  const periodoExtra = opts.periodoLabel ? ` · ${esc(opts.periodoLabel)}` : '';
   const gerado = opts.geradoEm ?? new Date();
   const dataGeracao = gerado.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' });
   const horaGeracao = gerado.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
@@ -139,7 +143,7 @@ export function gerarHtmlAnalisePesoComparativo(opts: {
   <div class="header">
     <div>
       <h1>Comparativo de análise de peso</h1>
-      <div class="sub">${esc(tipoLabel)} — ${comDados.length} serviço${comDados.length > 1 ? 's' : ''} / contrato${comDados.length > 1 ? 's' : ''}</div>
+      <div class="sub">${esc(tipoLabel)} — ${comDados.length} serviço${comDados.length > 1 ? 's' : ''} / contrato${comDados.length > 1 ? 's' : ''}${periodoExtra}</div>
     </div>
     <div class="meta">Gerado em ${esc(dataGeracao)} · ${esc(horaGeracao)}<br/>Ref. ${esc(formatarDataArquivoPdf(gerado))}</div>
   </div>
@@ -154,7 +158,7 @@ export function gerarHtmlAnalisePesoComparativo(opts: {
       ${bodyRows.join('\n')}
     </tbody>
   </table>
-  <div class="footer">SistemMA — Análise de peso por viagem (PESO 1–4, faixas kg, frota e cenário caixa × densidade)</div>
+  <div class="footer">SistemMA — Análise de peso por viagem (PESO 1–4, qualidade vs peso ideal do tipo, frota e cenário caixa × densidade)</div>
 </body>
 </html>`;
 }

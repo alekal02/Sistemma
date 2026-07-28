@@ -1,6 +1,6 @@
 import type { AnalisePesoColeta } from '../services/servicoService';
 
-const FAIXA_CORES = ['vermelho', 'amarelo', 'verde', 'amarelo', 'vermelho'] as const;
+const FAIXA_CORES = ['vermelho', 'amarelo', 'verde', 'laranja'] as const;
 
 /** Padrão alinhado ao backend (DENSIDADE_OTIMA_PADRAO). */
 export const DENSIDADE_RESIDUO_PADRAO = 0.55;
@@ -46,7 +46,7 @@ export interface LinhaMetricaPeso {
 
 export const SECAO_LABEL_PESO: Record<SecaoPeso, string> = {
   operacao: 'Operação — viagens e peso',
-  faixa: 'Distribuição por faixa de peso (kg)',
+  faixa: 'Distribuição por qualidade vs peso ideal do tipo',
   frota: 'Frota por tipo de caminhão (placas únicas — coluna TIPO DE CAMINHÃO)',
   cenario: 'Cenário — caixa média (L) × densidade do resíduo (kg/L) = peso ideal',
 };
@@ -99,11 +99,10 @@ export const METRICAS_PESO: LinhaMetricaPeso[] = [
     getValor: (a) => a.rotaMaxima?.pesoMedioKg,
     getTitulo: (a) => (a.rotaMaxima ? `Maior viagem — Rota: ${a.rotaMaxima.nome}` : undefined),
   },
-  { secao: 'faixa', label: '< 3.000', tipo: 'faixa', faixaIdx: 0 },
-  { secao: 'faixa', label: '>=3.000 E <7.000', tipo: 'faixa', faixaIdx: 1 },
-  { secao: 'faixa', label: '>=7.000 E <9.000', tipo: 'faixa', faixaIdx: 2 },
-  { secao: 'faixa', label: '>=9.000 E <11.000', tipo: 'faixa', faixaIdx: 3 },
-  { secao: 'faixa', label: '>=11.000', tipo: 'faixa', faixaIdx: 4 },
+  { secao: 'faixa', label: 'PÉSSIMO (< 50% do ideal)', tipo: 'faixa', faixaIdx: 0 },
+  { secao: 'faixa', label: 'RUIM (50–90% do ideal)', tipo: 'faixa', faixaIdx: 1 },
+  { secao: 'faixa', label: 'ÓTIMO (90–110% do ideal)', tipo: 'faixa', faixaIdx: 2 },
+  { secao: 'faixa', label: 'EXCEDIDO (> 110% do ideal)', tipo: 'faixa', faixaIdx: 3 },
   { secao: 'frota', label: 'MINI', tipo: 'int', getValor: (a) => a.tiposCaminhao.MINI },
   { secao: 'frota', label: 'TOCO', tipo: 'int', getValor: (a) => a.tiposCaminhao.TOCO },
   { secao: 'frota', label: 'TRUCK', tipo: 'int', getValor: (a) => a.tiposCaminhao.TRUCK },
@@ -147,11 +146,14 @@ export function formatarCelulaMetricaPeso(linha: LinhaMetricaPeso, analise: Anal
   const titulo = linha.getTitulo?.(analise);
 
   if (linha.tipo === 'faixa' && linha.faixaIdx !== undefined) {
-    const faixa = analise.faixas[linha.faixaIdx];
+    const faixa = analise.faixas?.[linha.faixaIdx];
+    if (!faixa) {
+      return { texto: '—', classe: `celula-faixa ${classe}`.trim(), titulo };
+    }
     return {
       texto: fmtIntPeso(faixa.quantidade),
       pct: fmtPctPeso(faixa.pct),
-      pctCor: FAIXA_CORES[linha.faixaIdx],
+      pctCor: FAIXA_CORES[linha.faixaIdx] ?? 'amarelo',
       classe: `celula-faixa ${classe}`.trim(),
       titulo,
     };

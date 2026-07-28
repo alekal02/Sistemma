@@ -18,7 +18,7 @@ import {
   FiPlus, FiTrash2, FiArrowLeft,
   FiAlertCircle, FiCheck, FiX,
   FiDatabase, FiBarChart2, FiRefreshCw,
-  FiClock, FiSettings,
+  FiClock, FiSettings, FiFolder,
   FiUpload, FiDollarSign, FiTruck, FiUsers,
 } from 'react-icons/fi';
 import { useAuth } from '../contexts/AuthContext';
@@ -135,6 +135,7 @@ interface Contrato {
     volumeL?: { MINI?: number; TOCO?: number; BASCULANTE?: number; TRUCK?: number };
     densidadeResiduoKgL?: number | null;
     densidadeKgL?: { MINI?: number; TOCO?: number; BASCULANTE?: number; TRUCK?: number };
+    pastaBackupPlanilhas?: string | null;
   } | null;
 }
 
@@ -282,6 +283,8 @@ export default function ContratoDetalhe() {
   const [servicos, setServicos] = useState<ServicoComStatus[]>([]);
   const [carregando, setCarregando] = useState(true);
   const [salvandoCiclo, setSalvandoCiclo] = useState(false);
+  const [pastaBackupPlanilhas, setPastaBackupPlanilhas] = useState('');
+  const [salvandoPastaBackup, setSalvandoPastaBackup] = useState(false);
   const [textoPlacasReserva, setTextoPlacasReserva] = useState('');
   const [salvandoPlacasReserva, setSalvandoPlacasReserva] = useState(false);
   const [textoPlacasAtivas, setTextoPlacasAtivas] = useState('');
@@ -356,6 +359,7 @@ export default function ContratoDetalhe() {
       const lista = Array.isArray(listaRaw) ? listaRaw : (listaRaw as any)?.servicos || [];
 
       setContrato(contratoData);
+      setPastaBackupPlanilhas(String(contratoData.configOperacional?.pastaBackupPlanilhas || '').trim());
       setTextoPlacasReserva(placasReservaParaTexto(extrairPlacasReservaContrato(contratoData)));
       const cadastro = extrairCadastroOperacionalContrato(contratoData);
       setTextoPlacasAtivas(listaParaTexto(cadastro.placasAtivas));
@@ -440,6 +444,30 @@ export default function ContratoDetalhe() {
       adicionarToast('Erro ao salvar ciclo de medição', 'error');
     } finally {
       setSalvandoCiclo(false);
+    }
+  };
+
+  const salvarPastaBackupPlanilhas = async () => {
+    if (!id || !contrato) return;
+    setSalvandoPastaBackup(true);
+    try {
+      const pasta = pastaBackupPlanilhas.trim();
+      const atualizado = await contractService.atualizar(id, {
+        configOperacional: {
+          ...(contrato.configOperacional || {}),
+          pastaBackupPlanilhas: pasta || null,
+        },
+      });
+      setContrato(atualizado);
+      setPastaBackupPlanilhas(String(atualizado.configOperacional?.pastaBackupPlanilhas || '').trim());
+      adicionarToast(
+        pasta ? 'Pasta de backup das planilhas salva' : 'Pasta de backup removida',
+        'success',
+      );
+    } catch {
+      adicionarToast('Erro ao salvar pasta de backup', 'error');
+    } finally {
+      setSalvandoPastaBackup(false);
     }
   };
 
@@ -897,6 +925,32 @@ export default function ContratoDetalhe() {
               <option key={d} value={d}>Dia {d} — início do ciclo</option>
             ))}
           </select>
+        </div>
+        <div className="contrato-config-mini contrato-config-mini--wide">
+          <label>
+            <FiFolder size={12} /> Pasta de backup das planilhas
+          </label>
+          <input
+            type="text"
+            value={pastaBackupPlanilhas}
+            disabled={salvandoPastaBackup}
+            onChange={(e) => setPastaBackupPlanilhas(e.target.value)}
+            placeholder="/data/planilhas-ciclo/NomeDoContrato"
+            title="Caminho absoluto visto pelo backend. Em Docker use o path do volume."
+          />
+          <small className="contrato-config-hint">
+            Ao fechar o ciclo, a última planilha do serviço é salva nesta pasta.
+            Em Docker: monte a pasta do Windows em <code>/data/planilhas-ciclo</code> e cole
+            <code>/data/planilhas-ciclo/NomeDoContrato</code>.
+          </small>
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={() => void salvarPastaBackupPlanilhas()}
+            disabled={salvandoPastaBackup}
+          >
+            {salvandoPastaBackup ? 'Salvando…' : 'Salvar pasta'}
+          </button>
         </div>
         <div className="contrato-config-mini contrato-config-mini--wide">
           <label>

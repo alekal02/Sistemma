@@ -26,17 +26,56 @@ export interface ResultadoValidacaoViagem {
 /** KM acima deste limite não entra no dashboard (viagem atípica / erro de planilha) */
 export const MAX_KM_DASHBOARD = 300;
 
+/**
+ * Hodômetro absoluto típico fica bem acima disso.
+ * Distâncias operacionais por segmento/rota ficam ≤ MAX_KM_DASHBOARD.
+ */
+export const MIN_HODOMETRO_ABSOLUTO = 1000;
+
 /** Hodômetro de base/rota costuma ser > 1000; distância operacional fica abaixo de MAX_KM_DASHBOARD */
 function kmDistanciaPlausivel(km: number): boolean {
   return !isNaN(km) && km > 0 && km <= MAX_KM_DASHBOARD;
 }
 
+/** Valor parece leitura absoluta de hodômetro (não distância da viagem). */
+function pareceHodometroAbsoluto(km: number): boolean {
+  return !isNaN(km) && km >= MIN_HODOMETRO_ABSOLUTO;
+}
+
+/** Lê KM só com nome de coluna exato (evita fuzzy "KMROTA01" ⊃ "ID"). */
+function lerKmColunaExata(raw: Record<string, unknown>, ...nomes: string[]): number {
+  for (const nome of nomes) {
+    const alvo = nome.trim().toUpperCase();
+    for (const [key, val] of Object.entries(raw)) {
+      if (key.trim().toUpperCase() !== alvo) continue;
+      const km = parseNumeroBr(val);
+      if (!isNaN(km) && km > 0) return km;
+    }
+  }
+  return NaN;
+}
+
+export type ProblemaHodometro = {
+  trecho: string;
+  saida: number;
+  chegada: number;
+  motivo: string;
+};
+
+export type ResultadoSanitizacaoKm = {
+  kmCorrigido: number | null;
+  problemas: ProblemaHodometro[];
+  /** true se KM da viagem foi zerado/corrigido por falha de hodômetro */
+  kmInvalidadoPorHodometro: boolean;
+  ajustes: string[];
+};
+
 /** Critérios obrigatórios para viagem entrar no dashboard */
 export const REGRAS_VIAGEM_DASHBOARD = [
   'Data de saída preenchida e válida',
-  'KM Total preenchido (coluna KM TOTAL > 0)',
+  'KM Total preenchido (coluna KM TOTAL > 0), ou KM zerado por hodômetro inconsistente com peso válido',
   'Peso Total > 0, ou retorno à base sem pesagem (placa + motorista + KM ok, peso zerado)',
-  `KM Total até ${MAX_KM_DASHBOARD} km`,
+  `KM Total até ${MAX_KM_DASHBOARD} km (hodômetro igual/parado, salto absurdo ou chegada < saída → KM zerado; peso/viagens entram)`,
   'Sem valores negativos em KM ou peso',
   'Horas no formato HH:MM (use ":", não ";")',
 ] as const;
@@ -72,9 +111,15 @@ function normalizarDataSaida(val: Date | string | null | undefined): Date | null
 /** Preenche campos tipados a partir de coleta.dados (planilhas com nomes de coluna variados) */
 export function enriquecerCamposColeta(coleta: ColetaData): void {
   const raw = registroUnificado(coleta);
+  const temAlertaHodometro = viagemComAlertaHodometro(coleta);
 
-  if (coleta.kmTotal === null || coleta.kmTotal === undefined || coleta.kmTotal <= 0) {
-    const km = parseNumeroBr(encontrarValorColuna(raw, 'KM TOTAL'));
+  // KM: só match exato — encontrarValorColuna é fuzzy e "KMTOTAL"/"KMROTA01" contêm "ID"
+  // Nunca restaurar KM se a viagem foi zerada por hodômetro inconsistente.
+  if (
+    !temAlertaHodometro
+    && (coleta.kmTotal === null || coleta.kmTotal === undefined || coleta.kmTotal <= 0)
+  ) {
+    const km = lerKmColunaExata(raw, 'KM TOTAL', 'KMTOTAL');
     if (kmDistanciaPlausivel(km)) coleta.kmTotal = km;
   }
 
@@ -128,30 +173,27 @@ export function enriquecerCamposColeta(coleta: ColetaData): void {
   }
 
   if (coleta.kmSaida === null || coleta.kmSaida === undefined) {
-    for (const alias of ['KM SAIDA BASE', 'KM SAÍDA BASE', ' KM SAIDA BASE ', 'KM SAIDA', 'KM SAÍDA']) {
-      const km = parseNumeroBr(encontrarValorColuna(raw, alias));
-      if (!isNaN(km) && km > 0) {
-        coleta.kmSaida = km;
-        break;
-      }
-    }
+    const km = lerKmColunaExata(
+      raw,
+      'KM SAIDA BASE',
+      'KM SAÍDA BASE',
+      ' KM SAIDA BASE ',
+      'KM SAIDA',
+      'KM SAÍDA',
+    );
+    if (!isNaN(km) && km > 0) coleta.kmSaida = km;
   }
 
   if (coleta.kmChegada === null || coleta.kmChegada === undefined) {
-    for (const alias of ['KM CHEGADA BASE', ' KM CHEGADA BASE ', 'KM CHEGADA']) {
-      const km = parseNumeroBr(encontrarValorColuna(raw, alias));
-      if (!isNaN(km) && km > 0) {
-        coleta.kmChegada = km;
-        break;
-      }
-    }
+    const km = lerKmColunaExata(raw, 'KM CHEGADA BASE', ' KM CHEGADA BASE ', 'KM CHEGADA');
+    if (!isNaN(km) && km > 0) coleta.kmChegada = km;
   }
 
   for (let i = 1; i <= 4; i++) {
     const kmField = `kmRota${i}` as keyof ColetaData;
     if (coleta[kmField] === null || coleta[kmField] === undefined) {
-      const km = parseNumeroBr(encontrarValorColuna(raw, `KM ROTA 0${i}`));
-      if (!isNaN(km) && km > 0) (coleta as any)[kmField] = km;
+      const km = lerKmColunaExata(raw, `KM ROTA 0${i}`, `KM ROTA ${i}`, `KMROTA0${i}`, `KMROTA${i}`);
+      if (kmDistanciaPlausivel(km)) (coleta as any)[kmField] = km;
     }
   }
 
@@ -238,7 +280,7 @@ function obterKmTotalPrincipal(coleta: Partial<ColetaData>): number | null {
     if (kmDistanciaPlausivel(coleta.kmTotal)) return coleta.kmTotal;
   }
   const raw = registroUnificado(coleta);
-  const kmCol = parseNumeroBr(encontrarValorColuna(raw, 'KM TOTAL'));
+  const kmCol = lerKmColunaExata(raw, 'KM TOTAL', 'KMTOTAL');
   if (kmDistanciaPlausivel(kmCol)) return kmCol;
   return null;
 }
@@ -284,16 +326,17 @@ function calcularKmEfetivo(coleta: Partial<ColetaData>): number | null {
   let kmSaida = coleta.kmSaida ?? NaN;
   let kmChegada = coleta.kmChegada ?? NaN;
   if (isNaN(kmSaida)) {
-    for (const alias of ['KM SAIDA BASE', 'KM SAÍDA BASE', ' KM SAIDA BASE ', 'KM SAIDA']) {
-      const km = parseNumeroBr(encontrarValorColuna(raw, alias));
-      if (!isNaN(km) && km > 0) { kmSaida = km; break; }
-    }
+    kmSaida = lerKmColunaExata(
+      raw,
+      'KM SAIDA BASE',
+      'KM SAÍDA BASE',
+      ' KM SAIDA BASE ',
+      'KM SAIDA',
+      'KM SAÍDA',
+    );
   }
   if (isNaN(kmChegada)) {
-    for (const alias of ['KM CHEGADA BASE', ' KM CHEGADA BASE ', 'KM CHEGADA']) {
-      const km = parseNumeroBr(encontrarValorColuna(raw, alias));
-      if (!isNaN(km) && km > 0) { kmChegada = km; break; }
-    }
+    kmChegada = lerKmColunaExata(raw, 'KM CHEGADA BASE', ' KM CHEGADA BASE ', 'KM CHEGADA');
   }
   if (!isNaN(kmSaida) && !isNaN(kmChegada) && kmChegada >= kmSaida) {
     const diff = kmChegada - kmSaida;
@@ -303,12 +346,12 @@ function calcularKmEfetivo(coleta: Partial<ColetaData>): number | null {
   const rotas: number[] = [];
   for (let i = 1; i <= 4; i++) {
     const tipado = (coleta as any)[`kmRota${i}`];
-    if (tipado !== null && tipado !== undefined && Number(tipado) > 0) {
+    if (tipado !== null && tipado !== undefined && kmDistanciaPlausivel(Number(tipado))) {
       rotas.push(Number(tipado));
       continue;
     }
-    const km = parseNumeroBr(encontrarValorColuna(raw, `KM ROTA 0${i}`));
-    if (!isNaN(km) && km > 0) rotas.push(km);
+    const km = lerKmColunaExata(raw, `KM ROTA 0${i}`, `KM ROTA ${i}`, `KMROTA0${i}`, `KMROTA${i}`);
+    if (kmDistanciaPlausivel(km)) rotas.push(km);
   }
   const somaRotas = somaPositiva(rotas);
   return somaRotas > 0 ? somaRotas : null;
@@ -445,7 +488,7 @@ function rotaRetornoBaseSemPesagem(coleta: Partial<ColetaData>): boolean {
 
 function kmAcimaDoLimite(coleta: Partial<ColetaData>, kmEfetivo: number | null): string | null {
   const raw = registroUnificado(coleta);
-  const kmCol = parseNumeroBr(encontrarValorColuna(raw, 'KM TOTAL'));
+  const kmCol = lerKmColunaExata(raw, 'KM TOTAL', 'KMTOTAL');
   const kmTipado = coleta.kmTotal;
 
   const candidatos = [kmEfetivo, kmTipado, !isNaN(kmCol) ? kmCol : null].filter(
@@ -460,9 +503,20 @@ function kmAcimaDoLimite(coleta: Partial<ColetaData>, kmEfetivo: number | null):
   return null;
 }
 
+function viagemComAlertaHodometro(coleta: Partial<ColetaData>): boolean {
+  const dados = coleta.dados;
+  if (dados && typeof dados === 'object') {
+    const alerta = (dados as Record<string, unknown>)._alertaKmHodometro;
+    if (alerta != null && String(alerta).trim()) return true;
+  }
+  return false;
+}
+
 /**
  * Valida se a viagem pode alimentar o dashboard.
  * Critérios principais: Data de saída + KM Total + Peso Total (ou retorno à base sem pesagem).
+ *
+ * Exceção: hodômetro quebrado → KM pode ficar 0 e a viagem ainda entra (peso/viagens).
  */
 export function validarViagemParaDashboard(coleta: Partial<ColetaData>): ResultadoValidacaoViagem {
   const motivos: string[] = [
@@ -475,11 +529,14 @@ export function validarViagemParaDashboard(coleta: Partial<ColetaData>): Resulta
     motivos.push('Data de saída ausente ou inválida');
   }
 
+  const alertaHodometro = viagemComAlertaHodometro(coleta);
   const kmPrincipal = obterKmTotalPrincipal(coleta);
-  if (kmPrincipal === null || kmPrincipal === undefined || isNaN(kmPrincipal)) {
-    motivos.push('KM Total ausente');
-  } else if (kmPrincipal <= 0) {
-    motivos.push('KM Total zerado ou negativo (verifique fórmulas da planilha)');
+  if (!alertaHodometro) {
+    if (kmPrincipal === null || kmPrincipal === undefined || isNaN(kmPrincipal)) {
+      motivos.push('KM Total ausente');
+    } else if (kmPrincipal <= 0) {
+      motivos.push('KM Total zerado ou negativo (verifique fórmulas da planilha)');
+    }
   }
 
   const retornoSemPesagem = rotaRetornoBaseSemPesagem(coleta);
@@ -495,13 +552,19 @@ export function validarViagemParaDashboard(coleta: Partial<ColetaData>): Resulta
     }
   }
 
+  // Com alerta de hodômetro: não bloqueia por KM alto — já foi zerado na sanitização
+  if (!alertaHodometro) {
+    const kmAlto = kmAcimaDoLimite(
+      coleta,
+      kmPrincipal !== null && kmPrincipal > 0 ? kmPrincipal : null,
+    );
+    if (kmAlto) motivos.push(kmAlto);
+  }
+
   const kmEfetivo = kmPrincipal !== null && kmPrincipal > 0 ? kmPrincipal : null;
   const pesoEfetivo = pesoPrincipal !== null && pesoPrincipal > 0
     ? pesoPrincipal
     : (retornoSemPesagem ? 0 : null);
-
-  const kmAlto = kmAcimaDoLimite(coleta, kmEfetivo ?? kmPrincipal);
-  if (kmAlto) motivos.push(kmAlto);
 
   const validoDashboard = motivos.length === 0;
   return { validoDashboard, motivos, kmEfetivo, pesoEfetivo };
@@ -541,70 +604,255 @@ function sincronizarAliasesNumericos(coleta: ColetaData, aliases: string[], valo
   }
 }
 
-function kmSegmentoHodometro(saida: number, chegada: number): number | null {
-  if (isNaN(saida) || isNaN(chegada) || chegada < saida) return null;
-  const diff = chegada - saida;
-  return kmDistanciaPlausivel(diff) ? diff : null;
-}
-
-function lerKmColunaExata(raw: Record<string, unknown>, ...nomes: string[]): number {
-  for (const nome of nomes) {
-    const alvo = nome.trim().toUpperCase();
-    for (const [key, val] of Object.entries(raw)) {
-      if (key.trim().toUpperCase() !== alvo) continue;
-      const km = parseNumeroBr(val);
-      if (!isNaN(km) && km > 0) return km;
-    }
+function diagnosticarSegmentoHodometro(
+  trecho: string,
+  saida: number,
+  chegada: number,
+): { km: number | null; problema: ProblemaHodometro | null } {
+  if (isNaN(saida) || isNaN(chegada) || saida <= 0 || chegada <= 0) {
+    return { km: null, problema: null };
   }
-  return NaN;
+  if (chegada < saida) {
+    return {
+      km: null,
+      problema: {
+        trecho,
+        saida,
+        chegada,
+        motivo: `Hodômetro quebrado/reiniciado em ${trecho}: chegada (${chegada}) < saída (${saida})`,
+      },
+    };
+  }
+  const diff = chegada - saida;
+  // Diff 0 = parado no ponto (ex.: descarga) — não é distância nem falha isolada
+  if (diff === 0) return { km: null, problema: null };
+  if (!kmDistanciaPlausivel(diff)) {
+    return {
+      km: null,
+      problema: {
+        trecho,
+        saida,
+        chegada,
+        motivo: `Salto de hodômetro absurdo em ${trecho}: ${Math.round(diff)} km (máx. ${MAX_KM_DASHBOARD} km)`,
+      },
+    };
+  }
+  return { km: diff, problema: null };
 }
 
-function somarKmRotasColeta(coleta: Partial<ColetaData>): number {
-  const raw = registroUnificado(coleta);
-  const rotas: number[] = [];
+function garantirDadosColeta(coleta: ColetaData): Record<string, unknown> {
+  if (!coleta.dados || typeof coleta.dados !== 'object') {
+    coleta.dados = {};
+  }
+  return coleta.dados as Record<string, unknown>;
+}
 
+/**
+ * Soma KM a partir da sequência real do hodômetro:
+ * Saída base → Chegada/Saída de cada rota → Chegada base.
+ * Trechos com hodômetro igual (parado) são ignorados; quebra/salto viram problema.
+ */
+function analisarHodometroColeta(coleta: Partial<ColetaData>): {
+  segmentosValidos: number[];
+  problemas: ProblemaHodometro[];
+} {
+  const raw = registroUnificado(coleta);
+  const segmentosValidos: number[] = [];
+  const problemas: ProblemaHodometro[] = [];
+
+  // Preferência: KM de rota já tipado/distância operacional
+  // (ainda assim verificamos saída base = chegada base abaixo)
+  const tipados: number[] = [];
   for (let i = 1; i <= 4; i++) {
     const tipado = (coleta as Record<string, unknown>)[`kmRota${i}`];
     if (tipado !== null && tipado !== undefined && kmDistanciaPlausivel(Number(tipado))) {
-      rotas.push(Number(tipado));
-      continue;
+      tipados.push(Number(tipado));
     }
+  }
 
+  type PontoHodometro = { label: string; km: number };
+  const pontos: PontoHodometro[] = [];
+
+  const kmSaidaBase = lerKmColunaExata(
+    raw,
+    COLUNAS_HODOMETRO.saidaBase.trim(),
+    'KM SAIDA BASE',
+    'KM SAÍDA BASE',
+  );
+  if (!isNaN(kmSaidaBase) && kmSaidaBase > 0) {
+    pontos.push({ label: 'Saída base', km: kmSaidaBase });
+  }
+
+  for (let i = 1; i <= 4; i++) {
     const cfg = COLUNAS_HODOMETRO.rotas[i - 1];
-    const kmSaidaRota = lerKmColunaExata(raw, cfg.kmSaida.trim(), `KM SAIDA ROTA 0${i}`, `KM SAÍDA ROTA 0${i}`);
     const kmChegadaRota = lerKmColunaExata(raw, cfg.kmChegada.trim(), `KM CHEGADA ROTA 0${i}`);
-    const segRota = kmSegmentoHodometro(kmSaidaRota, kmChegadaRota);
-    if (segRota !== null) {
-      rotas.push(segRota);
-      continue;
+    const kmSaidaRota = lerKmColunaExata(
+      raw,
+      cfg.kmSaida.trim(),
+      `KM SAIDA ROTA 0${i}`,
+      `KM SAÍDA ROTA 0${i}`,
+    );
+    if (!isNaN(kmChegadaRota) && kmChegadaRota > 0) {
+      pontos.push({ label: `Chegada Rota 0${i}`, km: kmChegadaRota });
     }
+    if (!isNaN(kmSaidaRota) && kmSaidaRota > 0) {
+      pontos.push({ label: `Saída Rota 0${i}`, km: kmSaidaRota });
+    }
+  }
 
-    for (const alias of [`KM ROTA 0${i}`, `KM ROTA ${i}`]) {
-      const km = parseNumeroBr(encontrarValorColuna(raw, alias));
+  const kmChegadaBase = lerKmColunaExata(
+    raw,
+    COLUNAS_HODOMETRO.chegadaBase.trim(),
+    'KM CHEGADA BASE',
+  );
+  if (!isNaN(kmChegadaBase) && kmChegadaBase > 0) {
+    pontos.push({ label: 'Chegada base', km: kmChegadaBase });
+  }
+
+  for (let i = 1; i < pontos.length; i++) {
+    const a = pontos[i - 1];
+    const b = pontos[i];
+    const diag = diagnosticarSegmentoHodometro(`${a.label} → ${b.label}`, a.km, b.km);
+    if (diag.problema) problemas.push(diag.problema);
+    if (diag.km != null) segmentosValidos.push(diag.km);
+  }
+
+  // Fallback só com match exato — encontrarValorColuna é fuzzy e pode
+  // confundir "KM ROTA 01" com o campo "id" (substring "ID" em "KMROTA01").
+  if (segmentosValidos.length === 0) {
+    for (let i = 1; i <= 4; i++) {
+      const km = lerKmColunaExata(raw, `KM ROTA 0${i}`, `KM ROTA ${i}`, `KMROTA0${i}`, `KMROTA${i}`);
       if (kmDistanciaPlausivel(km)) {
-        rotas.push(km);
-        break;
+        segmentosValidos.push(km);
       }
     }
   }
 
-  if (rotas.length === 0) {
-    const kmSaidaBase = lerKmColunaExata(
-      raw,
-      COLUNAS_HODOMETRO.saidaBase.trim(),
-      'KM SAIDA BASE',
-      'KM SAÍDA BASE',
-    );
-    const kmChegadaBase = lerKmColunaExata(
-      raw,
-      COLUNAS_HODOMETRO.chegadaBase.trim(),
-      'KM CHEGADA BASE',
-    );
-    const segBase = kmSegmentoHodometro(kmSaidaBase, kmChegadaBase);
-    if (segBase !== null) rotas.push(segBase);
+  // Se há KM tipado de rota, usa-o; mantém problemas detectados na cadeia de hodômetro
+  if (tipados.length > 0 && segmentosValidos.length === 0) {
+    segmentosValidos.push(...tipados);
+  } else if (tipados.length > 0 && problemas.length === 0) {
+    // Cadeia ok: preferir tipados quando disponíveis
+    segmentosValidos.length = 0;
+    segmentosValidos.push(...tipados);
   }
 
-  return somaPositiva(rotas);
+  // Viagem inteira com hodômetro parado (KM inicial = KM final)
+  if (
+    segmentosValidos.length === 0
+    && !isNaN(kmSaidaBase)
+    && !isNaN(kmChegadaBase)
+    && kmSaidaBase > 0
+    && kmChegadaBase > 0
+    && kmSaidaBase === kmChegadaBase
+  ) {
+    problemas.push({
+      trecho: 'Viagem',
+      saida: kmSaidaBase,
+      chegada: kmChegadaBase,
+      motivo: `Hodômetro parado/igual na viagem: saída base = chegada base (${kmSaidaBase})`,
+    });
+  }
+
+  // Mesmo com segmentos tipados: marcar viagem parada se saída = chegada base
+  if (
+    !isNaN(kmSaidaBase)
+    && !isNaN(kmChegadaBase)
+    && kmSaidaBase > 0
+    && kmChegadaBase > 0
+    && kmSaidaBase === kmChegadaBase
+    && !problemas.some(p => /parado\/igual/i.test(p.motivo))
+  ) {
+    problemas.push({
+      trecho: 'Viagem',
+      saida: kmSaidaBase,
+      chegada: kmChegadaBase,
+      motivo: `Hodômetro parado/igual na viagem: saída base = chegada base (${kmSaidaBase})`,
+    });
+  }
+
+  return { segmentosValidos, problemas };
+}
+
+function somarKmRotasColeta(coleta: Partial<ColetaData>): number {
+  return somaPositiva(analisarHodometroColeta(coleta).segmentosValidos);
+}
+
+/**
+ * Corrige KM TOTAL quando hodômetro quebra (igual, chegada < saída ou salto absurdo).
+ * - Usa só segmentos plausíveis da sequência
+ * - Se KM TOTAL parece hodômetro absoluto ou > máx., substitui/zera
+ * - Sem KM confiável + peso válido → KM 0 com alerta (viagem permanece no dashboard)
+ */
+export function sanitizarKmHodometro(coleta: ColetaData): ResultadoSanitizacaoKm {
+  const ajustes: string[] = [];
+  const { segmentosValidos, problemas } = analisarHodometroColeta(coleta);
+  const kmDosSegmentos = somaPositiva(segmentosValidos);
+
+  const raw = registroUnificado(coleta);
+  const kmPlanilhaBruto = lerKmColunaExata(raw, 'KM TOTAL', 'KMTOTAL');
+  const kmTipadoBruto = coleta.kmTotal != null && !isNaN(Number(coleta.kmTotal))
+    ? Number(coleta.kmTotal)
+    : NaN;
+  const kmBruto = !isNaN(kmTipadoBruto) && kmTipadoBruto > 0
+    ? kmTipadoBruto
+    : (!isNaN(kmPlanilhaBruto) && kmPlanilhaBruto > 0 ? kmPlanilhaBruto : NaN);
+
+  const kmBrutoInvalido = !isNaN(kmBruto) && (
+    kmBruto > MAX_KM_DASHBOARD
+    || pareceHodometroAbsoluto(kmBruto)
+    || kmBruto < 0
+  );
+
+  let kmCorrigido: number | null = null;
+  let kmInvalidadoPorHodometro = false;
+
+  const zerarKmPorHodometro = (detalhe: string) => {
+    kmCorrigido = 0;
+    kmInvalidadoPorHodometro = true;
+    coleta.kmTotal = 0;
+    sincronizarAliasesNumericos(coleta, ALIAS_KM_TOTAL, 0);
+    const msg = `KM zerado por hodômetro inconsistente (${detalhe}). Peso/viagens mantidos.`;
+    ajustes.push(msg);
+    garantirDadosColeta(coleta)._alertaKmHodometro = msg;
+  };
+
+  if (kmDosSegmentos > 0 && kmDistanciaPlausivel(kmDosSegmentos)) {
+    const precisaCorrigir = isNaN(kmBruto) || kmBruto <= 0 || kmBrutoInvalido
+      || kmDosSegmentos > kmBruto + 0.01
+      || problemas.length > 0;
+    if (precisaCorrigir) {
+      kmCorrigido = Math.round(kmDosSegmentos * 100) / 100;
+      coleta.kmTotal = kmCorrigido;
+      sincronizarAliasesNumericos(coleta, ALIAS_KM_TOTAL, kmCorrigido);
+      const msg = problemas.length
+        ? `KM Total corrigido para ${kmCorrigido} km (ignorando ${problemas.length} trecho(s) de hodômetro inconsistente)`
+        : `KM Total corrigido para ${kmCorrigido} km a partir dos trechos válidos do hodômetro`;
+      ajustes.push(msg);
+      // Marca para relatório de saúde / PDF hodômetro (mesmo com KM > 0)
+      if (problemas.length > 0) {
+        garantirDadosColeta(coleta)._alertaKmHodometro = msg;
+      }
+    } else {
+      kmCorrigido = kmDistanciaPlausivel(kmBruto) ? kmBruto : kmDosSegmentos;
+    }
+  } else if (kmBrutoInvalido || problemas.length > 0) {
+    const detalhe = problemas[0]?.motivo
+      || (!isNaN(kmBruto) ? `KM TOTAL=${kmBruto} inválido/hodômetro` : 'sem trechos válidos');
+    zerarKmPorHodometro(detalhe);
+  } else if (kmDistanciaPlausivel(kmBruto)) {
+    kmCorrigido = kmBruto;
+  } else {
+    // KM ausente/zerado e sem trechos confiáveis — típico de hodômetro parado/igual.
+    // Com peso (ou retorno sem pesagem já resolvido depois), mantém a viagem na operação.
+    const peso = obterPesoTotalPrincipal(coleta);
+    const temPeso = peso != null && !isNaN(peso) && peso > 0;
+    if (temPeso) {
+      zerarKmPorHodometro('KM inicial=final ou sem leituras válidas');
+    }
+  }
+
+  return { kmCorrigido, problemas, kmInvalidadoPorHodometro, ajustes };
 }
 
 function somarPesosParciaisColeta(coleta: Partial<ColetaData>): number {
@@ -656,9 +904,18 @@ export function corrigirViagemAutomatica(coleta: ColetaData): ResultadoCorrecaoV
   enriquecerCamposColeta(coleta);
   corrigirHorasRegistro(coleta, ajustes);
 
+  // Prioridade: sanitizar hodômetro quebrado (chegada < saída / salto absurdo)
+  const sanKm = sanitizarKmHodometro(coleta);
+  ajustes.push(...sanKm.ajustes);
+
   const kmAtual = obterKmTotalPrincipal(coleta);
   const kmDerivado = calcularKmDerivadoImportacao(coleta);
-  if (kmDerivado !== null && kmDerivado > 0 && kmDerivado <= MAX_KM_DASHBOARD) {
+  if (
+    !sanKm.kmInvalidadoPorHodometro
+    && kmDerivado !== null
+    && kmDerivado > 0
+    && kmDerivado <= MAX_KM_DASHBOARD
+  ) {
     const deveUsarKmDerivado = kmAtual === null || kmAtual === undefined || isNaN(kmAtual)
       || kmAtual <= 0
       || kmDerivado > kmAtual + 0.01;

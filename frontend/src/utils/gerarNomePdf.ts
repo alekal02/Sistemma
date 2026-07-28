@@ -51,6 +51,20 @@ export function gerarNomePdfRelatorioOperacionalPeriodo(opts: {
   ].filter(Boolean).join('_');
 }
 
+/** Nome do PDF saúde — hodômetro quebrado. Ex.: Coleta_Saude_Hodometro_01-06-2026_a_30-06-2026 */
+export function gerarNomePdfRelatorioHodometroSaude(opts: {
+  servicoNome: string;
+  dataInicio: string;
+  dataFim: string;
+}): string {
+  const periodo = sufixoPeriodoPdf({ dataInicio: opts.dataInicio, dataFim: opts.dataFim });
+  return [
+    sanitizarParteNome(opts.servicoNome || 'Servico'),
+    'Saude_Hodometro',
+    periodo ? sanitizarParteNome(periodo.replace(/^Ciclo_/, '')) : null,
+  ].filter(Boolean).join('_');
+}
+
 /** Nome do PDF de ciclo de roçada. Ex.: Rocada_Ciclo_Rocada_26-12-2025_a_25-01-2026 */
 export function gerarNomePdfRelatorioRocadaCiclo(opts: {
   servicoNome: string;
@@ -105,13 +119,16 @@ export function gerarNomePdfRelatorioUnidadeCiclo(opts: {
   ].filter(Boolean).join('_');
 }
 
-/** Nome do PDF comparativo de análise de peso. Ex.: Comparativo_Analise_Peso_Coleta_18-06-2026 */
+/** Nome do PDF comparativo de análise de peso. Ex.: Comparativo_Analise_Peso_Coleta_1a_Quinzena_18-06-2026 */
 export function gerarNomePdfAnalisePesoComparativo(opts?: {
   tipoServico?: string;
+  /** Ex.: "1a_Quinzena" ou intervalo de datas */
+  sufixoPeriodo?: string;
 }): string {
   return [
     'Comparativo_Analise_Peso',
     sanitizarParteNome(opts?.tipoServico || 'Coleta', 24),
+    opts?.sufixoPeriodo ? sanitizarParteNome(opts.sufixoPeriodo, 40) : null,
     formatarDataArquivoPdf(),
   ].filter(Boolean).join('_');
 }

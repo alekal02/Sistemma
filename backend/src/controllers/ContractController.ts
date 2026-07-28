@@ -182,6 +182,14 @@ export class ContractController {
           ...(configOperacional.densidadeKgL !== undefined
             ? { densidadeKgL: normalizarMapaDensidadesKgL(configOperacional.densidadeKgL) ?? {} }
             : {}),
+          ...(configOperacional.pastaBackupPlanilhas !== undefined
+            ? {
+                pastaBackupPlanilhas: (() => {
+                  const p = String(configOperacional.pastaBackupPlanilhas ?? '').trim();
+                  return p || null;
+                })(),
+              }
+            : {}),
         };
         contract.configOperacional = novoConfig;
         await this.repository.update(id, { configOperacional: novoConfig as any });

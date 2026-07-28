@@ -13,6 +13,7 @@ import ServicoMiniFlow from '../components/ServicoMiniFlow';
 import VerificacaoViagensPanel, { type VerificacaoViagensData } from '../components/VerificacaoViagensPanel';
 import type { ColunaDetectada } from '../components/KpiEditor/KpiEditorTypes';
 import { extrairPlacasReservaContrato } from '../utils/placasReserva';
+import type { MapaLimiteCaminhao } from '../utils/limitesCaminhaoContrato';
 import { ehServicoPorUnidade } from '../utils/unidadeServico';
 import servicoService from '../services/servicoService';
 
@@ -50,6 +51,10 @@ export default function ServicoVisao() {
     valorBasculante?: number | null;
   } | null>(null);
   const [placasReserva, setPlacasReserva] = useState<string[]>([]);
+  const [limitesPesoKg, setLimitesPesoKg] = useState<MapaLimiteCaminhao | null>(null);
+  const [volumeL, setVolumeL] = useState<MapaLimiteCaminhao | null>(null);
+  const [densidadeResiduoKgL, setDensidadeResiduoKgL] = useState<number | null>(null);
+  const [densidadeKgL, setDensidadeKgL] = useState<MapaLimiteCaminhao | null>(null);
   const [inconsistencias, setInconsistencias] = useState<{
     viagensInconsistentes: number;
     viagensValidas: number;
@@ -119,6 +124,20 @@ export default function ServicoVisao() {
           valorBasculante: contrato.valorBasculante,
         });
         setPlacasReserva(extrairPlacasReservaContrato(contrato));
+        const cfg = contrato.configOperacional as {
+          pesoMaximoKg?: MapaLimiteCaminhao;
+          volumeL?: MapaLimiteCaminhao;
+          densidadeResiduoKgL?: number | null;
+          densidadeKgL?: MapaLimiteCaminhao;
+        } | undefined;
+        setLimitesPesoKg(cfg?.pesoMaximoKg || null);
+        setVolumeL(cfg?.volumeL || null);
+        setDensidadeResiduoKgL(
+          cfg?.densidadeResiduoKgL != null && cfg.densidadeResiduoKgL > 0
+            ? cfg.densidadeResiduoKgL
+            : null,
+        );
+        setDensidadeKgL(cfg?.densidadeKgL || null);
       }
 
       if (!ehRocada && resInconsistencias.status === 'fulfilled' && resInconsistencias.value && resInconsistencias.value.ok) {
@@ -316,6 +335,10 @@ export default function ServicoVisao() {
           configFaturamento={configFaturamento}
           contratoTarifas={contratoTarifas}
           placasReserva={placasReserva}
+          limitesPesoKg={limitesPesoKg}
+          volumeL={volumeL}
+          densidadeResiduoKgL={densidadeResiduoKgL}
+          densidadeKgL={densidadeKgL}
           onCicloFechado={() => carregarDados({ silencioso: true })}
         />
       </div>

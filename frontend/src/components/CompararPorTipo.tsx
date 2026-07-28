@@ -26,6 +26,8 @@ import {
   deslocarMesReferencia,
   salvarPeriodosComparar,
   carregarPeriodosComparar,
+  aplicarQuinzenaAoPeriodo,
+  calcularQuinzenasDoPeriodo,
   type PeriodoContratoState,
 } from '../utils/periodoCicloContrato';
 
@@ -298,6 +300,56 @@ export default function CompararPorTipo({
       setCarregando(false);
     }
   }, [modo, contratoId, tipoServico, selecionados, filtrosComparacao]);
+
+  /** Busca comparação recortada em quinzena (para PDF de reunião, sem alterar a tela). */
+  const buscarComparacaoQuinzena = useCallback(async (quinzena: 1 | 2) => {
+    const periodosBase: Record<string, PeriodoContratoState> = {};
+    if (modo === 'global') {
+      for (const [cid, p] of Object.entries(periodosPorContrato)) {
+        if (contratosIdsSelecionados.has(cid)) periodosBase[cid] = p;
+      }
+    } else if (contratoId && periodoContratoUnico) {
+      periodosBase[contratoId] = periodoContratoUnico;
+    }
+
+    const periodosQuinzena: Record<string, PeriodoContratoState> = {};
+    let periodoLabel = '';
+    for (const [cid, p] of Object.entries(periodosBase)) {
+      const recorte = aplicarQuinzenaAoPeriodo(p, quinzena);
+      if (!recorte) return null;
+      periodosQuinzena[cid] = recorte;
+      if (!periodoLabel) {
+        const q = calcularQuinzenasDoPeriodo(p.dataInicio, p.dataFim);
+        periodoLabel = (quinzena === 1 ? q.primeira : q.segunda)?.label || '';
+      }
+    }
+
+    if (Object.keys(periodosQuinzena).length === 0 || !periodoLabel) return null;
+
+    const filtros: FiltrosComparacao = {
+      periodosPorContrato: buildPeriodosPorContratoQuery(periodosQuinzena),
+    };
+
+    let res: CompararPorTipoResponse;
+    if (modo === 'global') {
+      const ids = [...selecionados];
+      if (ids.length < 2) return null;
+      res = await servicoService.compararGlobal(tipoServico, ids, filtros);
+    } else {
+      if (!contratoId || !tipoServico) return null;
+      res = await servicoService.compararPorTipo(contratoId, tipoServico, filtros);
+    }
+
+    return { servicos: res.servicos || [], periodoLabel };
+  }, [
+    modo,
+    periodosPorContrato,
+    contratosIdsSelecionados,
+    contratoId,
+    periodoContratoUnico,
+    selecionados,
+    tipoServico,
+  ]);
 
   useEffect(() => {
     if (modo !== 'global') return;
@@ -836,6 +888,7 @@ export default function CompararPorTipo({
             <AnalisePesoPainel
               servicos={dados.servicos}
               tipoServicoLabel={dados.tipoServicoLabel}
+              onBuscarQuinzena={buscarComparacaoQuinzena}
               onAbrirServico={(s) =>
                 navigate(`/contratos/${s.contratoId || dados.contratoId}/servicos/${s.id}`)
               }

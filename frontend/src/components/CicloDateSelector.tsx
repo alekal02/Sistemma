@@ -12,7 +12,11 @@ import pdfService from '../services/pdfService';
 import { gerarHtmlRelatorioOperacionalPeriodo } from '../utils/gerarHtmlRelatorioOperacionalPeriodo';
 import { gerarHtmlRelatorioRocadaCiclo } from '../utils/gerarHtmlRelatorioRocadaCiclo';
 import { gerarHtmlRelatorioUnidadeCiclo } from '../utils/gerarHtmlRelatorioUnidadeCiclo';
+import { gerarHtmlRelatorioHodometroSaude } from '../utils/gerarHtmlRelatorioHodometroSaude';
+import { analisarHodometroSaude } from '../utils/relatorioHodometroSaude';
 import { analisarOperacaoDia } from '../utils/operacaoDia';
+import type { MapaLimiteCaminhao } from '../utils/limitesCaminhaoContrato';
+import { analisarCapacidadeViagensDia } from '../utils/capacidadeViagemDia';
 import {
   calcularPeriodoOperacional,
   inferirReferenciaPeriodoOperacional,
@@ -36,8 +40,11 @@ import {
   gerarNomePdfRelatorioOperacionalPeriodo,
   gerarNomePdfRelatorioRocadaCiclo,
   gerarNomePdfRelatorioUnidadeCiclo,
+  gerarNomePdfRelatorioHodometroSaude,
 } from '../utils/gerarNomePdf';
 import servicoService from '../services/servicoService';
+
+type ExportandoPdf = TipoPeriodoOperacional | 'hodometro' | null;
 
 interface CicloDateSelectorProps {
   diaInicioCiclo: number;
@@ -67,6 +74,10 @@ interface CicloDateSelectorProps {
     valorBasculante?: number | null;
   } | null;
   placasReserva?: string[];
+  limitesPesoKg?: MapaLimiteCaminhao | null;
+  volumeL?: MapaLimiteCaminhao | null;
+  densidadeResiduoKgL?: number | null;
+  densidadeKgL?: MapaLimiteCaminhao | null;
   dataSelecionada?: string;
   onOpenDia?: (data: string, resumo: DadoDiario) => void;
   onClearDia?: () => void;
@@ -119,6 +130,10 @@ export default function CicloDateSelector({
   configFaturamento,
   contratoTarifas,
   placasReserva = [],
+  limitesPesoKg = null,
+  volumeL = null,
+  densidadeResiduoKgL = null,
+  densidadeKgL = null,
   dataSelecionada,
   onOpenDia,
   onClearDia,
@@ -132,7 +147,7 @@ export default function CicloDateSelector({
   const ehUnidadeNaoRocada = ehPorUnidade && !ehRocada;
   const navigate = useNavigate();
   const { adicionarToast } = useToast();
-  const [exportando, setExportando] = useState<TipoPeriodoOperacional | null>(null);
+  const [exportando, setExportando] = useState<ExportandoPdf>(null);
   const [mostrarSemDados, setMostrarSemDados] = useState(true);
   const [cicloFechado, setCicloFechado] = useState(false);
   const [fechandoCiclo, setFechandoCiclo] = useState(false);
@@ -284,7 +299,8 @@ export default function CicloDateSelector({
     const ok = window.confirm(
       `Fechar o ciclo "${ciclo.label}"?\n\n`
       + 'As planilhas deste período ficarão protegidas. '
-      + 'Novos uploads não alterarão estes dados.',
+      + 'Novos uploads não alterarão estes dados.\n'
+      + 'Se houver pasta de backup no contrato, a última planilha será salva lá.',
     );
     if (!ok) return;
 
@@ -295,7 +311,17 @@ export default function CicloDateSelector({
         anoReferencia: anoRef,
       });
       setCicloFechado(true);
-      adicionarToast(resp.message || 'Ciclo fechado com sucesso', 'success');
+      const backup = resp.backupPlanilha;
+      if (backup?.ok && backup.caminho) {
+        adicionarToast(`Ciclo fechado. Planilha salva em: ${backup.caminho}`, 'success');
+      } else if (backup && !backup.ignorado && backup.erro) {
+        adicionarToast(
+          `${resp.message || 'Ciclo fechado'} — backup da planilha falhou: ${backup.erro}`,
+          'warning',
+        );
+      } else {
+        adicionarToast(resp.message || 'Ciclo fechado com sucesso', 'success');
+      }
       onCicloFechado?.();
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
@@ -306,7 +332,7 @@ export default function CicloDateSelector({
     }
   }, [
     contractId, servicoId, cicloFechado, fechandoCiclo, totais.viagens,
-    ciclo.label, mesRef, anoRef, adicionarToast, onCicloFechado,
+    ciclo.label, mesRef, anoRef, adicionarToast, onCicloFechado, ehPorUnidade, totais,
   ]);
 
   const hoje = hojeISO();
@@ -562,7 +588,14 @@ export default function CicloDateSelector({
         { concorrencia: 4 },
       );
 
+      const limOpts = {
+        limitesPesoKg,
+        volumeL,
+        densidadeResiduoKgL,
+        densidadeKgL,
+      };
       const operacao = analisarOperacaoDia(dadosPeriodo);
+      const capacidade = analisarCapacidadeViagensDia(dadosPeriodo, limOpts);
       const html = gerarHtmlRelatorioOperacionalPeriodo({
         servicoNome: servicoNome || 'Serviço',
         periodo,
@@ -571,6 +604,8 @@ export default function CicloDateSelector({
         diasComDados: relatorioPeriodo.diasComDados,
         totais: relatorioPeriodo.totais,
         placasReserva,
+        capacidade,
+        ...limOpts,
       });
       const nomeArquivo = gerarNomePdfRelatorioOperacionalPeriodo({
         servicoNome: servicoNome || 'Servico',
@@ -590,8 +625,68 @@ export default function CicloDateSelector({
     }
   }, [
     adicionarToast, servicoNome, ciclo, dias, tarifas, ehRocada, ehUnidadeNaoRocada,
-    contractId, servicoId, placasReserva, exportarRelatorioRocadaCiclo, exportarRelatorioUnidadeCiclo,
+    contractId, servicoId, placasReserva, limitesPesoKg, volumeL, densidadeResiduoKgL, densidadeKgL,
+    exportarRelatorioRocadaCiclo, exportarRelatorioUnidadeCiclo,
   ]);
+
+  const exportarRelatorioHodometroSaude = useCallback(async () => {
+    if (!contractId || !servicoId) {
+      adicionarToast('Contrato/serviço não disponível para exportar', 'warning');
+      return;
+    }
+    if (ehRocada) {
+      adicionarToast('Relatório de hodômetro é para coleta com caminhão', 'info');
+      return;
+    }
+
+    setExportando('hodometro');
+    try {
+      const resumoApi = await servicoService.getResumoCicloPorDia(contractId, servicoId, {
+        dataInicio: ciclo.dataInicio,
+        dataFim: ciclo.dataFim,
+      });
+      const datasAtivas = (resumoApi.dias || [])
+        .filter((d: { data: string; viagens?: number }) => (d.viagens || 0) > 0)
+        .map((d: { data: string }) => d.data);
+
+      if (datasAtivas.length === 0) {
+        adicionarToast('Nenhum dado no ciclo para análise de hodômetro', 'warning');
+        return;
+      }
+
+      const dadosPeriodo = await servicoService.getDadosPorDatas(
+        contractId,
+        servicoId,
+        datasAtivas,
+        { concorrencia: 4 },
+      );
+
+      const relatorio = analisarHodometroSaude(dadosPeriodo as Record<string, unknown>[]);
+      const html = gerarHtmlRelatorioHodometroSaude({
+        servicoNome: servicoNome || 'Serviço',
+        dataInicio: ciclo.dataInicio,
+        dataFim: ciclo.dataFim,
+        relatorio,
+      });
+      const nomeArquivo = gerarNomePdfRelatorioHodometroSaude({
+        servicoNome: servicoNome || 'Servico',
+        dataInicio: ciclo.dataInicio,
+        dataFim: ciclo.dataFim,
+      });
+      await pdfService.gerarEBaixar(html, nomeArquivo, 'default', false);
+      adicionarToast(
+        relatorio.caminhoesComHodometroQuebrado > 0
+          ? `PDF gerado: ${relatorio.caminhoesComHodometroQuebrado} caminhão(ões) · ${relatorio.registrosCorrigidosAutomaticamente} correção(ões) automática(s)`
+          : 'PDF gerado: nenhum caminhão com hodômetro quebrado no ciclo',
+        'success',
+      );
+    } catch (err) {
+      console.error('Erro PDF saúde hodômetro:', err);
+      adicionarToast('Erro ao gerar relatório de hodômetro', 'error');
+    } finally {
+      setExportando(null);
+    }
+  }, [adicionarToast, contractId, servicoId, ciclo, servicoNome, ehRocada]);
 
   if (!diaInicioCiclo || diaInicioCiclo <= 0) return null;
 
@@ -716,6 +811,16 @@ export default function CicloDateSelector({
                 >
                   <FiDownload size={13} />
                   {exportando === 'quinzenal' ? 'Gerando...' : 'PDF Quinzenal'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => exportarRelatorioHodometroSaude()}
+                  disabled={exportando !== null || semDados}
+                  title={semDados ? 'Sem dados no ciclo' : `Saúde dos dados — caminhões com hodômetro quebrado / KM não informado (${formatarIsoParaBr(ciclo.dataInicio)} a ${formatarIsoParaBr(ciclo.dataFim)})`}
+                  style={btnPdfHeader(exportando === 'hodometro', semDados, true)}
+                >
+                  <FiTruck size={13} />
+                  {exportando === 'hodometro' ? 'Gerando...' : 'PDF Saúde Hodômetro'}
                 </button>
               </>
             )}

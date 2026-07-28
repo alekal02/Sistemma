@@ -133,7 +133,8 @@
 }
 
 .contrato-config-mini select,
-.contrato-config-mini textarea {
+.contrato-config-mini textarea,
+.contrato-config-mini input[type="text"] {
   width: 100%;
   font-size: 0.8rem;
   border: 1px solid #e2e8f0;
@@ -141,6 +142,20 @@
   padding: 0.4rem 0.5rem;
   background: #fff;
   color: #0f172a;
+}
+
+.contrato-config-hint {
+  font-size: 0.68rem;
+  line-height: 1.35;
+  color: #64748b;
+}
+
+.contrato-config-hint code {
+  font-size: 0.65rem;
+  background: #e2e8f0;
+  padding: 0.05rem 0.25rem;
+  border-radius: 3px;
+  margin: 0 0.15rem;
 }
 
 .contrato-config-mini button {

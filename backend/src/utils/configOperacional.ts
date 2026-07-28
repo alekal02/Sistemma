@@ -11,6 +11,11 @@ export interface ConfigOperacionalContrato {
   densidadeResiduoKgL?: number | null;
   /** Densidade (kg/L) por tipo de caminhão. */
   densidadeKgL?: { MINI?: number; TOCO?: number; BASCULANTE?: number; TRUCK?: number };
+  /**
+   * Pasta absoluta (vista pelo backend) onde salvar a última planilha ao fechar o ciclo.
+   * Em Docker: ex. `/data/planilhas-ciclo/NomeDoContrato`
+   */
+  pastaBackupPlanilhas?: string | null;
 }
 
 const VALORES_IGNORADOS = new Set([

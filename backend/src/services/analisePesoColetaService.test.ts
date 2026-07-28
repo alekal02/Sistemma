@@ -182,3 +182,55 @@ describe('analisarPesoColeta — mínimo/máximo por viagem', () => {
     assert.equal(analise!.rotaMaxima?.pesoMedioKg, 6000);
   });
 });
+
+describe('analisarPesoColeta — faixas vs peso ideal do tipo', () => {
+  it('classifica em péssimo / ruim / ótimo / excedido conforme % do ideal', () => {
+    // MINI ideal padrão = 6000 L × 0,55 = 3300 kg
+    const dados = [
+      {
+        PLACA: 'M1',
+        'TIPO DE CAMINHÃO': 'MINI',
+        'CONTADOR DE VIAGENS': 1,
+        'PESO 1': 1000, // ~30% → péssimo
+        'PESO TOTAL': 1000,
+        validoDashboard: true,
+      },
+      {
+        PLACA: 'M2',
+        'TIPO DE CAMINHÃO': 'MINI',
+        'CONTADOR DE VIAGENS': 1,
+        'PESO 1': 2000, // ~61% → ruim
+        'PESO TOTAL': 2000,
+        validoDashboard: true,
+      },
+      {
+        PLACA: 'M3',
+        'TIPO DE CAMINHÃO': 'MINI',
+        'CONTADOR DE VIAGENS': 1,
+        'PESO 1': 3300, // 100% → ótimo
+        'PESO TOTAL': 3300,
+        validoDashboard: true,
+      },
+      {
+        PLACA: 'M4',
+        'TIPO DE CAMINHÃO': 'MINI',
+        'CONTADOR DE VIAGENS': 1,
+        'PESO 1': 4000, // ~121% → excedido
+        'PESO TOTAL': 4000,
+        validoDashboard: true,
+      },
+    ];
+
+    const analise = analisarPesoColeta(dados, 'svc-faixas-ideal');
+    assert.ok(analise);
+    assert.equal(analise!.faixas.length, 4);
+    assert.match(analise!.faixas[0].label, /PÉSSIMO/i);
+    assert.match(analise!.faixas[1].label, /RUIM/i);
+    assert.match(analise!.faixas[2].label, /ÓTIMO|OTIMO/i);
+    assert.match(analise!.faixas[3].label, /EXCEDIDO/i);
+    assert.equal(analise!.faixas[0].quantidade, 1);
+    assert.equal(analise!.faixas[1].quantidade, 1);
+    assert.equal(analise!.faixas[2].quantidade, 1);
+    assert.equal(analise!.faixas[3].quantidade, 1);
+  });
+});

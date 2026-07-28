@@ -225,8 +225,15 @@ export function extrairMetricasCardViagem(
   const kmTotal = paraNumero(obterValorRegistro(dado, cols.colKmTotal, 'kmTotal'));
   const kmSaida = paraNumero(obterValorRegistro(dado, cols.colKmSaida, 'kmSaida'));
   const kmChegada = paraNumero(obterValorRegistro(dado, cols.colKmChegada, 'kmChegada'));
-  const kmCalculado = kmChegada > kmSaida ? kmChegada - kmSaida : 0;
-  const kmFinal = kmTotal > 0 ? kmTotal : kmCalculado;
+  /** Distância operacional plausível; hodômetro absoluto / chegada < saída → 0 */
+  const MAX_KM_VIAGEM = 300;
+  const kmCalculado = (kmChegada > kmSaida && (kmChegada - kmSaida) <= MAX_KM_VIAGEM)
+    ? (kmChegada - kmSaida)
+    : 0;
+  const kmBruto = kmTotal > 0 ? kmTotal : kmCalculado;
+  const alertaHodometro = Boolean(dado._alertaKmHodometro)
+    || Boolean((dado.dados as Record<string, unknown> | undefined)?._alertaKmHodometro);
+  const kmFinal = (!alertaHodometro && kmBruto > 0 && kmBruto <= MAX_KM_VIAGEM) ? kmBruto : 0;
 
   const horaSaida = serialParaMin(obterValorRegistro(dado, cols.colHoraSaida, 'horaSaida'));
   const horaChegada = serialParaMin(obterValorRegistro(dado, cols.colHoraChegada, 'horaChegada'));

@@ -19,16 +19,34 @@ export function gerarHtmlSaudeDadosServer(opts: {
   const inconsistentes = relatorio.viagensInconsistentesTotal ?? relatorio.viagensIncompletas ?? 0;
   const validas = relatorio.viagensValidasDashboard ?? relatorio.viagensCompletas ?? 0;
   const descartadas = relatorio.linhasDescartadasSemDados ?? 0;
+  const corrigidasHodometro = relatorio.viagensCorrigidasHodometro ?? 0;
+  const pesagensAltas = relatorio.pesagensAltas ?? 0;
+  const linhasPesagemAlta = relatorio.linhasComPesagemAlta ?? 0;
   const dataRelatorio = new Date().toLocaleDateString('pt-BR');
 
-  const filtrarProblemas = (problemas: string[] | undefined) =>
+  const filtrarProblemas = (
+    problemas: string[] | undefined,
+    opts?: { corrigidaHodometro?: boolean; alertaPesagemAlta?: boolean },
+  ) =>
     (problemas || []).filter((p) => {
       const pl = p.toLowerCase();
+      if (opts?.corrigidaHodometro && (pl.includes('hodômetro') || pl.includes('hodometro') || pl.includes('km zerado'))) {
+        return true;
+      }
+      if (opts?.alertaPesagemAlta && pl.includes('pesagem alta')) {
+        return true;
+      }
       return !pl.includes('placa será unificada') && !pl.startsWith('corrigido automaticamente');
     });
 
   const linhasTabela = viagens.map((v) => {
-    const probs = filtrarProblemas(v.problemas);
+    const probs = filtrarProblemas(v.problemas, {
+      corrigidaHodometro: v.corrigidaHodometro,
+      alertaPesagemAlta: v.alertaPesagemAlta,
+    });
+    const corProb = v.alertaPesagemAlta
+      ? '#9a3412'
+      : (v.corrigidaHodometro ? '#166534' : '#b45309');
     return `
       <tr>
         <td>${esc(v.linha)}</td>
@@ -36,15 +54,19 @@ export function gerarHtmlSaudeDadosServer(opts: {
         <td>${esc(v.placa || '—')}</td>
         <td>${esc(v.motorista || '—')}</td>
         <td>${esc(v.rota || '—')}</td>
-        <td>${v.kmTotal != null
-          ? Number(v.kmTotal).toLocaleString('pt-BR', { maximumFractionDigits: 1 })
-          : (v.kmTotalCalculado != null
-            ? `${Number(v.kmTotalCalculado).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}*`
-            : '—')}</td>
-        <td>${v.pesoTotal != null
+        <td>${v.corrigidaHodometro
+          ? '0 (tratado)'
+          : (v.kmTotal != null
+            ? Number(v.kmTotal).toLocaleString('pt-BR', { maximumFractionDigits: 1 })
+            : (v.kmTotalCalculado != null
+              ? `${Number(v.kmTotalCalculado).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}*`
+              : '—'))}</td>
+        <td style="${v.alertaPesagemAlta ? 'font-weight:700;color:#9a3412' : ''}">${v.pesoTotal != null
           ? Number(v.pesoTotal).toLocaleString('pt-BR', { maximumFractionDigits: 1 })
-          : '—'}</td>
-        <td style="color:#b45309;font-size:9px">${esc(probs.join('; ') || '—')}</td>
+          : '—'}${v.alertaPesagemAlta && v.pesoAlertaKg != null
+          ? ` <span style="font-size:8px">(máx viagem ${Number(v.pesoAlertaKg).toLocaleString('pt-BR', { maximumFractionDigits: 0 })} kg)</span>`
+          : ''}</td>
+        <td style="color:${corProb};font-size:9px">${esc(probs.join('; ') || (v.corrigidaHodometro ? 'KM zerado — peso/viagens mantidos' : '—'))}</td>
       </tr>`;
   }).join('');
 
@@ -102,6 +124,9 @@ export function gerarHtmlSaudeDadosServer(opts: {
     <div class="card"><div class="num">${esc(relatorio.totalViagens || 0)}</div><div class="label">Total de Viagens</div></div>
     <div class="card completas"><div class="num">${esc(validas)}</div><div class="label">Válidas (dashboard)</div></div>
     <div class="card incompletas"><div class="num">${esc(inconsistentes)}</div><div class="label">Inconsistentes</div></div>
+    ${pesagensAltas > 0
+      ? `<div class="card"><div class="num" style="color:#ea580c">${esc(pesagensAltas)}</div><div class="label">Pesagens &gt; 15 t</div></div>`
+      : ''}
     ${descartadas > 0
       ? `<div class="card"><div class="num">${esc(descartadas)}</div><div class="label">Ignoradas (sem dados)</div></div>`
       : ''}
@@ -110,8 +135,14 @@ export function gerarHtmlSaudeDadosServer(opts: {
 
   <div class="aviso">
     As ${esc(validas)} viagem(ns) válidas entram no dashboard. As ${esc(inconsistentes)} inconsistente(s) ficam fora dos KPIs.
+    ${corrigidasHodometro > 0
+      ? `${esc(corrigidasHodometro)} viagem(ns) com hodômetro inconsistente (KM inicial=final/quebrado) foram tratadas: KM zerado, peso e viagens mantidos. `
+      : ''}
+    ${pesagensAltas > 0
+      ? `${esc(pesagensAltas)} pesagem(ns) &gt; 15.000 kg/viagem (até 1.000 t) em ${esc(linhasPesagemAlta)} linha(s) — alerta informativo, não bloqueia o dashboard. `
+      : ''}
     ${descartadas > 0 ? `${esc(descartadas)} linha(s) sem placa, KM Total e Peso Total foram ignoradas e não entram no sistema. ` : ''}
-    Regras: KM máx. 300, peso &gt; 0, sem negativos, horas com ":" (não ";").
+    Regras: KM máx. 300, peso &gt; 0, sem negativos, horas com ":" (não ";"). Hodômetro quebrado e pesagem alta não travam a subida.
   </div>
 
   ${(relatorio.regrasSaude || []).length > 0 ? `
@@ -128,7 +159,7 @@ export function gerarHtmlSaudeDadosServer(opts: {
   ${resumoPlacasHtml}
 
   ${viagens.length > 0 ? `
-  <div class="section-title">Amostra — viagens fora do dashboard (${esc(viagens.length)}${viagens.length >= 500 ? '+' : ''})</div>
+  <div class="section-title">Amostra — inconsistentes, hodômetro e pesagem alta (${esc(viagens.length)}${viagens.length >= 500 ? '+' : ''})</div>
   <table>
     <thead>
       <tr>

@@ -51,6 +51,8 @@ export class Contract {
     densidadeResiduoKgL?: number | null;
     /** Densidade (kg/L) por tipo — peso ideal = volume (L) × densidade do tipo. */
     densidadeKgL?: { MINI?: number; TOCO?: number; BASCULANTE?: number; TRUCK?: number };
+    /** Pasta absoluta (vista pelo backend) para backup da planilha ao fechar o ciclo. */
+    pastaBackupPlanilhas?: string | null;
   } | null;
 
   @OneToMany(() => Servico, (servico) => servico.contract)

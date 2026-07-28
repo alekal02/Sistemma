@@ -13,6 +13,10 @@ import {
 import { invalidarCacheDadosServico } from './servicoDadosCache';
 import { dashboardCache } from './DashboardCacheManager';
 import { agendarWarmupPosUpload } from './executivoCacheWarmupService';
+import FileStorageService from './FileStorageService';
+import PlanilhaService from './PlanilhaService';
+import fs from 'fs/promises';
+import path from 'path';
 
 export interface CicloFechadoInfo {
   mesReferencia: number;
@@ -23,6 +27,15 @@ export interface CicloFechadoInfo {
   fechadoEm: string;
   uploadIds: number[];
   totalRegistros: number;
+}
+
+export interface BackupPlanilhaCicloResultado {
+  ok: boolean;
+  caminho?: string;
+  uploadId?: number;
+  erro?: string;
+  /** true se não havia pasta configurada — backup ignorado de propósito */
+  ignorado?: boolean;
 }
 
 export interface FiltroUploadsCiclo {
@@ -184,7 +197,12 @@ export async function fecharCicloServico(opts: {
   contractId: string;
   mesReferencia: number;
   anoReferencia: number;
-}): Promise<{ ciclo: PeriodoCicloContrato; uploadIds: number[]; totalRegistros: number }> {
+}): Promise<{
+  ciclo: PeriodoCicloContrato;
+  uploadIds: number[];
+  totalRegistros: number;
+  backupPlanilha: BackupPlanilhaCicloResultado;
+}> {
   const { servicoId, contractId, mesReferencia, anoReferencia } = opts;
 
   const contractRepo = AppDataSource.getRepository(Contract);
@@ -256,5 +274,91 @@ export async function fecharCicloServico(opts: {
   dashboardCache.invalidar(servicoId);
   agendarWarmupPosUpload(servicoId);
 
-  return { ciclo: periodo, uploadIds, totalRegistros };
+  const backupPlanilha = await salvarUltimaPlanilhaNaPastaBackup({
+    contract,
+    servicoId,
+    uploadIds,
+    mesReferencia,
+    anoReferencia,
+  });
+
+  return { ciclo: periodo, uploadIds, totalRegistros, backupPlanilha };
+}
+
+function sanitizarNomeArquivo(nome: string): string {
+  const base = path.basename(String(nome || '').trim()) || 'planilha.xlsx';
+  return base.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/\s+/g, ' ').trim() || 'planilha.xlsx';
+}
+
+function sanitizarParteNome(parte: string): string {
+  return String(parte || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '')
+    .slice(0, 60) || 'Servico';
+}
+
+async function salvarUltimaPlanilhaNaPastaBackup(opts: {
+  contract: Contract;
+  servicoId: string;
+  uploadIds: number[];
+  mesReferencia: number;
+  anoReferencia: number;
+}): Promise<BackupPlanilhaCicloResultado> {
+  const pastaRaw = String(opts.contract.configOperacional?.pastaBackupPlanilhas || '').trim();
+  if (!pastaRaw) {
+    return { ok: false, ignorado: true, erro: 'Pasta de backup não configurada no contrato' };
+  }
+
+  try {
+    const uploadRepo = AppDataSource.getRepository(PlanilhaUpload);
+    const ultimo = await uploadRepo
+      .createQueryBuilder('u')
+      .where('u.id IN (:...ids)', { ids: opts.uploadIds })
+      .orderBy('u.criadoEm', 'DESC')
+      .getOne();
+
+    if (!ultimo) {
+      return { ok: false, erro: 'Nenhum upload encontrado para backup' };
+    }
+
+    const servicoRepo = AppDataSource.getRepository(Servico);
+    const servico = await servicoRepo.findOne({
+      where: { id: opts.servicoId },
+      select: ['id', 'nome'],
+    });
+    const nomeServico = sanitizarParteNome(servico?.nome || 'Servico');
+    const mes = String(opts.mesReferencia).padStart(2, '0');
+    const nomeOriginal = sanitizarNomeArquivo(ultimo.nomeArquivo);
+    const nomeDestino = `${opts.anoReferencia}-${mes}_${nomeServico}_${nomeOriginal}`;
+
+    let buffer: Buffer;
+    if (ultimo.urlDownload) {
+      try {
+        buffer = await FileStorageService.downloadArquivo(ultimo.urlDownload);
+      } catch (errMinio) {
+        console.warn('[cicloPlanilha] Falha MinIO no backup, usando export regenerado:', errMinio);
+        const exp = await PlanilhaService.exportarPlanilha(ultimo.id);
+        buffer = exp.buffer;
+      }
+    } else {
+      const exp = await PlanilhaService.exportarPlanilha(ultimo.id);
+      buffer = exp.buffer;
+    }
+
+    const pastaAbs = path.resolve(pastaRaw);
+    await fs.mkdir(pastaAbs, { recursive: true });
+    const caminhoFinal = path.join(pastaAbs, nomeDestino);
+    await fs.writeFile(caminhoFinal, buffer);
+
+    console.log(`[cicloPlanilha] Backup da planilha salvo: ${caminhoFinal}`);
+    return { ok: true, caminho: caminhoFinal, uploadId: ultimo.id };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[cicloPlanilha] Erro ao salvar backup da planilha:', msg);
+    return { ok: false, erro: msg };
+  }
 }

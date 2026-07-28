@@ -4622,6 +4622,7 @@ async getModeloExecutivo(req: Request, res: Response): Promise<any> {
         ciclo: resultado.ciclo,
         uploadIds: resultado.uploadIds,
         totalRegistros: resultado.totalRegistros,
+        backupPlanilha: resultado.backupPlanilha,
       });
     } catch (error: any) {
       const msg = error?.message || 'Erro ao fechar ciclo';

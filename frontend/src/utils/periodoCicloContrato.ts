@@ -212,6 +212,71 @@ export function listarDatasIntervalo(dataInicio: string, dataFim: string): strin
   return datas;
 }
 
+export interface QuinzenaPeriodo {
+  numero: 1 | 2;
+  dataInicio: string;
+  dataFim: string;
+  label: string;
+}
+
+/**
+ * Divide o período do ciclo em quinzenas (15 + restante).
+ * Ex.: ciclo de 30 dias → 1ª = dias 1–15, 2ª = dias 16–30.
+ */
+export function calcularQuinzenasDoPeriodo(
+  dataInicio: string,
+  dataFim: string,
+): { primeira: QuinzenaPeriodo; segunda: QuinzenaPeriodo | null } {
+  const dias = listarDatasIntervalo(dataInicio, dataFim);
+  if (dias.length === 0) {
+    return {
+      primeira: {
+        numero: 1,
+        dataInicio,
+        dataFim,
+        label: `1ª quinzena (${formatarDataBr(dataInicio)} a ${formatarDataBr(dataFim)})`,
+      },
+      segunda: null,
+    };
+  }
+
+  const q1FimIdx = Math.min(14, dias.length - 1);
+  const primeira: QuinzenaPeriodo = {
+    numero: 1,
+    dataInicio: dias[0],
+    dataFim: dias[q1FimIdx],
+    label: `1ª quinzena (${formatarDataBr(dias[0])} a ${formatarDataBr(dias[q1FimIdx])})`,
+  };
+
+  if (q1FimIdx >= dias.length - 1) {
+    return { primeira, segunda: null };
+  }
+
+  const segunda: QuinzenaPeriodo = {
+    numero: 2,
+    dataInicio: dias[q1FimIdx + 1],
+    dataFim: dias[dias.length - 1],
+    label: `2ª quinzena (${formatarDataBr(dias[q1FimIdx + 1])} a ${formatarDataBr(dias[dias.length - 1])})`,
+  };
+  return { primeira, segunda };
+}
+
+/** Recorta o período do contrato para a 1ª ou 2ª quinzena (modo datas). */
+export function aplicarQuinzenaAoPeriodo(
+  periodo: PeriodoContratoState,
+  quinzena: 1 | 2,
+): PeriodoContratoState | null {
+  const { primeira, segunda } = calcularQuinzenasDoPeriodo(periodo.dataInicio, periodo.dataFim);
+  const q = quinzena === 1 ? primeira : segunda;
+  if (!q) return null;
+  return {
+    ...periodo,
+    modo: 'datas',
+    dataInicio: q.dataInicio,
+    dataFim: q.dataFim,
+  };
+}
+
 export function buildPeriodosPorContratoQuery(
   periodos: Record<string, PeriodoContratoState>,
 ): Record<string, PeriodoContratoQuery> {

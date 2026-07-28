@@ -50,6 +50,49 @@ export interface FaixaPesoAnalise {
   pct: number;
 }
 
+/**
+ * Qualidade da viagem vs peso ideal do tipo (volume × densidade).
+ *   < 50%            → Péssimo
+ *   50% – < 90%      → Ruim
+ *   90% – 110%       → Ótimo
+ *   > 110%           → Excedido
+ */
+export const PCT_FAIXA_PESSIMO = 50;
+export const PCT_FAIXA_RUIM_MAX = 90;
+export const PCT_FAIXA_OTIMO_MAX = 110;
+
+const FAIXAS_PESO: Array<{
+  id: 'pessimo' | 'ruim' | 'otimo' | 'excedido';
+  label: string;
+}> = [
+  { id: 'pessimo', label: 'PÉSSIMO (< 50% do ideal)' },
+  { id: 'ruim', label: 'RUIM (50–90% do ideal)' },
+  { id: 'otimo', label: 'ÓTIMO (90–110% do ideal)' },
+  { id: 'excedido', label: 'EXCEDIDO (> 110% do ideal)' },
+];
+
+export function classificarFaixaVsIdeal(pctIdeal: number): (typeof FAIXAS_PESO)[number]['id'] {
+  if (pctIdeal < PCT_FAIXA_PESSIMO) return 'pessimo';
+  if (pctIdeal < PCT_FAIXA_RUIM_MAX) return 'ruim';
+  if (pctIdeal <= PCT_FAIXA_OTIMO_MAX) return 'otimo';
+  return 'excedido';
+}
+
+function idxFaixaPorId(id: (typeof FAIXAS_PESO)[number]['id']): number {
+  return FAIXAS_PESO.findIndex((f) => f.id === id);
+}
+
+function pesoIdealDoTipo(
+  tipo: TipoCaminhaoPeso,
+  volumes: LimitesVolumeL,
+  densidades: Record<TipoCaminhaoPeso, number>,
+): number {
+  const vol = volumes[tipo];
+  const dens = densidades[tipo];
+  if (!(vol > 0) || !(dens > 0)) return 0;
+  return Math.round(vol * dens * 100) / 100;
+}
+
 /** Extremo de peso de uma viagem individual (campo pesoMedioKg = peso da viagem em kg). */
 export interface RotaPesoExtremo {
   nome: string;
@@ -76,14 +119,6 @@ export interface AnalisePesoColeta {
   perdaTon: number;
 }
 
-const FAIXAS_PESO: Array<{ label: string; min: number; max: number | null }> = [
-  { label: '< 3.000', min: -Infinity, max: 3000 },
-  { label: '>=3.000 E <7.000', min: 3000, max: 7000 },
-  { label: '>=7.000 E <9.000', min: 7000, max: 9000 },
-  { label: '>=9.000 E <11.000', min: 9000, max: 11000 },
-  { label: '>=11.000', min: 11000, max: null },
-];
-
 const COLUNAS_TIPO_CAMINHAO = [
   'TIPO DE CAMINHÃO',
   'TIPO DE CAMINHAO',
@@ -101,12 +136,6 @@ function fmtNum(v: number, dec = 2): string {
 
 function fmtPct(v: number): string {
   return `${Math.round(v).toLocaleString('pt-BR')}%`;
-}
-
-function pesoNoFaixa(peso: number, faixa: { min: number; max: number | null }): boolean {
-  if (peso < faixa.min) return false;
-  if (faixa.max !== null && peso >= faixa.max) return false;
-  return true;
 }
 
 function inferirTipoPorPeso(peso: number, limites: LimitesPesoKg): TipoCaminhaoPeso {
@@ -388,20 +417,28 @@ function formatarPesoExtremoRota(r: RotaPesoExtremo | null): string {
   return fmtNum(r.pesoMedioKg, 2);
 }
 
-function registrarFaixa(faixaContagem: number[], peso: number): void {
-  for (let i = 0; i < FAIXAS_PESO.length; i++) {
-    if (pesoNoFaixa(peso, FAIXAS_PESO[i])) {
-      faixaContagem[i]++;
-      break;
-    }
-  }
+function registrarFaixaVsIdeal(
+  faixaContagem: number[],
+  peso: number,
+  tipo: TipoCaminhaoPeso | null,
+  volumes: LimitesVolumeL,
+  densidades: Record<TipoCaminhaoPeso, number>,
+  limites: LimitesPesoKg,
+): void {
+  if (!(peso > 0)) return;
+  const tipoEfetivo = tipo ?? inferirTipoPorPeso(peso, limites);
+  const ideal = pesoIdealDoTipo(tipoEfetivo, volumes, densidades);
+  if (!(ideal > 0)) return;
+  const pctIdeal = (peso / ideal) * 100;
+  const idx = idxFaixaPorId(classificarFaixaVsIdeal(pctIdeal));
+  if (idx >= 0) faixaContagem[idx]++;
 }
 
 /**
  * Análise de peso por viagem — métricas gerenciais alinhadas à planilha:
  * - Viagens: VIAGENS_POR_ROTA() (soma CONTADOR DE VIAGENS)
  * - Peso médio: SUM(PESO TOTAL) / VIAGENS_POR_ROTA()
- * - Faixas: pesos individuais PESO 1–4 por viagem
+ * - Faixas: qualidade vs peso ideal do tipo (volume × densidade)
  * - Mín/Máx: menor e maior peso de viagem individual no ciclo
  * - Caixa média: frota por TIPO DE CAMINHÃO × volume (L) de cada tipo
  */
@@ -448,8 +485,9 @@ export function analisarPesoColeta(
 
     if (pesoTotal > 0) totalPesoKg += pesoTotal;
 
+    const tipoReg = obterTipoCaminhaoRegistro(reg, colTipo || undefined);
     for (const p of pesosViagem) {
-      registrarFaixa(faixaContagem, p);
+      registrarFaixaVsIdeal(faixaContagem, p, tipoReg, volumes, densidades, limites);
     }
   }
 
@@ -476,10 +514,11 @@ export function analisarPesoColeta(
   const densidadeOtima = densidadeMedia;
   const perdaTon = ((pesoMedioKg - mediaIdealKg) * totalViagens) / 1000;
 
+  const totalClassificados = faixaContagem.reduce((a, b) => a + b, 0);
   const faixas: FaixaPesoAnalise[] = FAIXAS_PESO.map((f, i) => ({
     label: f.label,
     quantidade: faixaContagem[i],
-    pct: totalViagens > 0 ? (faixaContagem[i] / totalViagens) * 100 : 0,
+    pct: totalClassificados > 0 ? (faixaContagem[i] / totalClassificados) * 100 : 0,
   }));
 
   return {

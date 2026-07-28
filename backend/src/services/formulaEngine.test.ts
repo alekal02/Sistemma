@@ -459,6 +459,32 @@ describe('corrigirViagemAutomatica', () => {
     assert.equal(coleta.kmTotal, 8);
   });
 
+  it('corrige KM Total a partir de rotas com hodômetro quebrado e números de rota irregulares', async () => {
+    const { ColetaData } = await import('../entities/ColetaData');
+    const { prepararViagemParaImportacao } = await import('./validacaoViagemService');
+    const coleta = new ColetaData();
+    coleta.dataSaida = new Date(Date.UTC(2026, 5, 25));
+    coleta.placa = 'ABC1D23';
+    coleta.motorista = 'Teste';
+    coleta.pesoTotal = 5000;
+    coleta.dados = {
+      'DATA SAIDA': '25/06/2026',
+      'PLACA': 'ABC1D23',
+      'MOTORISTA': 'Teste',
+      'PESO TOTAL': 5000,
+      'KM SAIDA ROTA 1': 100000,
+      'KM CHEGADA ROTA 1': 100050,
+      'KM SAIDA ROTA 2': 100050,
+      'KM CHEGADA ROTA 2': 100070,
+      'KM TOTAL': 0,
+    };
+
+    const r = prepararViagemParaImportacao(coleta);
+    assert.equal(r.validoDashboard, true);
+    assert.equal(coleta.kmTotal, 70);
+    assert.ok(r.correcoes?.some(c => c.includes('KM Total')));
+  });
+
   it('serial Excel 46199 grava como 2026-06-26 (UTC, sem −1 dia)', async () => {
     const { dateUtcColumnTransformer } = await import('../utils/dateColumnTransformer');
     const { ColetaData } = await import('../entities/ColetaData');

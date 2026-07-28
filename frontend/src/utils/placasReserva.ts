@@ -9,6 +9,8 @@ export interface ConfigOperacionalContrato {
   volumeL?: { MINI?: number; TOCO?: number; BASCULANTE?: number; TRUCK?: number };
   densidadeResiduoKgL?: number | null;
   densidadeKgL?: { MINI?: number; TOCO?: number; BASCULANTE?: number; TRUCK?: number };
+  /** Pasta absoluta (vista pelo backend) para backup da planilha ao fechar o ciclo. */
+  pastaBackupPlanilhas?: string | null;
 }
 
 export function normalizarListaPlacasReserva(raw: unknown): string[] {

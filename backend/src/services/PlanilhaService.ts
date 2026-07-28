@@ -104,6 +104,7 @@ export class PlanilhaService {
     let registrosLimpos = 0;
     let viagensInconsistentes = 0;
     let linhasDescartadasSemDados = 0;
+    let viagensCorrigidas = 0;
 
     // Processar em lotes para performance
     const batch: ColetaData[] = [];
@@ -125,6 +126,7 @@ export class PlanilhaService {
           linhasDescartadasSemDados++;
           continue;
         }
+        if (validacao.correcoes?.length) viagensCorrigidas++;
         if (!validacao.validoDashboard) {
           viagensInconsistentes++;
           linhasIgnoradas++;
@@ -171,6 +173,7 @@ export class PlanilhaService {
       viagensInconsistentes,
       viagensValidasDashboard: importadas,
       linhasDescartadasSemDados,
+      viagensCorrigidas,
     };
 
     // Salvar planilha no MinIO para download futuro

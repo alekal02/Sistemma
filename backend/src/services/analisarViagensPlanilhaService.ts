@@ -16,6 +16,7 @@ import {
   contarViagensPorRotaRegistro,
   obterContadorViagensRegistro,
 } from './viagensPorRotaService';
+import { encontrarValorColuna, parseNumeroBr } from './FormulaEngine';
 import {
   conferirCadastroOperacional,
   type ConferenciaCadastroOperacional,
@@ -177,6 +178,12 @@ export interface ResultadoAnaliseViagens {
   viagensValidasDashboard: number;
   viagensInconsistentesTotal: number;
   linhasDescartadasSemDados?: number;
+  /** Viagens importáveis com KM zerado por hodômetro igual/quebrado */
+  viagensCorrigidasHodometro?: number;
+  /** Pesagens individuais > 15.000 kg (até 1.000 t) — alerta, não bloqueia dashboard */
+  pesagensAltas?: number;
+  /** Linhas da planilha com ao menos uma pesagem alta */
+  linhasComPesagemAlta?: number;
   podeImportar: boolean;
   avisoDashboard: string | null;
   percentualCompleto: number;
@@ -196,6 +203,11 @@ export interface ResultadoAnaliseViagens {
     temIdentificacao: boolean;
     temValorNegativo: boolean;
     problemas: string[];
+    /** true se entrou no dashboard com KM zerado por falha de hodômetro */
+    corrigidaHodometro?: boolean;
+    /** true se há pesagem > 15.000 kg (alerta informativo) */
+    alertaPesagemAlta?: boolean;
+    pesoAlertaKg?: number | null;
   }>;
   mensagem?: string;
   regrasSaude?: string[];
@@ -212,6 +224,70 @@ export interface ResultadoAnaliseViagens {
   linhasSemContador?: number;
   /** Conferência planilha × cadastro operacional do contrato */
   conferenciaCadastro?: ConferenciaCadastroOperacional | null;
+}
+
+/** Alerta informativo — pesagem por viagem acima do usual (não bloqueia dashboard). */
+export const PESO_ALERTA_VIAGEM_MIN_KG = 15_000;
+/** Teto do alerta: 1.000 toneladas (1.000.000 kg). Acima disso trata-se como ruído extremo. */
+export const PESO_ALERTA_VIAGEM_MAX_KG = 1_000_000;
+
+function lerPesosViagemParaAlerta(coleta: Partial<ColetaData>): number[] {
+  // Preferência: PESO 1–4 sem filtro de teto operacional (alerta até 1.000 t)
+  const raw: Record<string, unknown> = { ...(coleta as Record<string, unknown>) };
+  if (coleta.dados && typeof coleta.dados === 'object') {
+    Object.assign(raw, coleta.dados);
+  }
+  const pesos: number[] = [];
+  for (let i = 1; i <= 4; i++) {
+    const tipado = (coleta as Record<string, unknown>)[`peso${i}`];
+    const nTipado = tipado != null ? Number(tipado) : NaN;
+    if (!isNaN(nTipado) && nTipado > 0) {
+      pesos.push(nTipado);
+      continue;
+    }
+    const p = parseNumeroBr(encontrarValorColuna(raw, `PESO ${i}`));
+    if (!isNaN(p) && p > 0) pesos.push(p);
+  }
+  if (pesos.length > 0) return pesos;
+
+  // Fallback: uma viagem só com PESO TOTAL
+  const total = coleta.pesoTotal != null && !isNaN(Number(coleta.pesoTotal))
+    ? Number(coleta.pesoTotal)
+    : parseNumeroBr(encontrarValorColuna(raw, 'PESO TOTAL'));
+  const contador = obterContadorViagensRegistro(coleta as ColetaData);
+  if (!isNaN(total) && total > 0 && (contador === null || contador === 1)) {
+    return [total];
+  }
+  return [];
+}
+
+function detectarPesagemAlta(coleta: Partial<ColetaData>): {
+  quantidade: number;
+  pesoMaxKg: number | null;
+  mensagem: string | null;
+} {
+  const pesos = lerPesosViagemParaAlerta(coleta);
+  const altos = pesos.filter(
+    (p) => p > PESO_ALERTA_VIAGEM_MIN_KG && p <= PESO_ALERTA_VIAGEM_MAX_KG,
+  );
+  if (altos.length === 0) {
+    return { quantidade: 0, pesoMaxKg: null, mensagem: null };
+  }
+  const pesoMaxKg = Math.max(...altos);
+  const ton = pesoMaxKg / 1000;
+  return {
+    quantidade: altos.length,
+    pesoMaxKg,
+    mensagem:
+      `Atenção: pesagem alta por viagem (${pesoMaxKg.toLocaleString('pt-BR', { maximumFractionDigits: 0 })} kg / `
+      + `${ton.toLocaleString('pt-BR', { maximumFractionDigits: 2 })} t > 15.000 kg). `
+      + `Não bloqueia o dashboard.`,
+  };
+}
+
+function correcaoEhHodometro(texto: string): boolean {
+  const t = texto.toLowerCase();
+  return t.includes('hodômetro') || t.includes('hodometro') || t.includes('km zerado');
 }
 
 export function analisarViagensPlanilha(
@@ -319,6 +395,9 @@ export function analisarViagensPlanilha(
   let viagensCompletas = 0;
   let viagensIncompletas = 0;
   let viagensComValorNegativo = 0;
+  let viagensCorrigidasHodometro = 0;
+  let pesagensAltas = 0;
+  let linhasComPesagemAlta = 0;
   let linhasDescartadasSemDados = 0;
   let somaContadorViagens = 0;
   let viagensCalculadasDashboard = 0;
@@ -416,15 +495,25 @@ export function analisarViagensPlanilha(
       problemas.push(`Placa: ${validacaoPlaca.motivo}${validacaoPlaca.original ? ` (${validacaoPlaca.original})` : ''}`);
     }
     const temValorNegativo = problemas.some(p => p.toLowerCase().includes('negativo'));
+    const corrigidaHodometro = completa && (validacao.correcoes || []).some(correcaoEhHodometro);
+    const detPesagem = detectarPesagemAlta(coletaTmp);
+    const alertaPesagemAlta = detPesagem.quantidade > 0;
+    if (alertaPesagemAlta && detPesagem.mensagem) {
+      problemas.push(detPesagem.mensagem);
+      pesagensAltas += detPesagem.quantidade;
+      linhasComPesagemAlta++;
+    }
 
     if (completa) viagensCompletas++;
     else if (temIdentificacao) viagensIncompletas++;
     if (temValorNegativo && temIdentificacao) viagensComValorNegativo++;
+    if (corrigidaHodometro) viagensCorrigidasHodometro++;
 
     const linhaPlanilha = i + 2;
     if (!completa && temIdentificacao) {
       for (const motivo of problemas) {
         if (motivoIgnorarNoRelatorio(motivo)) continue;
+        if (motivo.toLowerCase().startsWith('atenção: pesagem alta')) continue; // não bloqueia
         const cat = motivoParaCategoria(motivo);
         if (!problemasPorCategoria.has(cat)) problemasPorCategoria.set(cat, new Set());
         problemasPorCategoria.get(cat)!.add(linhaPlanilha);
@@ -453,9 +542,15 @@ export function analisarViagensPlanilha(
       temIdentificacao,
       temValorNegativo,
       problemas,
+      corrigidaHodometro,
+      alertaPesagemAlta,
+      pesoAlertaKg: detPesagem.pesoMaxKg,
     };
 
-    const incluirNoDetalhe = !completa && temIdentificacao && viagens.length < MAX_DETALHE_VIAGENS;
+    // Inclui inconsistentes, hodômetro tratado e pesagem alta (alerta)
+    const incluirNoDetalhe = temIdentificacao
+      && viagens.length < MAX_DETALHE_VIAGENS
+      && (!completa || corrigidaHodometro || alertaPesagemAlta);
 
     if (incluirNoDetalhe) {
       viagens.push(item);
@@ -477,13 +572,28 @@ export function analisarViagensPlanilha(
       })
     : null;
 
-  const avisoDashboard = viagensIncompletas > 0
-    ? `${viagensIncompletas} viagem(ns) ficam fora do dashboard. ${viagensCompletas} viagem(ns) válida(s) entrarão nos KPIs.${
-      linhasDescartadasSemDados > 0 ? ` ${linhasDescartadasSemDados} linha(s) ignorada(s) (sem dados mínimos).` : ''
-    }`
-    : linhasDescartadasSemDados > 0
-      ? `${linhasDescartadasSemDados} linha(s) ignorada(s) por não ter placa, KM Total e Peso Total.`
-      : null;
+  const partesAviso: string[] = [];
+  if (viagensIncompletas > 0) {
+    partesAviso.push(
+      `${viagensIncompletas} viagem(ns) ficam fora do dashboard. ${viagensCompletas} viagem(ns) válida(s) entrarão nos KPIs.`,
+    );
+  }
+  if (viagensCorrigidasHodometro > 0) {
+    partesAviso.push(
+      `${viagensCorrigidasHodometro} viagem(ns) com hodômetro inconsistente (KM inicial=final/quebrado) foram tratadas: KM zerado, peso e viagens mantidos no dashboard.`,
+    );
+  }
+  if (pesagensAltas > 0) {
+    partesAviso.push(
+      `${pesagensAltas} pesagem(ns) acima de 15.000 kg/viagem (até 1.000 t) em ${linhasComPesagemAlta} linha(s) — alerta de saúde, não bloqueia o dashboard.`,
+    );
+  }
+  if (linhasDescartadasSemDados > 0) {
+    partesAviso.push(
+      `${linhasDescartadasSemDados} linha(s) ignorada(s) por não ter placa, KM Total e Peso Total.`,
+    );
+  }
+  const avisoDashboard = partesAviso.length > 0 ? partesAviso.join(' ') : null;
 
   return {
     sucesso: true,
@@ -496,6 +606,9 @@ export function analisarViagensPlanilha(
     viagensValidasDashboard: viagensCompletas,
     viagensInconsistentesTotal: viagensIncompletas,
     linhasDescartadasSemDados,
+    viagensCorrigidasHodometro,
+    pesagensAltas,
+    linhasComPesagemAlta,
     podeImportar: true,
     avisoDashboard,
     percentualCompleto: totalViagens > 0 ? Math.round((viagensCompletas / totalViagens) * 100) : 0,

@@ -14,10 +14,20 @@ import {
 import { gerarHtmlAnalisePesoComparativo } from '../utils/gerarHtmlAnalisePesoComparativo';
 import { gerarNomePdfAnalisePesoComparativo } from '../utils/gerarNomePdf';
 
+export type QuinzenaPdf = 1 | 2;
+
 interface Props {
   servicos: CompararPorTipoServico[];
   tipoServicoLabel?: string;
   onAbrirServico?: (servico: CompararPorTipoServico) => void;
+  /**
+   * Busca comparação já recortada para a quinzena do ciclo atual.
+   * Retorna serviços + rótulo do período para o PDF.
+   */
+  onBuscarQuinzena?: (quinzena: QuinzenaPdf) => Promise<{
+    servicos: CompararPorTipoServico[];
+    periodoLabel: string;
+  } | null>;
 }
 
 function CelulaMetrica({ linha, analise }: { linha: LinhaMetricaPeso; analise: AnalisePesoColeta }) {
@@ -39,30 +49,78 @@ function CelulaMetrica({ linha, analise }: { linha: LinhaMetricaPeso; analise: A
   return <span>{celula.texto}</span>;
 }
 
-export default function AnalisePesoPainel({ servicos, tipoServicoLabel, onAbrirServico }: Props) {
+export default function AnalisePesoPainel({
+  servicos,
+  tipoServicoLabel,
+  onAbrirServico,
+  onBuscarQuinzena,
+}: Props) {
   const { adicionarToast } = useToast();
-  const [exportando, setExportando] = useState(false);
+  const [exportando, setExportando] = useState<'ciclo' | 1 | 2 | null>(null);
   const comDados = servicos.filter((s) => s.analisePeso);
   const labelTipo = tipoServicoLabel || 'Coleta com caminhão';
 
-  const exportarPdf = useCallback(async () => {
+  const baixarPdf = useCallback(async (
+    lista: CompararPorTipoServico[],
+    opts?: { periodoLabel?: string; sufixoArquivo?: string },
+  ) => {
+    const comPeso = lista.filter((s) => s.analisePeso);
+    if (comPeso.length === 0) {
+      adicionarToast('Nenhum dado de peso para o período selecionado', 'warning');
+      return;
+    }
+    const html = gerarHtmlAnalisePesoComparativo({
+      servicos: comPeso,
+      tipoServicoLabel: labelTipo,
+      periodoLabel: opts?.periodoLabel,
+    });
+    const nomeArquivo = gerarNomePdfAnalisePesoComparativo({
+      tipoServico: labelTipo,
+      sufixoPeriodo: opts?.sufixoArquivo,
+    });
+    await pdfService.gerarEBaixar(html, nomeArquivo, 'default', false);
+  }, [adicionarToast, labelTipo]);
+
+  const exportarPdfCiclo = useCallback(async () => {
     if (comDados.length === 0) return;
-    setExportando(true);
+    setExportando('ciclo');
     try {
-      const html = gerarHtmlAnalisePesoComparativo({
-        servicos: comDados,
-        tipoServicoLabel: labelTipo,
-      });
-      const nomeArquivo = gerarNomePdfAnalisePesoComparativo({ tipoServico: labelTipo });
-      await pdfService.gerarEBaixar(html, nomeArquivo, 'default', false);
+      await baixarPdf(comDados);
       adicionarToast('Comparativo de análise de peso exportado em PDF', 'success');
     } catch (err) {
       console.error('Erro PDF análise de peso:', err);
       adicionarToast('Erro ao gerar PDF da análise de peso', 'error');
     } finally {
-      setExportando(false);
+      setExportando(null);
     }
-  }, [adicionarToast, comDados, labelTipo]);
+  }, [adicionarToast, baixarPdf, comDados]);
+
+  const exportarPdfQuinzena = useCallback(async (quinzena: QuinzenaPdf) => {
+    if (!onBuscarQuinzena) return;
+    setExportando(quinzena);
+    try {
+      const res = await onBuscarQuinzena(quinzena);
+      if (!res) {
+        adicionarToast(
+          quinzena === 2
+            ? 'Não há 2ª quinzena neste período (ciclo com 15 dias ou menos)'
+            : 'Não foi possível montar o período da quinzena',
+          'warning',
+        );
+        return;
+      }
+      await baixarPdf(res.servicos, {
+        periodoLabel: res.periodoLabel,
+        sufixoArquivo: quinzena === 1 ? '1a_Quinzena' : '2a_Quinzena',
+      });
+      adicionarToast(`PDF da ${quinzena === 1 ? '1ª' : '2ª'} quinzena exportado`, 'success');
+    } catch (err) {
+      console.error('Erro PDF quinzena análise de peso:', err);
+      adicionarToast('Erro ao gerar PDF da quinzena', 'error');
+    } finally {
+      setExportando(null);
+    }
+  }, [adicionarToast, baixarPdf, onBuscarQuinzena]);
 
   if (comDados.length === 0) {
     if (servicos.length === 0) return null;
@@ -83,6 +141,8 @@ export default function AnalisePesoPainel({ servicos, tipoServicoLabel, onAbrirS
     );
   }
 
+  const ocupado = exportando !== null;
+
   return (
     <section className="vg-peso-painel" aria-label="Comparativo de análise de peso">
       <div className="vg-peso-painel-header">
@@ -92,22 +152,49 @@ export default function AnalisePesoPainel({ servicos, tipoServicoLabel, onAbrirS
             {labelTipo} — {comDados.length} contrato{comDados.length > 1 ? 's' : ''} / serviço{comDados.length > 1 ? 's' : ''}
           </span>
         </div>
-        <button
-          type="button"
-          className="vg-peso-painel-export"
-          onClick={exportarPdf}
-          disabled={exportando}
-          title="Exportar comparativo de análise de peso em PDF"
-        >
-          <FiDownload size={14} />
-          {exportando ? 'Gerando PDF...' : 'Exportar PDF'}
-        </button>
+        <div className="vg-peso-painel-acoes">
+          <button
+            type="button"
+            className="vg-peso-painel-export"
+            onClick={exportarPdfCiclo}
+            disabled={ocupado}
+            title="Exportar PDF do ciclo/período atual"
+          >
+            <FiDownload size={14} />
+            {exportando === 'ciclo' ? 'Gerando...' : 'PDF Ciclo'}
+          </button>
+          {onBuscarQuinzena && (
+            <>
+              <button
+                type="button"
+                className="vg-peso-painel-export vg-peso-painel-export-quinzena"
+                onClick={() => exportarPdfQuinzena(1)}
+                disabled={ocupado}
+                title="PDF comparativo da 1ª quinzena (primeiros 15 dias do ciclo)"
+              >
+                <FiDownload size={14} />
+                {exportando === 1 ? 'Gerando...' : 'PDF 1ª Quinzena'}
+              </button>
+              <button
+                type="button"
+                className="vg-peso-painel-export vg-peso-painel-export-quinzena"
+                onClick={() => exportarPdfQuinzena(2)}
+                disabled={ocupado}
+                title="PDF comparativo da 2ª quinzena (dias 16 até o fim do ciclo)"
+              >
+                <FiDownload size={14} />
+                {exportando === 2 ? 'Gerando...' : 'PDF 2ª Quinzena'}
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
       <p className="vg-peso-densidade-hint">
         A <strong>densidade (kg/L)</strong> é definida no contrato por tipo de caminhão
         (com fallback da densidade padrão) e usada no peso ideal (volume × densidade).
         Após alterar no contrato, clique em <strong>Atualizar</strong> nesta comparação.
+        Use <strong>PDF 1ª/2ª Quinzena</strong> para o comparativo de 15 em 15 dias (reunião).
       </p>
 
       <div className="vg-peso-comp-wrap">

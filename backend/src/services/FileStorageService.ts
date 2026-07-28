@@ -117,24 +117,49 @@ class FileStorageService {
     return `${this.publicUrl}/${this.bucket}/${filename}`;
   }
 
+  /** Extrai bucket + object path de uma URL pública MinIO. */
+  private extrairObjectPath(url: string): { bucket: string; objectPath: string } | null {
+    try {
+      const urlObj = new URL(url);
+      const parts = urlObj.pathname.split('/').filter(Boolean);
+      if (parts.length < 2) return null;
+      const bucket = parts[0];
+      const objectPath = parts.slice(1).join('/');
+      if (!bucket || !objectPath) return null;
+      return { bucket, objectPath };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Baixa um arquivo do MinIO a partir da URL pública salva em PlanilhaUpload.urlDownload.
+   */
+  async downloadArquivo(url: string): Promise<Buffer> {
+    const parsed = this.extrairObjectPath(url);
+    if (!parsed) {
+      throw new Error('URL de download inválida');
+    }
+    const bucket = parsed.bucket === this.bucket ? this.bucket : parsed.bucket;
+    const stream = await this.client.getObject(bucket, parsed.objectPath);
+    const chunks: Buffer[] = [];
+    await new Promise<void>((resolve, reject) => {
+      stream.on('data', (chunk: Buffer) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+      stream.on('end', () => resolve());
+      stream.on('error', reject);
+    });
+    return Buffer.concat(chunks);
+  }
+
   /**
    * Remove uma imagem do MinIO
    * @param url - URL completa da imagem
    */
   async removerImagem(url: string): Promise<void> {
     try {
-      // Extrair o caminho do objeto da URL
-      const urlObj = new URL(url);
-      const pathname = urlObj.pathname;
-      // Format: /{bucket}/{object}
-      const parts = pathname.split('/');
-      // Remover o primeiro elemento vazio e o nome do bucket
-      parts.shift(); // remove ''
-      const bucketFromUrl = parts.shift(); // remove bucket name
-      const objectPath = parts.join('/');
-
-      if (bucketFromUrl === this.bucket && objectPath) {
-        await this.client.removeObject(this.bucket, objectPath);
+      const parsed = this.extrairObjectPath(url);
+      if (parsed && parsed.bucket === this.bucket && parsed.objectPath) {
+        await this.client.removeObject(this.bucket, parsed.objectPath);
       }
     } catch (error) {
       console.warn('[FileStorageService] Erro ao remover imagem:', error);

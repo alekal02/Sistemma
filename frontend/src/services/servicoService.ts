@@ -679,6 +679,13 @@ const servicoService = {
       ciclo: { label: string; dataInicio: string; dataFim: string };
       uploadIds: number[];
       totalRegistros: number;
+      backupPlanilha?: {
+        ok: boolean;
+        caminho?: string;
+        uploadId?: number;
+        erro?: string;
+        ignorado?: boolean;
+      };
     };
   },
 

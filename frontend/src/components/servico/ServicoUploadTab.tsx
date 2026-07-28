@@ -1048,6 +1048,27 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
                     </div>
                   )}
 
+                  {(dadosViagens.viagensCorrigidasHodometro ?? 0) > 0 && (
+                    <div style={{
+                      background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '6px',
+                      padding: '0.45rem 0.65rem', marginBottom: '0.5rem', fontSize: '0.68rem', color: '#166534',
+                    }}>
+                      <strong>{dadosViagens.viagensCorrigidasHodometro}</strong> viagem(ns) com hodômetro inconsistente
+                      (KM inicial = final / quebrado) foram tratadas: KM zerado, peso e viagens mantidos no dashboard.
+                    </div>
+                  )}
+
+                  {(dadosViagens.pesagensAltas ?? 0) > 0 && (
+                    <div style={{
+                      background: '#fff7ed', border: '1px solid #fdba74', borderRadius: '6px',
+                      padding: '0.45rem 0.65rem', marginBottom: '0.5rem', fontSize: '0.68rem', color: '#9a3412',
+                    }}>
+                      <strong>{dadosViagens.pesagensAltas}</strong> pesagem(ns) acima de 15.000 kg/viagem
+                      (até 1.000 t) em {dadosViagens.linhasComPesagemAlta ?? '—'} linha(s) —
+                      alerta de saúde; <strong>não bloqueia</strong> a subida para o dashboard.
+                    </div>
+                  )}
+
                   {(dadosViagens.linhasDescartadasSemDados ?? 0) > 0 && (
                     <div style={{
                       background: '#f1f5f9', border: '1px solid #cbd5e1', borderRadius: '6px',
@@ -1153,11 +1174,11 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
                     </button>
                   </div>
 
-                  {/* Preview das primeiras viagens incompletas */}
+                  {/* Preview: inconsistentes + tratadas por hodômetro */}
                   {dadosViagens.viagens && dadosViagens.viagens.length > 0 && (
                     <div style={{ marginTop: '0.5rem' }}>
                       <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#475569', marginBottom: '0.25rem' }}>
-                        Amostra — viagens fora do dashboard (até 10):
+                        Amostra — inconsistentes, hodômetro e pesagem alta (até 10):
                       </div>
                       <div style={{ maxHeight: '180px', overflowY: 'auto', fontSize: '0.6rem' }}>
                         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -1173,22 +1194,49 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
                             </tr>
                           </thead>
                           <tbody>
-                            {(dadosViagens.viagens || []).filter((v: any) => !v.completa).slice(0, 10).map((v: any, i: number) => (
-                              <tr key={i} style={{ borderBottom: '1px solid #e2e8f0', background: v.temValorNegativo ? '#fef2f2' : undefined }}>
+                            {(dadosViagens.viagens || []).slice(0, 10).map((v: any, i: number) => (
+                              <tr
+                                key={i}
+                                style={{
+                                  borderBottom: '1px solid #e2e8f0',
+                                  background: v.alertaPesagemAlta
+                                    ? '#fff7ed'
+                                    : (v.corrigidaHodometro ? '#f0fdf4' : (v.temValorNegativo ? '#fef2f2' : undefined)),
+                                }}
+                              >
                                 <td style={{ padding: '3px 5px' }}>{v.linha}</td>
                                 <td style={{ padding: '3px 5px' }}>{v.data || '—'}</td>
                                 <td style={{ padding: '3px 5px' }}>{v.placa || '—'}</td>
                                 <td style={{ padding: '3px 5px' }}>{v.motorista || '—'}</td>
-                                <td style={{ padding: '3px 5px', color: !v.kmTotal && !v.kmTotalCalculado ? '#dc2626' : '#16a34a' }}>
-                                  {v.kmTotal != null ? v.kmTotal : (v.kmTotalCalculado != null ? v.kmTotalCalculado + '*' : '—')}
+                                <td style={{ padding: '3px 5px', color: v.corrigidaHodometro ? '#166534' : (!v.kmTotal && !v.kmTotalCalculado ? '#dc2626' : '#16a34a') }}>
+                                  {v.corrigidaHodometro
+                                    ? '0 (tratado)'
+                                    : (v.kmTotal != null ? v.kmTotal : (v.kmTotalCalculado != null ? v.kmTotalCalculado + '*' : '—'))}
                                 </td>
-                                <td style={{ padding: '3px 5px', color: v.pesoTotal == null || Number(v.pesoTotal) <= 0 ? '#dc2626' : '#16a34a' }}>
+                                <td style={{
+                                  padding: '3px 5px',
+                                  color: v.alertaPesagemAlta
+                                    ? '#9a3412'
+                                    : (v.pesoTotal == null || Number(v.pesoTotal) <= 0 ? '#dc2626' : '#16a34a'),
+                                  fontWeight: v.alertaPesagemAlta ? 700 : undefined,
+                                }}>
                                   {v.pesoTotal != null ? Number(v.pesoTotal).toFixed(1) : '—'}
                                 </td>
-                                <td style={{ padding: '3px 5px', color: '#b45309', fontSize: '0.55rem' }}>
+                                <td style={{
+                                  padding: '3px 5px',
+                                  color: v.alertaPesagemAlta ? '#9a3412' : (v.corrigidaHodometro ? '#166534' : '#b45309'),
+                                  fontSize: '0.55rem',
+                                }}>
                                   {(v.problemas || [])
-                                    .filter((p: string) => !p.toLowerCase().includes('placa será unificada') && !p.toLowerCase().startsWith('corrigido automaticamente'))
-                                    .join('; ') || '—'}
+                                    .filter((p: string) => {
+                                      const pl = p.toLowerCase();
+                                      if (v.corrigidaHodometro && (pl.includes('hodômetro') || pl.includes('hodometro') || pl.includes('km zerado'))) {
+                                        return true;
+                                      }
+                                      if (v.alertaPesagemAlta && pl.includes('pesagem alta')) return true;
+                                      return !pl.includes('placa será unificada') && !pl.startsWith('corrigido automaticamente');
+                                    })
+                                    .join('; ') || (v.corrigidaHodometro ? 'KM zerado — peso/viagens mantidos' : '—')}
                                 </td>
                               </tr>
                             ))}
