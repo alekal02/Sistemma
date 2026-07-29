@@ -131,9 +131,8 @@ export function gerarHtmlRelatorioHodometroSaude(opts: {
   <div class="aviso-ok">
     <strong>Correção automática na importação:</strong>
     viagens com hodômetro inconsistente (KM inicial = final, salto absurdo ou chegada &lt; saída)
-    entram no dashboard com <strong>KM zerado</strong>; peso e quantidade de viagens são mantidos.
-    O motivo abaixo usa o mesmo texto do relatório de saúde do upload
-    (<em>Corrigido automaticamente: KM zerado por hodômetro inconsistente (…)</em>).
+    são tratadas automaticamente. O motivo abaixo informa quais colunas/valores falharam
+    (ex.: <em>KM CHEGADA ROTA 01 menor que KM SAÍDA BASE</em>) e o tratamento aplicado.
   </div>
 
   ${relatorio.placas.length === 0

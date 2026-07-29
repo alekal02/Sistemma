@@ -28,6 +28,7 @@ import {
   carregarPeriodosComparar,
   aplicarQuinzenaAoPeriodo,
   calcularQuinzenasDoPeriodo,
+  aplicarCicloAnteriorAoPeriodo,
   type PeriodoContratoState,
 } from '../utils/periodoCicloContrato';
 
@@ -349,6 +350,56 @@ export default function CompararPorTipo({
     periodoContratoUnico,
     selecionados,
     tipoServico,
+  ]);
+
+  /** Busca ciclo imediatamente anterior (mês de medição − 1) para PDF de melhoria. */
+  const buscarComparacaoCicloAnterior = useCallback(async () => {
+    const periodosBase: Record<string, PeriodoContratoState> = {};
+    if (modo === 'global') {
+      for (const [cid, p] of Object.entries(periodosPorContrato)) {
+        if (contratosIdsSelecionados.has(cid)) periodosBase[cid] = p;
+      }
+    } else if (contratoId && periodoContratoUnico) {
+      periodosBase[contratoId] = periodoContratoUnico;
+    }
+
+    const periodosAnterior: Record<string, PeriodoContratoState> = {};
+    let periodoLabel = '';
+    for (const [cid, p] of Object.entries(periodosBase)) {
+      const ant = aplicarCicloAnteriorAoPeriodo(p, diaInicioContrato(cid));
+      periodosAnterior[cid] = ant;
+      if (!periodoLabel) {
+        const ciclo = calcularCicloMensalContrato(ant.ano, ant.mes, diaInicioContrato(cid));
+        periodoLabel = `Ciclo anterior — ${ciclo.label}`;
+      }
+    }
+
+    if (Object.keys(periodosAnterior).length === 0) return null;
+
+    const filtros: FiltrosComparacao = {
+      periodosPorContrato: buildPeriodosPorContratoQuery(periodosAnterior),
+    };
+
+    let res: CompararPorTipoResponse;
+    if (modo === 'global') {
+      const ids = [...selecionados];
+      if (ids.length < 1) return null;
+      res = await servicoService.compararGlobal(tipoServico, ids, filtros);
+    } else {
+      if (!contratoId || !tipoServico) return null;
+      res = await servicoService.compararPorTipo(contratoId, tipoServico, filtros);
+    }
+
+    return { servicos: res.servicos || [], periodoLabel };
+  }, [
+    modo,
+    periodosPorContrato,
+    contratosIdsSelecionados,
+    contratoId,
+    periodoContratoUnico,
+    selecionados,
+    tipoServico,
+    diaInicioContrato,
   ]);
 
   useEffect(() => {
@@ -889,6 +940,7 @@ export default function CompararPorTipo({
               servicos={dados.servicos}
               tipoServicoLabel={dados.tipoServicoLabel}
               onBuscarQuinzena={buscarComparacaoQuinzena}
+              onBuscarCicloAnterior={buscarComparacaoCicloAnterior}
               onAbrirServico={(s) =>
                 navigate(`/contratos/${s.contratoId || dados.contratoId}/servicos/${s.id}`)
               }

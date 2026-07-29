@@ -12,7 +12,11 @@ import {
   type SecaoPeso,
 } from '../utils/analisePesoComparativoMetricas';
 import { gerarHtmlAnalisePesoComparativo } from '../utils/gerarHtmlAnalisePesoComparativo';
-import { gerarNomePdfAnalisePesoComparativo } from '../utils/gerarNomePdf';
+import { gerarHtmlRelatorioMelhoriaCicloPeso } from '../utils/gerarHtmlRelatorioMelhoriaCicloPeso';
+import {
+  gerarNomePdfAnalisePesoComparativo,
+  gerarNomePdfMelhoriaCicloPeso,
+} from '../utils/gerarNomePdf';
 
 export type QuinzenaPdf = 1 | 2;
 
@@ -25,6 +29,14 @@ interface Props {
    * Retorna serviços + rótulo do período para o PDF.
    */
   onBuscarQuinzena?: (quinzena: QuinzenaPdf) => Promise<{
+    servicos: CompararPorTipoServico[];
+    periodoLabel: string;
+  } | null>;
+  /**
+   * Busca o ciclo imediatamente anterior (mês de medição − 1) para o PDF de melhoria.
+   * Retorna serviços do ciclo anterior; o ciclo atual é o que já está na tela.
+   */
+  onBuscarCicloAnterior?: () => Promise<{
     servicos: CompararPorTipoServico[];
     periodoLabel: string;
   } | null>;
@@ -54,9 +66,10 @@ export default function AnalisePesoPainel({
   tipoServicoLabel,
   onAbrirServico,
   onBuscarQuinzena,
+  onBuscarCicloAnterior,
 }: Props) {
   const { adicionarToast } = useToast();
-  const [exportando, setExportando] = useState<'ciclo' | 1 | 2 | null>(null);
+  const [exportando, setExportando] = useState<'ciclo' | 'melhoria' | 1 | 2 | null>(null);
   const comDados = servicos.filter((s) => s.analisePeso);
   const labelTipo = tipoServicoLabel || 'Coleta com caminhão';
 
@@ -94,6 +107,45 @@ export default function AnalisePesoPainel({
       setExportando(null);
     }
   }, [adicionarToast, baixarPdf, comDados]);
+
+  const exportarPdfMelhoria = useCallback(async () => {
+    if (comDados.length === 0) return;
+    if (!onBuscarCicloAnterior) {
+      adicionarToast('Comparação ciclo anterior × atual indisponível neste modo', 'warning');
+      return;
+    }
+    setExportando('melhoria');
+    try {
+      const ant = await onBuscarCicloAnterior();
+      if (!ant || ant.servicos.filter((s) => s.analisePeso).length === 0) {
+        adicionarToast('Não há dados de peso no ciclo anterior para comparar', 'warning');
+        return;
+      }
+      const html = gerarHtmlRelatorioMelhoriaCicloPeso({
+        anterior: ant.servicos,
+        atual: comDados,
+        tipoServicoLabel: labelTipo,
+      });
+      if (!html) {
+        adicionarToast(
+          'Não foi possível emparelhar ciclo anterior com o atual (verifique se os serviços têm dados nos dois ciclos)',
+          'warning',
+        );
+        return;
+      }
+      const nomeArquivo = gerarNomePdfMelhoriaCicloPeso({ tipoServico: labelTipo });
+      await pdfService.gerarEBaixar(html, nomeArquivo, 'default', false);
+      adicionarToast(
+        `PDF melhoria: ${ant.periodoLabel || 'ciclo anterior'} → ciclo atual`,
+        'success',
+      );
+    } catch (err) {
+      console.error('Erro PDF melhoria ciclo:', err);
+      adicionarToast('Erro ao gerar PDF de melhoria', 'error');
+    } finally {
+      setExportando(null);
+    }
+  }, [adicionarToast, comDados, labelTipo, onBuscarCicloAnterior]);
 
   const exportarPdfQuinzena = useCallback(async (quinzena: QuinzenaPdf) => {
     if (!onBuscarQuinzena) return;
@@ -163,6 +215,16 @@ export default function AnalisePesoPainel({
             <FiDownload size={14} />
             {exportando === 'ciclo' ? 'Gerando...' : 'PDF Ciclo'}
           </button>
+          <button
+            type="button"
+            className="vg-peso-painel-export vg-peso-painel-export-melhoria"
+            onClick={exportarPdfMelhoria}
+            disabled={ocupado || !onBuscarCicloAnterior || comDados.length === 0}
+            title="PDF: ciclo anterior × ciclo atual — RESULTADO (TON) ÷ peso ideal = viagens ao aterro sem necessidade"
+          >
+            <FiDownload size={14} />
+            {exportando === 'melhoria' ? 'Gerando...' : 'PDF Melhoria'}
+          </button>
           {onBuscarQuinzena && (
             <>
               <button
@@ -194,7 +256,9 @@ export default function AnalisePesoPainel({
         A <strong>densidade (kg/L)</strong> é definida no contrato por tipo de caminhão
         (com fallback da densidade padrão) e usada no peso ideal (volume × densidade).
         Após alterar no contrato, clique em <strong>Atualizar</strong> nesta comparação.
-        Use <strong>PDF 1ª/2ª Quinzena</strong> para o comparativo de 15 em 15 dias (reunião).
+        Use <strong>PDF Melhoria</strong> para comparar o <strong>ciclo anterior</strong> com o
+        <strong> ciclo atual</strong> (mês de medição − 1):
+        |RESULTADO TON| × 1000 ÷ peso ideal ≈ viagens ao aterro sem necessidade (PERDA).
       </p>
 
       <div className="vg-peso-comp-wrap">

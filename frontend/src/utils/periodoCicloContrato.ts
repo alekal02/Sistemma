@@ -277,6 +277,26 @@ export function aplicarQuinzenaAoPeriodo(
   };
 }
 
+/**
+ * Ciclo imediatamente anterior ao período informado (mês de referência − 1).
+ * Usa o dia de início do ciclo do contrato para recalcular o intervalo.
+ */
+export function aplicarCicloAnteriorAoPeriodo(
+  periodo: PeriodoContratoState,
+  diaInicioCiclo: number = 1,
+): PeriodoContratoState {
+  const dia = normalizarDiaInicioCiclo(diaInicioCiclo);
+  const prev = deslocarMesReferencia(periodo.mes, periodo.ano, -1);
+  const ciclo = calcularCicloMensalContrato(prev.ano, prev.mes, dia);
+  return {
+    modo: 'mediacao',
+    mes: prev.mes,
+    ano: prev.ano,
+    dataInicio: ciclo.dataInicio,
+    dataFim: ciclo.dataFim,
+  };
+}
+
 export function buildPeriodosPorContratoQuery(
   periodos: Record<string, PeriodoContratoState>,
 ): Record<string, PeriodoContratoQuery> {

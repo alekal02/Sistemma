@@ -1209,9 +1209,18 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
                                 <td style={{ padding: '3px 5px' }}>{v.placa || '—'}</td>
                                 <td style={{ padding: '3px 5px' }}>{v.motorista || '—'}</td>
                                 <td style={{ padding: '3px 5px', color: v.corrigidaHodometro ? '#166534' : (!v.kmTotal && !v.kmTotalCalculado ? '#dc2626' : '#16a34a') }}>
-                                  {v.corrigidaHodometro
-                                    ? '0 (tratado)'
-                                    : (v.kmTotal != null ? v.kmTotal : (v.kmTotalCalculado != null ? v.kmTotalCalculado + '*' : '—'))}
+                                  {(() => {
+                                    if (!v.corrigidaHodometro) {
+                                      return v.kmTotal != null ? v.kmTotal : (v.kmTotalCalculado != null ? `${v.kmTotalCalculado}*` : '—');
+                                    }
+                                    const kmFinal = (v.kmTotalCalculado != null && Number(v.kmTotalCalculado) > 0)
+                                      ? Number(v.kmTotalCalculado)
+                                      : (v.kmTotal != null && Number(v.kmTotal) > 0 ? Number(v.kmTotal) : null);
+                                    if (kmFinal != null && kmFinal > 0) {
+                                      return `${kmFinal} (ajustado)`;
+                                    }
+                                    return '0 (tratado)';
+                                  })()}
                                 </td>
                                 <td style={{
                                   padding: '3px 5px',
@@ -1230,7 +1239,17 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
                                   {(v.problemas || [])
                                     .filter((p: string) => {
                                       const pl = p.toLowerCase();
-                                      if (v.corrigidaHodometro && (pl.includes('hodômetro') || pl.includes('hodometro') || pl.includes('km zerado'))) {
+                                      if (v.corrigidaHodometro && (
+                                        pl.includes('hodômetro')
+                                        || pl.includes('hodometro')
+                                        || pl.includes('km zerado')
+                                        || pl.includes('km total corrigido')
+                                        || pl.includes('km total mantido')
+                                        || pl.includes('motivo do tratamento')
+                                        || pl.includes('leitura foi descartada')
+                                        || pl.includes('km saída')
+                                        || pl.includes('km chegada')
+                                      )) {
                                         return true;
                                       }
                                       if (v.alertaPesagemAlta && pl.includes('pesagem alta')) return true;

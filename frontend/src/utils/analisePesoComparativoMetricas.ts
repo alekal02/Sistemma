@@ -82,6 +82,50 @@ function calcularMediaIdealExibicao(a: AnalisePesoColeta): number {
   return Math.round(a.caixaMediaKg * a.densidadeOtima * 100) / 100;
 }
 
+/**
+ * Converte o RESULTADO (toneladas) em viagens equivalentes vs peso ideal.
+ * |perdaTon| × 1000 / pesoIdealKg
+ *
+ * - PERDA: viagens ao aterro sem necessidade (subcarga — caberiam menos idas no ideal).
+ * - SUPERÁVIT: equivalente em viagens acima do peso ideal.
+ */
+export function calcularViagensEquivalentesResultado(a: AnalisePesoColeta): number | null {
+  const idealKg = calcularMediaIdealExibicao(a);
+  if (!Number.isFinite(idealKg) || idealKg <= 0) return null;
+  if (!Number.isFinite(a.perdaTon) || a.perdaTon === 0) return 0;
+  return Math.round(((Math.abs(a.perdaTon) * 1000) / idealKg) * 10) / 10;
+}
+
+export function fmtViagensEquivalentesResultado(a: AnalisePesoColeta): string {
+  const n = calcularViagensEquivalentesResultado(a);
+  if (n === null) return '—';
+  if (n === 0) return '0';
+  const base = fmtNumPeso(n, 1);
+  if (a.perdaTon < 0) return `${base} evitáveis`;
+  if (a.perdaTon > 0) return `${base} excedentes`;
+  return base;
+}
+
+export function tituloViagensEquivalentesResultado(a: AnalisePesoColeta): string | undefined {
+  const n = calcularViagensEquivalentesResultado(a);
+  const ideal = calcularMediaIdealExibicao(a);
+  if (n === null || !ideal) return undefined;
+  const ton = fmtNumPeso(Math.abs(a.perdaTon), 2);
+  const idealTxt = fmtNumPeso(ideal, 2);
+  if (a.perdaTon < 0) {
+    return (
+      `PERDA de ${ton} TON ÷ peso ideal ${idealTxt} kg ≈ ${fmtNumPeso(n, 1)} viagens ao aterro sem necessidade `
+      + `(subcarga: caberiam menos idas se todas fossem no peso ideal).`
+    );
+  }
+  if (a.perdaTon > 0) {
+    return (
+      `SUPERÁVIT de ${ton} TON ÷ peso ideal ${idealTxt} kg ≈ ${fmtNumPeso(n, 1)} viagens equivalentes acima do ideal.`
+    );
+  }
+  return 'Resultado neutro — sem viagens equivalentes de desvio.';
+}
+
 export const METRICAS_PESO: LinhaMetricaPeso[] = [
   { secao: 'operacao', label: 'NÚMERO DE VIAGENS', tipo: 'int', getValor: (a) => a.numeroViagens },
   { secao: 'operacao', label: 'PESO MÉDIO', tipo: 'num', getValor: (a) => a.pesoMedioKg },
@@ -129,6 +173,14 @@ export const METRICAS_PESO: LinhaMetricaPeso[] = [
     label: 'RESULTADO',
     tipo: 'texto',
     getTexto: fmtResultado,
+    classeCelula: (a) => (a.perdaTon < 0 ? 'celula-resultado-perda' : a.perdaTon > 0 ? 'celula-resultado-ganho' : ''),
+  },
+  {
+    secao: 'cenario',
+    label: 'VIAGENS ATERRO (RESULTADO ÷ IDEAL)',
+    tipo: 'texto',
+    getTexto: fmtViagensEquivalentesResultado,
+    getTitulo: tituloViagensEquivalentesResultado,
     classeCelula: (a) => (a.perdaTon < 0 ? 'celula-resultado-perda' : a.perdaTon > 0 ? 'celula-resultado-ganho' : ''),
   },
 ];

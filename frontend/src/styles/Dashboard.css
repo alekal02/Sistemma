@@ -1607,6 +1607,16 @@
   color: #0f766e;
 }
 
+.vg-peso-painel-export-melhoria {
+  border-color: #ca8a04;
+  background: #fefce8;
+  color: #a16207;
+}
+
+.vg-peso-painel-export-melhoria:hover:not(:disabled) {
+  background: #fef08a;
+}
+
 .vg-peso-painel-export-quinzena:hover:not(:disabled) {
   background: #ccfbf1;
 }

@@ -8,6 +8,19 @@ function esc(s: unknown): string {
     .replace(/"/g, '&quot;');
 }
 
+/** Mensagens de tratamento de hodômetro (inclui motivo explícito de coluna menor que outra). */
+function problemaEhTratamentoHodometro(pl: string): boolean {
+  return pl.includes('hodômetro')
+    || pl.includes('hodometro')
+    || pl.includes('km zerado')
+    || pl.includes('km total corrigido')
+    || pl.includes('km total mantido')
+    || pl.includes('motivo do tratamento')
+    || pl.includes('leitura foi descartada')
+    || pl.includes('km saída')
+    || pl.includes('km chegada');
+}
+
 export function gerarHtmlSaudeDadosServer(opts: {
   relatorio: ResultadoAnaliseViagens;
   contratoNome: string;
@@ -30,7 +43,7 @@ export function gerarHtmlSaudeDadosServer(opts: {
   ) =>
     (problemas || []).filter((p) => {
       const pl = p.toLowerCase();
-      if (opts?.corrigidaHodometro && (pl.includes('hodômetro') || pl.includes('hodometro') || pl.includes('km zerado'))) {
+      if (opts?.corrigidaHodometro && problemaEhTratamentoHodometro(pl)) {
         return true;
       }
       if (opts?.alertaPesagemAlta && pl.includes('pesagem alta')) {
@@ -54,13 +67,25 @@ export function gerarHtmlSaudeDadosServer(opts: {
         <td>${esc(v.placa || '—')}</td>
         <td>${esc(v.motorista || '—')}</td>
         <td>${esc(v.rota || '—')}</td>
-        <td>${v.corrigidaHodometro
-          ? '0 (tratado)'
-          : (v.kmTotal != null
-            ? Number(v.kmTotal).toLocaleString('pt-BR', { maximumFractionDigits: 1 })
-            : (v.kmTotalCalculado != null
-              ? `${Number(v.kmTotalCalculado).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}*`
-              : '—'))}</td>
+        <td>${(() => {
+          if (!v.corrigidaHodometro) {
+            if (v.kmTotal != null) {
+              return Number(v.kmTotal).toLocaleString('pt-BR', { maximumFractionDigits: 1 });
+            }
+            if (v.kmTotalCalculado != null) {
+              return `${Number(v.kmTotalCalculado).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}*`;
+            }
+            return '—';
+          }
+          // Correção: se ficou KM > 0, mostra o valor ajustado; se zerou, "0 (tratado)"
+          const kmFinal = v.kmTotalCalculado != null && v.kmTotalCalculado > 0
+            ? v.kmTotalCalculado
+            : (v.kmTotal != null && v.kmTotal > 0 ? v.kmTotal : null);
+          if (kmFinal != null && kmFinal > 0) {
+            return `${Number(kmFinal).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} (ajustado)`;
+          }
+          return '0 (tratado)';
+        })()}</td>
         <td style="${v.alertaPesagemAlta ? 'font-weight:700;color:#9a3412' : ''}">${v.pesoTotal != null
           ? Number(v.pesoTotal).toLocaleString('pt-BR', { maximumFractionDigits: 1 })
           : '—'}${v.alertaPesagemAlta && v.pesoAlertaKg != null
@@ -136,7 +161,8 @@ export function gerarHtmlSaudeDadosServer(opts: {
   <div class="aviso">
     As ${esc(validas)} viagem(ns) válidas entram no dashboard. As ${esc(inconsistentes)} inconsistente(s) ficam fora dos KPIs.
     ${corrigidasHodometro > 0
-      ? `${esc(corrigidasHodometro)} viagem(ns) com hodômetro inconsistente (KM inicial=final/quebrado) foram tratadas: KM zerado, peso e viagens mantidos. `
+      ? `${esc(corrigidasHodometro)} viagem(ns) com hodômetro inconsistente foram tratadas (ex.: KM chegada de uma rota menor que a saída anterior). `
+        + `Na coluna de problemas aparece o motivo (colunas e valores) e o tratamento aplicado (KM recalculado ou mantido). `
       : ''}
     ${pesagensAltas > 0
       ? `${esc(pesagensAltas)} pesagem(ns) &gt; 15.000 kg/viagem (até 1.000 t) em ${esc(linhasPesagemAlta)} linha(s) — alerta informativo, não bloqueia o dashboard. `

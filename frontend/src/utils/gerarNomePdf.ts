@@ -133,6 +133,15 @@ export function gerarNomePdfAnalisePesoComparativo(opts?: {
   ].filter(Boolean).join('_');
 }
 
+/** Nome do PDF de melhoria ciclo a ciclo (resultado ÷ ideal → viagens aterro). */
+export function gerarNomePdfMelhoriaCicloPeso(opts?: { tipoServico?: string }): string {
+  return [
+    'Melhoria_Ciclo_Peso',
+    sanitizarParteNome(opts?.tipoServico || 'Coleta', 24),
+    formatarDataArquivoPdf(),
+  ].filter(Boolean).join('_');
+}
+
 export function gerarNomePdfRelatorioDia(opts: {
   servicoNome: string;
   aba: 'operacao' | 'receita';

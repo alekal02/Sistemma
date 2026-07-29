@@ -56,7 +56,7 @@ describe('sanitizarKmHodometro', () => {
     });
     const r = sanitizarKmHodometro(c);
     assert.ok(r.problemas.length >= 1);
-    assert.ok(r.problemas.some(p => /quebrado\/reiniciado/.test(p.motivo)));
+    assert.ok(r.problemas.some(p => /menor que/i.test(p.motivo)));
     assert.equal(r.kmInvalidadoPorHodometro, false);
     assert.equal(c.kmTotal, 20); // só base → rota 01
   });
@@ -74,7 +74,7 @@ describe('sanitizarKmHodometro', () => {
       },
     });
     const r = sanitizarKmHodometro(c);
-    assert.ok(r.problemas.some(p => /Salto de hodômetro absurdo/.test(p.motivo)));
+    assert.ok(r.problemas.some(p => /Salto absurdo de hodômetro/i.test(p.motivo)));
     // base→r01 (20) + r02→base (20) = 40; salto do meio ignorado
     assert.equal(c.kmTotal, 40);
   });
@@ -109,6 +109,43 @@ describe('sanitizarKmHodometro', () => {
     assert.equal(c.kmTotal, 0);
     assert.ok(r.problemas.some(p => /parado\/igual/.test(p.motivo)));
     assert.match(String((c.dados as Record<string, unknown>)._alertaKmHodometro), /KM zerado/);
+  });
+
+  it('descarta leitura que volta e usa saída/chegada base (caso RKH2D22: total 62 km)', () => {
+    // Saída base 170453 → Chegada base 170515 = 62 km.
+    // KM SAÍDA ROTA 01 = 170385 está errado (menor que a chegada da rota) e era
+    // usado como âncora, inventando 145 km. Agora a leitura é descartada.
+    const c = coleta({
+      kmTotal: 62,
+      dados: {
+        ' KM SAIDA BASE ': 170453,
+        ' KM CHEGADA ROTA 01 ': 170468,
+        ' KM SAÍDA ROTA 01 ': 170385,
+        ' KM CHEGADA BASE ': 170515,
+        'KM TOTAL': 62,
+      },
+    });
+    const r = sanitizarKmHodometro(c);
+    assert.ok(r.problemas.some(p => /menor que/i.test(p.motivo) && /KM SAÍDA ROTA 01/i.test(p.motivo)));
+    assert.equal(c.kmTotal, 62);
+    assert.ok(r.ajustes.some(a => /KM TOTAL mantido \(62 km\)/i.test(a) && /Motivo do tratamento/i.test(a)));
+    assert.match(String((c.dados as Record<string, unknown>)._alertaKmHodometro), /KM SAÍDA ROTA 01/);
+  });
+
+  it('corrige KM TOTAL 145 → 62 quando leitura intermediária volta (RKH2D22)', () => {
+    const c = coleta({
+      kmTotal: 145,
+      dados: {
+        ' KM SAIDA BASE ': 170453,
+        ' KM CHEGADA ROTA 01 ': 170468,
+        ' KM SAÍDA ROTA 01 ': 170385,
+        ' KM CHEGADA BASE ': 170515,
+        'KM TOTAL': 145,
+      },
+    });
+    const r = sanitizarKmHodometro(c);
+    assert.equal(c.kmTotal, 62);
+    assert.ok(r.ajustes.some(a => /corrigido para 62/i.test(a) && /KM SAÍDA ROTA 01/i.test(a)));
   });
 
   it('zera KM quando KM TOTAL ausente, sem trechos e há peso (evita desfalque na importação)', () => {

@@ -613,13 +613,19 @@ function diagnosticarSegmentoHodometro(
     return { km: null, problema: null };
   }
   if (chegada < saida) {
+    const [origem, destino] = trecho.split('→').map((s) => s.trim());
+    const colOrigem = rotuloColunaHodometro(origem || 'ponto anterior');
+    const colDestino = rotuloColunaHodometro(destino || 'ponto seguinte');
     return {
       km: null,
       problema: {
         trecho,
         saida,
         chegada,
-        motivo: `Hodômetro quebrado/reiniciado em ${trecho}: chegada (${chegada}) < saída (${saida})`,
+        motivo:
+          `${colDestino} (${chegada.toLocaleString('pt-BR')}) está menor que ${colOrigem} (${saida.toLocaleString('pt-BR')}). `
+          + `Tratamento: essa leitura foi descartada e o KM foi recalculado pelos trechos válidos `
+          + `(em geral saída base → chegada base).`,
       },
     };
   }
@@ -627,17 +633,40 @@ function diagnosticarSegmentoHodometro(
   // Diff 0 = parado no ponto (ex.: descarga) — não é distância nem falha isolada
   if (diff === 0) return { km: null, problema: null };
   if (!kmDistanciaPlausivel(diff)) {
+    const [origem, destino] = trecho.split('→').map((s) => s.trim());
     return {
       km: null,
       problema: {
         trecho,
         saida,
         chegada,
-        motivo: `Salto de hodômetro absurdo em ${trecho}: ${Math.round(diff)} km (máx. ${MAX_KM_DASHBOARD} km)`,
+        motivo:
+          `Salto absurdo de hodômetro entre ${rotuloColunaHodometro(origem || 'origem')} (${saida.toLocaleString('pt-BR')}) `
+          + `e ${rotuloColunaHodometro(destino || 'destino')} (${chegada.toLocaleString('pt-BR')}): `
+          + `${Math.round(diff).toLocaleString('pt-BR')} km (máx. ${MAX_KM_DASHBOARD} km). `
+          + `Tratamento: esse trecho foi ignorado no cálculo do KM.`,
       },
     };
   }
   return { km: diff, problema: null };
+}
+
+/** Nomes de coluna da planilha para o relatório de saúde (linguagem do operador). */
+function rotuloColunaHodometro(labelPonto: string): string {
+  const l = labelPonto.trim();
+  const mapa: Record<string, string> = {
+    'Saída base': 'KM SAÍDA BASE',
+    'Chegada base': 'KM CHEGADA BASE',
+    'Chegada Rota 01': 'KM CHEGADA ROTA 01',
+    'Saída Rota 01': 'KM SAÍDA ROTA 01',
+    'Chegada Rota 02': 'KM CHEGADA ROTA 02',
+    'Saída Rota 02': 'KM SAÍDA ROTA 02',
+    'Chegada Rota 03': 'KM CHEGADA ROTA 03',
+    'Saída Rota 03': 'KM SAÍDA ROTA 03',
+    'Chegada Rota 04': 'KM CHEGADA ROTA 04',
+    'Saída Rota 04': 'KM SAÍDA ROTA 04',
+  };
+  return mapa[l] || l;
 }
 
 function garantirDadosColeta(coleta: ColetaData): Record<string, unknown> {
@@ -650,7 +679,10 @@ function garantirDadosColeta(coleta: ColetaData): Record<string, unknown> {
 /**
  * Soma KM a partir da sequência real do hodômetro:
  * Saída base → Chegada/Saída de cada rota → Chegada base.
- * Trechos com hodômetro igual (parado) são ignorados; quebra/salto viram problema.
+ * - Diff 0 (parado no ponto): ok, sem km
+ * - Leitura que volta (chegada < saída): descarta esse ponto e religa a cadeia
+ *   (evita inventar KM usando o valor errado como âncora do próximo trecho)
+ * - Salto absurdo: ignora a distância daquele trecho, mantém o ponto como âncora
  */
 function analisarHodometroColeta(coleta: Partial<ColetaData>): {
   segmentosValidos: number[];
@@ -661,7 +693,6 @@ function analisarHodometroColeta(coleta: Partial<ColetaData>): {
   const problemas: ProblemaHodometro[] = [];
 
   // Preferência: KM de rota já tipado/distância operacional
-  // (ainda assim verificamos saída base = chegada base abaixo)
   const tipados: number[] = [];
   for (let i = 1; i <= 4; i++) {
     const tipado = (coleta as Record<string, unknown>)[`kmRota${i}`];
@@ -709,12 +740,33 @@ function analisarHodometroColeta(coleta: Partial<ColetaData>): {
     pontos.push({ label: 'Chegada base', km: kmChegadaBase });
   }
 
-  for (let i = 1; i < pontos.length; i++) {
-    const a = pontos[i - 1];
-    const b = pontos[i];
-    const diag = diagnosticarSegmentoHodometro(`${a.label} → ${b.label}`, a.km, b.km);
-    if (diag.problema) problemas.push(diag.problema);
-    if (diag.km != null) segmentosValidos.push(diag.km);
+  // Caminha a cadeia descartando leituras que "voltam" (erro de digitação típico)
+  if (pontos.length > 0) {
+    const pontosValidos: PontoHodometro[] = [pontos[0]];
+    for (let i = 1; i < pontos.length; i++) {
+      const prev = pontosValidos[pontosValidos.length - 1];
+      const curr = pontos[i];
+      const diag = diagnosticarSegmentoHodometro(`${prev.label} → ${curr.label}`, prev.km, curr.km);
+
+      if (diag.problema && curr.km < prev.km) {
+        // Leitura inválida: descarta o ponto atual e tenta o próximo contra o mesmo prev
+        problemas.push(diag.problema);
+        continue;
+      }
+
+      if (diag.problema) {
+        // Salto absurdo: não soma km, mas mantém o ponto como âncora
+        problemas.push(diag.problema);
+        pontosValidos.push(curr);
+        continue;
+      }
+
+      if (diag.km != null) {
+        segmentosValidos.push(diag.km);
+      }
+      // diff 0 ou trecho válido: avança a âncora
+      pontosValidos.push(curr);
+    }
   }
 
   // Fallback só com match exato — encontrarValorColuna é fuzzy e pode
@@ -728,7 +780,7 @@ function analisarHodometroColeta(coleta: Partial<ColetaData>): {
     }
   }
 
-  // Se há KM tipado de rota, usa-o; mantém problemas detectados na cadeia de hodômetro
+  // Se há KM tipado de rota e a cadeia não rendeu segmentos, usa tipados
   if (tipados.length > 0 && segmentosValidos.length === 0) {
     segmentosValidos.push(...tipados);
   } else if (tipados.length > 0 && problemas.length === 0) {
@@ -737,7 +789,7 @@ function analisarHodometroColeta(coleta: Partial<ColetaData>): {
     segmentosValidos.push(...tipados);
   }
 
-  // Viagem inteira com hodômetro parado (KM inicial = KM final)
+  // Viagem inteira com hodômetro parado (KM inicial = KM final) e sem km útil
   if (
     segmentosValidos.length === 0
     && !isNaN(kmSaidaBase)
@@ -754,21 +806,22 @@ function analisarHodometroColeta(coleta: Partial<ColetaData>): {
     });
   }
 
-  // Mesmo com segmentos tipados: marcar viagem parada se saída = chegada base
+  // Preferência operacional: se saída/chegada base formam distância plausível,
+  // e a soma dos segmentos divergiu por leituras intermediárias problemáticas,
+  // a distância real da viagem é chegada base − saída base.
   if (
     !isNaN(kmSaidaBase)
     && !isNaN(kmChegadaBase)
-    && kmSaidaBase > 0
-    && kmChegadaBase > 0
-    && kmSaidaBase === kmChegadaBase
-    && !problemas.some(p => /parado\/igual/i.test(p.motivo))
+    && kmChegadaBase > kmSaidaBase
+    && kmDistanciaPlausivel(kmChegadaBase - kmSaidaBase)
+    && problemas.length > 0
   ) {
-    problemas.push({
-      trecho: 'Viagem',
-      saida: kmSaidaBase,
-      chegada: kmChegadaBase,
-      motivo: `Hodômetro parado/igual na viagem: saída base = chegada base (${kmSaidaBase})`,
-    });
+    const kmBaseABase = Math.round((kmChegadaBase - kmSaidaBase) * 100) / 100;
+    const somaSeg = somaPositiva(segmentosValidos);
+    if (Math.abs(somaSeg - kmBaseABase) > 0.01) {
+      segmentosValidos.length = 0;
+      segmentosValidos.push(kmBaseABase);
+    }
   }
 
   return { segmentosValidos, problemas };
@@ -818,23 +871,31 @@ export function sanitizarKmHodometro(coleta: ColetaData): ResultadoSanitizacaoKm
   };
 
   if (kmDosSegmentos > 0 && kmDistanciaPlausivel(kmDosSegmentos)) {
-    const precisaCorrigir = isNaN(kmBruto) || kmBruto <= 0 || kmBrutoInvalido
-      || kmDosSegmentos > kmBruto + 0.01
-      || problemas.length > 0;
+    const kmAlvo = Math.round(kmDosSegmentos * 100) / 100;
+    const kmJaConfere = !isNaN(kmBruto) && Math.abs(kmBruto - kmAlvo) <= 0.01;
+    const precisaCorrigir = isNaN(kmBruto) || kmBruto <= 0 || kmBrutoInvalido || !kmJaConfere;
+    const motivoPrincipal = problemas[0]?.motivo;
+
     if (precisaCorrigir) {
-      kmCorrigido = Math.round(kmDosSegmentos * 100) / 100;
+      kmCorrigido = kmAlvo;
       coleta.kmTotal = kmCorrigido;
       sincronizarAliasesNumericos(coleta, ALIAS_KM_TOTAL, kmCorrigido);
-      const msg = problemas.length
-        ? `KM Total corrigido para ${kmCorrigido} km (ignorando ${problemas.length} trecho(s) de hodômetro inconsistente)`
-        : `KM Total corrigido para ${kmCorrigido} km a partir dos trechos válidos do hodômetro`;
+      const msg = motivoPrincipal
+        ? `KM Total corrigido para ${kmAlvo} km. Motivo: ${motivoPrincipal}`
+        : `KM Total corrigido para ${kmAlvo} km a partir dos trechos válidos do hodômetro`;
       ajustes.push(msg);
-      // Marca para relatório de saúde / PDF hodômetro (mesmo com KM > 0)
       if (problemas.length > 0) {
         garantirDadosColeta(coleta)._alertaKmHodometro = msg;
       }
     } else {
-      kmCorrigido = kmDistanciaPlausivel(kmBruto) ? kmBruto : kmDosSegmentos;
+      // KM TOTAL já bate — ainda assim explica no relatório se houve leitura descartada
+      kmCorrigido = kmDistanciaPlausivel(kmBruto) ? kmBruto : kmAlvo;
+      if (motivoPrincipal) {
+        const msg =
+          `KM TOTAL mantido (${kmAlvo} km). Motivo do tratamento: ${motivoPrincipal}`;
+        ajustes.push(msg);
+        garantirDadosColeta(coleta)._alertaKmHodometro = msg;
+      }
     }
   } else if (kmBrutoInvalido || problemas.length > 0) {
     const detalhe = problemas[0]?.motivo

@@ -287,7 +287,15 @@ function detectarPesagemAlta(coleta: Partial<ColetaData>): {
 
 function correcaoEhHodometro(texto: string): boolean {
   const t = texto.toLowerCase();
-  return t.includes('hodômetro') || t.includes('hodometro') || t.includes('km zerado');
+  return t.includes('hodômetro')
+    || t.includes('hodometro')
+    || t.includes('km zerado')
+    || t.includes('km total corrigido')
+    || t.includes('km total mantido')
+    || t.includes('km saída')
+    || t.includes('km chegada')
+    || t.includes('motivo do tratamento')
+    || t.includes('leitura foi descartada');
 }
 
 export function analisarViagensPlanilha(
