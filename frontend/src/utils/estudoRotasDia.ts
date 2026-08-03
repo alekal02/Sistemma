@@ -247,7 +247,7 @@ export function analisarEstudoRotasDia(
     if (!rota) continue;
 
     const m = extrairMetricasCardViagem(reg, cols);
-    const vg = contarViagensPorRotaRegistro(reg) || Math.max(m.viagens, 1);
+    const vg = contarViagensPorRotaRegistro(reg);
     if (vg <= 0 && m.toneladas <= 0 && m.kmFinal <= 0) continue;
 
     if (!map.has(rota)) {

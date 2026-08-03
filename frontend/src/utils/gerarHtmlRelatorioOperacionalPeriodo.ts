@@ -15,9 +15,10 @@ import {
 } from './operacaoDia';
 import { fmtNum, type DadoDiario } from './relatorioDiario';
 import { resumirFrotaOperacao } from './placasReserva';
-import type { ResumoCapacidadeDia } from './capacidadeViagemDia';
+import type { ResumoCapacidadeDia, ViagemCapacidadeItem } from './capacidadeViagemDia';
 import {
   COR_NOTA_IDEAL,
+  LABEL_FAIXA_IDEAL,
   LABEL_NOTA_IDEAL,
   LABEL_TIPO_CAMINHAO,
   PCT_IDEAL_MAX,
@@ -81,127 +82,140 @@ function metricasPorHora(toneladas: number, km: number, horas: number): {
 }
 
 const ESTILOS = `
-  @page { size: A4 portrait; margin: 10mm 12mm; }
+  @page { size: A4 portrait; margin: 9mm 10mm; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
     font-family: 'Segoe UI', Arial, sans-serif;
-    font-size: 8px;
+    font-size: 7.5px;
     color: #1e293b;
-    line-height: 1.35;
+    line-height: 1.3;
     width: 100%;
   }
   .header {
     background: linear-gradient(135deg,#0f172a,#1e3a5f);
     color: #fff;
     border-radius: 8px;
-    padding: 10px 12px;
-    margin-bottom: 8px;
+    padding: 8px 10px;
+    margin-bottom: 6px;
     page-break-inside: avoid;
+    break-inside: avoid;
   }
-  .header h1 { font-size: 13px; font-weight: 800; color: #fbbf24; }
-  .header .sub { font-size: 7px; color: #94a3b8; margin-top: 2px; }
+  .header h1 { font-size: 12px; font-weight: 800; color: #fbbf24; }
+  .header .sub { font-size: 6.5px; color: #94a3b8; margin-top: 2px; }
   .header .tipo {
-    display: inline-block; margin-top: 3px; font-size: 6.5px; font-weight: 700;
-    padding: 2px 7px; border-radius: 4px; text-transform: uppercase;
+    display: inline-block; margin-top: 3px; font-size: 6px; font-weight: 700;
+    padding: 2px 6px; border-radius: 4px; text-transform: uppercase;
     color: #a5b4fc; background: rgba(99,102,241,0.25);
   }
   .banner {
     background: #eef2ff; border: 1px solid #c7d2fe; border-radius: 6px;
-    padding: 5px 8px; margin-bottom: 8px; font-size: 7px; color: #4338ca;
+    padding: 4px 7px; margin-bottom: 6px; font-size: 6.5px; color: #4338ca;
     page-break-inside: avoid;
+    break-inside: avoid;
   }
-  .banner .nota { display:block; margin-top:3px; font-size:6px; color:#6366f1; }
-  .secao { margin-bottom: 10px; }
-  .secao-firma { page-break-inside: avoid; margin-bottom: 10px; }
+  .banner .nota { display:block; margin-top:2px; font-size:5.5px; color:#6366f1; }
+  .secao { margin-bottom: 7px; }
+  .secao-firma { margin-bottom: 7px; page-break-inside: avoid; break-inside: avoid; }
+  .secao-flow { margin-bottom: 7px; }
   .sec {
     font-size: 6.5px; font-weight: 800; color: #64748b;
-    text-transform: uppercase; margin: 0 0 4px; letter-spacing: 0.03em;
+    text-transform: uppercase; margin: 0 0 3px; letter-spacing: 0.03em;
   }
-  .tbl-layout { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
+  .tbl-layout { width: 100%; border-collapse: collapse; margin-bottom: 6px; }
   .tbl-layout td { vertical-align: top; padding: 0; }
   .hero-dark {
     background: linear-gradient(135deg,#1e293b,#0f172a);
     border: 1px solid #334155; border-radius: 8px;
-    padding: 8px 10px; color: #fff;
+    padding: 6px 8px; color: #fff;
   }
-  .hero-dark .lbl { font-size: 6px; font-weight: 600; color: #94a3b8; text-transform: uppercase; }
-  .hero-dark .val { font-size: 20px; font-weight: 900; color: #a5b4fc; font-family: monospace; white-space: nowrap; }
-  .hero-dark .sub { font-size: 6.5px; color: #64748b; margin-top: 2px; }
+  .hero-dark .lbl { font-size: 5.5px; font-weight: 600; color: #94a3b8; text-transform: uppercase; }
+  .hero-dark .val { font-size: 18px; font-weight: 900; color: #a5b4fc; font-family: monospace; white-space: nowrap; }
+  .hero-dark .sub { font-size: 6px; color: #64748b; margin-top: 2px; }
   .mini-tbl { width: 100%; border-collapse: separate; border-spacing: 3px; }
-  .mini-dark { background: rgba(255,255,255,0.08); border-radius: 4px; padding: 4px 5px; }
-  .mini-dark .lbl { font-size: 5.5px; color: #94a3b8; text-transform: uppercase; }
-  .mini-dark .val { font-size: 7px; font-weight: 700; color: #e2e8f0; font-family: monospace; white-space: nowrap; }
-  .cards-tbl { width: 100%; border-collapse: separate; border-spacing: 4px; margin-bottom: 0; }
+  .mini-dark { background: rgba(255,255,255,0.08); border-radius: 4px; padding: 3px 4px; }
+  .mini-dark .lbl { font-size: 5px; color: #94a3b8; text-transform: uppercase; }
+  .mini-dark .val { font-size: 6.5px; font-weight: 700; color: #e2e8f0; font-family: monospace; white-space: nowrap; }
+  .cards-tbl { width: 100%; border-collapse: separate; border-spacing: 3px; margin-bottom: 0; }
   .card {
     background: #fff; border: 1px solid #e2e8f0; border-top: 3px solid #3b82f6;
-    border-radius: 5px; padding: 4px 5px; vertical-align: top;
+    border-radius: 5px; padding: 3px 4px; vertical-align: top;
   }
-  .card-lbl { font-size: 5.5px; font-weight: 700; color: #64748b; text-transform: uppercase; }
-  .card-val { font-size: 8px; font-weight: 800; color: #0f172a; white-space: nowrap; margin-top: 1px; }
-  .destaques-tbl { width: 100%; border-collapse: separate; border-spacing: 5px; margin-bottom: 6px; }
+  .card-lbl { font-size: 5px; font-weight: 700; color: #64748b; text-transform: uppercase; }
+  .card-val { font-size: 7.5px; font-weight: 800; color: #0f172a; white-space: nowrap; margin-top: 1px; }
+  .destaques-tbl { width: 100%; border-collapse: separate; border-spacing: 4px; margin-bottom: 5px; }
   .destaque {
     background: #fff; border: 1px solid #e2e8f0; border-radius: 6px;
-    padding: 5px 6px; text-align: center; vertical-align: top;
+    padding: 4px 5px; text-align: center; vertical-align: top;
   }
-  .dest-tit { font-size: 5.5px; font-weight: 700; color: #64748b; text-transform: uppercase; }
-  .dest-val { font-size: 10px; font-weight: 800; color: #0f172a; margin: 2px 0; }
-  .dest-sub { font-size: 6px; color: #94a3b8; }
-  .insight-box { border: 1px solid #e2e8f0; border-radius: 6px; padding: 5px; background: #fff; }
-  .insight-item { padding: 3px 5px; margin-bottom: 3px; border-radius: 4px; font-size: 6.5px; line-height: 1.35; page-break-inside: avoid; }
+  .dest-tit { font-size: 5px; font-weight: 700; color: #64748b; text-transform: uppercase; }
+  .dest-val { font-size: 9px; font-weight: 800; color: #0f172a; margin: 2px 0; }
+  .dest-sub { font-size: 5.5px; color: #94a3b8; }
+  .insight-box { border: 1px solid #e2e8f0; border-radius: 6px; padding: 4px; background: #fff; }
+  .insight-item { padding: 2px 4px; margin-bottom: 2px; border-radius: 4px; font-size: 6px; line-height: 1.3; page-break-inside: avoid; break-inside: avoid; }
   .insight-item:last-child { margin-bottom: 0; }
   .insight-critico { background: #fef2f2; border-left: 3px solid #ef4444; color: #991b1b; }
   .insight-atencao { background: #fffbeb; border-left: 3px solid #f59e0b; color: #92400e; }
   .insight-info { background: #f0fdf4; border-left: 3px solid #22c55e; color: #166534; }
-  .insight-tit { font-weight: 800; font-size: 6.5px; margin-bottom: 1px; }
+  .insight-tit { font-weight: 800; font-size: 6px; margin-bottom: 1px; }
+  /* Blocos grandes podem quebrar entre páginas — evita folhas quase vazias */
   .bloco {
     background: #fff; border: 1px solid #e2e8f0; border-radius: 6px;
-    padding: 6px 7px; page-break-inside: avoid;
+    padding: 5px 6px;
+  }
+  .bloco-keep {
+    background: #fff; border: 1px solid #e2e8f0; border-radius: 6px;
+    padding: 5px 6px;
+    page-break-inside: avoid;
+    break-inside: avoid;
   }
   .bloco-hd {
-    font-size: 6.5px; font-weight: 800; color: #475569; text-transform: uppercase;
-    margin-bottom: 4px; padding-bottom: 3px; border-bottom: 1px solid #e2e8f0;
+    font-size: 6px; font-weight: 800; color: #475569; text-transform: uppercase;
+    margin-bottom: 3px; padding-bottom: 2px; border-bottom: 1px solid #e2e8f0;
   }
-  .badge { font-size: 6px; font-weight: 700; color: #0891b2; background: #cffafe; padding: 2px 5px; border-radius: 3px; white-space: nowrap; }
+  .badge { font-size: 5.5px; font-weight: 700; color: #0891b2; background: #cffafe; padding: 1px 4px; border-radius: 3px; white-space: nowrap; }
   .badge-nota {
-    display:inline-block; font-size:5.5px; font-weight:800; padding:1px 5px; border-radius:3px; white-space:nowrap;
+    display:inline-block; font-size:5px; font-weight:800; padding:1px 4px; border-radius:3px; white-space:nowrap;
   }
-  table.data { width: 100%; border-collapse: collapse; font-size: 6.5px; table-layout: fixed; }
+  table.data { width: 100%; border-collapse: collapse; font-size: 6px; table-layout: fixed; }
   table.data thead { display: table-header-group; }
   table.data th {
-    padding: 3px 4px; background: #4338ca; color: #e0e7ff;
-    font-size: 5.5px; text-transform: uppercase; text-align: left; font-weight: 700;
+    padding: 2px 3px; background: #4338ca; color: #e0e7ff;
+    font-size: 5px; text-transform: uppercase; text-align: left; font-weight: 700;
   }
   table.data th.c, table.data td.c { text-align: center; }
   table.data th.r, table.data td.r { text-align: right; }
-  table.data td { padding: 3px 4px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; word-wrap: break-word; }
-  table.data tr { page-break-inside: avoid; }
+  table.data td { padding: 2px 3px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; word-wrap: break-word; }
+  table.data tr { page-break-inside: avoid; break-inside: avoid; }
   table.data tbody tr:nth-child(even) td { background: #f8fafc; }
-  .bar-cell { padding: 2px 4px !important; }
-  .bar-mini { display: block; height: 6px; background: #e2e8f0; border-radius: 3px; overflow: hidden; margin-top: 2px; }
-  .bar-mini span { display: block; height: 6px; border-radius: 3px; }
+  .bar-cell { padding: 2px 3px !important; }
+  .bar-mini { display: block; height: 5px; background: #e2e8f0; border-radius: 3px; overflow: hidden; margin-top: 1px; }
+  .bar-mini span { display: block; height: 5px; border-radius: 3px; }
   .bar-mini.km span { background: #0891b2; }
   .bar-mini.ton span { background: #16a34a; }
   .bar-mini.vg span { background: #7c3aed; }
-  .layout2-tbl { width: 100%; border-collapse: separate; border-spacing: 6px; }
+  .layout2-tbl { width: 100%; border-collapse: separate; border-spacing: 5px; }
   .layout2-tbl > tbody > tr > td { width: 50%; vertical-align: top; }
-  .layout3-tbl { width: 100%; border-collapse: separate; border-spacing: 5px; }
+  .layout3-tbl { width: 100%; border-collapse: separate; border-spacing: 4px; }
   .layout3-tbl > tbody > tr > td { width: 33.33%; vertical-align: top; }
-  .bar-tbl { width: 100%; border-collapse: collapse; table-layout: fixed; margin-bottom: 2px; }
-  .bar-tbl td { padding: 1px 2px; vertical-align: middle; font-size: 6.5px; }
+  .bar-tbl { width: 100%; border-collapse: collapse; table-layout: fixed; margin-bottom: 1px; }
+  .bar-tbl td { padding: 1px 2px; vertical-align: middle; font-size: 6px; }
   .bar-tbl .lbl { width: 28%; font-weight: 700; color: #334155; }
   .bar-tbl .track { width: 52%; }
-  .bar-tbl .track div { height: 7px; background: #e2e8f0; border-radius: 3px; overflow: hidden; }
-  .bar-tbl .track span { display: block; height: 7px; border-radius: 3px; }
+  .bar-tbl .track div { height: 6px; background: #e2e8f0; border-radius: 3px; overflow: hidden; }
+  .bar-tbl .track span { display: block; height: 6px; border-radius: 3px; }
   .bar-tbl .val { width: 20%; text-align: right; font-weight: 700; font-family: monospace; white-space: nowrap; }
   .r { text-align: right; }
   .nowrap { white-space: nowrap; }
   .muted { color: #94a3b8; font-size: 5.5px; }
   .footer {
-    text-align: center; font-size: 5.5px; color: #94a3b8;
-    margin-top: 8px; padding-top: 6px; border-top: 1px solid #e2e8f0;
+    text-align: center; font-size: 5px; color: #94a3b8;
+    margin-top: 6px; padding-top: 4px; border-top: 1px solid #e2e8f0;
     page-break-inside: avoid;
+    break-inside: avoid;
   }
-  .page-break { page-break-before: always; }
+  /* Só capítulos grandes — evita páginas com 4–10 linhas */
+  .page-break { page-break-before: always; break-before: page; }
+  .page-break-soft { page-break-before: auto; }
   @media print {
     * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
     body { padding: 0; }
@@ -272,7 +286,7 @@ function insightsHtml(insights: InsightOperacao[]): string {
   if (!insights.length) return '';
   const clsMap = { critico: 'insight-critico', atencao: 'insight-atencao', info: 'insight-info' };
   return `
-    <div class="secao-firma">
+    <div class="secao-flow">
       <div class="sec">Leitura gerencial — gargalos e atenção</div>
       <div class="insight-box">
         ${insights.slice(0, 6).map((i) => `
@@ -288,6 +302,14 @@ function qualidadeViagensHtml(capacidade: ResumoCapacidadeDia | null | undefined
   if (!capacidade || !(capacidade.viagensClassificadas > 0)) return '';
   const total = capacidade.viagensClassificadas;
   const pct = (n: number) => (total > 0 ? (n / total) * 100 : 0);
+
+  const acima = (capacidade.viagens || []).filter(
+    (v) => v.faixaIdeal === 'ruim_alto' || v.faixaIdeal === 'pessimo_alto' || (v.ocupacaoPct != null && v.ocupacaoPct > PCT_IDEAL_MAX),
+  ).length;
+  const abaixo = (capacidade.viagens || []).filter(
+    (v) => v.faixaIdeal === 'ruim_baixo' || v.faixaIdeal === 'pessimo_baixo' || (v.ocupacaoPct != null && v.ocupacaoPct < PCT_IDEAL_MIN),
+  ).length;
+
   const cards = cardsHtml([
     {
       label: `Ótimo (${PCT_IDEAL_MIN}–${PCT_IDEAL_MAX}%)`,
@@ -295,27 +317,314 @@ function qualidadeViagensHtml(capacidade: ResumoCapacidadeDia | null | undefined
       cor: COR_NOTA_IDEAL.otimo,
     },
     {
-      label: 'Ruim',
-      valor: `${fmtNum(capacidade.ruim, 0)} · ${fmtNum(pct(capacidade.ruim), 0)}%`,
-      cor: COR_NOTA_IDEAL.ruim,
+      label: `Acima do ideal (>${PCT_IDEAL_MAX}%)`,
+      valor: `${fmtNum(acima || capacidade.acimaIdeal, 0)} · ${fmtNum(pct(acima || capacidade.acimaIdeal), 0)}%`,
+      cor: '#ea580c',
     },
     {
-      label: 'Péssimo',
-      valor: `${fmtNum(capacidade.pessimo, 0)} · ${fmtNum(pct(capacidade.pessimo), 0)}%`,
-      cor: COR_NOTA_IDEAL.pessimo,
+      label: `Abaixo do ideal (<${PCT_IDEAL_MIN}%)`,
+      valor: `${fmtNum(abaixo || capacidade.subcarga, 0)} · ${fmtNum(pct(abaixo || capacidade.subcarga), 0)}%`,
+      cor: '#b91c1c',
     },
   ]);
   const ocup = capacidade.ocupacaoMediaPct;
   return `
     <div class="secao-firma">
       <div class="sec">Qualidade das viagens vs peso ideal (PESO 1–4)</div>
-      <div class="bloco" style="margin-bottom:6px">
+        <div class="bloco-keep" style="margin-bottom:6px">
         <div class="muted" style="margin-bottom:5px">
           ${fmtNum(capacidade.viagensComPeso, 0)} viagem(ns) com peso ·
           escala: ${esc(textoEscalaIdealCurto())}
           ${ocup != null ? ` · ocupação média ${fmtNum(ocup, 0)}% do ideal` : ''}
+          · <strong style="color:#ea580c">${fmtNum(acima || capacidade.acimaIdeal, 0)} acima do ideal</strong>
         </div>
         ${cards}
+      </div>
+    </div>`;
+}
+
+/** Viagens com pesagem acima do valor ideal (>110%). */
+function viagensAcimaIdealHtml(
+  capacidade: ResumoCapacidadeDia | null | undefined,
+  _tipo: PeriodoOperacional['tipo'],
+): string {
+  if (!capacidade?.viagens?.length) return '';
+
+  const acima = capacidade.viagens
+    .filter((v) =>
+      v.faixaIdeal === 'ruim_alto'
+      || v.faixaIdeal === 'pessimo_alto'
+      || (v.ocupacaoPct != null && v.ocupacaoPct > PCT_IDEAL_MAX)
+      || v.acimaPesoMax,
+    )
+    .sort((a, b) => (b.ocupacaoPct ?? 0) - (a.ocupacaoPct ?? 0))
+    .slice(0, 30);
+
+  if (!acima.length) {
+    return `
+      <div class="secao-firma">
+        <div class="sec">Viagens acima do peso ideal</div>
+        <div class="bloco-keep">
+          <div class="muted">Nenhuma viagem acima de ${PCT_IDEAL_MAX}% do peso ideal neste período.</div>
+        </div>
+      </div>`;
+  }
+
+  const rows = acima.map((v) => {
+    const excessoKg = v.pesoIdealKg != null && v.pesoIdealKg > 0
+      ? Math.max(0, v.pesoKg - v.pesoIdealKg)
+      : null;
+    const faixaLbl = v.faixaIdeal ? LABEL_FAIXA_IDEAL[v.faixaIdeal] : (v.notaIdeal ? LABEL_NOTA_IDEAL[v.notaIdeal] : 'Acima');
+    const cor = v.notaIdeal ? COR_NOTA_IDEAL[v.notaIdeal] : '#ea580c';
+    return `
+      <tr>
+        <td style="font-weight:700">${esc(v.placa)}</td>
+        <td>${esc(v.motorista || '—')}</td>
+        <td class="c">${esc(v.tipoLabel)}</td>
+        <td class="r nowrap">${fmtNum(v.pesoKg, 0)}</td>
+        <td class="r nowrap">${v.pesoIdealKg != null ? fmtNum(v.pesoIdealKg, 0) : '—'}</td>
+        <td class="r nowrap" style="font-weight:800;color:${cor}">
+          ${v.ocupacaoPct != null ? `${fmtNum(v.ocupacaoPct, 0)}%` : '—'}
+        </td>
+        <td class="r nowrap" style="color:#ea580c;font-weight:700">
+          ${excessoKg != null ? `+${fmtNum(excessoKg, 0)}` : '—'}
+        </td>
+        <td class="c" style="font-size:5.5px;color:${cor}">${esc(faixaLbl)}${v.acimaPesoMax ? ' · máx.' : ''}</td>
+        <td>${esc(v.rota && v.rota !== '—' ? (v.rota.length > 18 ? `${v.rota.slice(0, 18)}…` : v.rota) : '—')}</td>
+      </tr>`;
+  }).join('');
+
+  return `
+    <div class="secao-flow">
+      <div class="sec">Viagens acima do peso ideal — detalhe</div>
+      <div class="bloco-keep">
+        <div class="muted" style="margin-bottom:4px">
+          Top ${fmtNum(acima.length, 0)} viagens com pesagem &gt; ${PCT_IDEAL_MAX}% do ideal
+          (ou acima do peso máx. do tipo). Excesso = kg acima do ideal.
+        </div>
+        <table class="data">
+          <colgroup>
+            <col style="width:10%"/><col style="width:16%"/><col style="width:8%"/>
+            <col style="width:9%"/><col style="width:9%"/><col style="width:8%"/>
+            <col style="width:9%"/><col style="width:14%"/><col style="width:17%"/>
+          </colgroup>
+          <thead><tr>
+            <th>Placa</th><th>Motorista</th><th class="c">Tipo</th>
+            <th class="r">Peso</th><th class="r">Ideal</th><th class="r">% ideal</th>
+            <th class="r">Excesso</th><th class="c">Status</th><th>Rota</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+type RankingPessoa = {
+  nome: string;
+  viagens: number;
+  toneladas: number;
+  tonMedia: number;
+  pctIdealMedio: number | null;
+  nota: NotaIdealViagem | null;
+};
+
+function agregarRankingPorChave(
+  viagens: ViagemCapacidadeItem[],
+  chaveFn: (v: ViagemCapacidadeItem) => string,
+): RankingPessoa[] {
+  const map = new Map<string, { viagens: number; kg: number; pctSum: number; pctN: number }>();
+  for (const v of viagens) {
+    const nome = chaveFn(v);
+    if (!nome || nome === '—') continue;
+    const acc = map.get(nome) || { viagens: 0, kg: 0, pctSum: 0, pctN: 0 };
+    acc.viagens += 1;
+    acc.kg += v.pesoKg;
+    if (v.ocupacaoPct != null && Number.isFinite(v.ocupacaoPct)) {
+      acc.pctSum += v.ocupacaoPct;
+      acc.pctN += 1;
+    }
+    map.set(nome, acc);
+  }
+  return [...map.entries()].map(([nome, a]) => {
+    const pctIdealMedio = a.pctN > 0 ? Math.round((a.pctSum / a.pctN) * 10) / 10 : null;
+    return {
+      nome,
+      viagens: a.viagens,
+      toneladas: Math.round((a.kg / 1000) * 100) / 100,
+      tonMedia: a.viagens > 0 ? Math.round((a.kg / a.viagens / 1000) * 1000) / 1000 : 0,
+      pctIdealMedio,
+      nota: notaDePct(pctIdealMedio),
+    };
+  });
+}
+
+/** Score: prioriza proximidade do ideal (100%) e produtividade (t/viagem). */
+function scoreMelhor(r: RankingPessoa): number {
+  const desvio = r.pctIdealMedio != null ? Math.abs(r.pctIdealMedio - 100) : 50;
+  const proximidade = Math.max(0, 100 - desvio);
+  return proximidade * 2 + r.tonMedia * 40 + Math.min(r.viagens, 40);
+}
+
+function tabelaRankingPessoasHtml(
+  titulo: string,
+  lista: RankingPessoa[],
+  colNome: string,
+): string {
+  if (!lista.length) {
+    return `
+      <div class="bloco-keep">
+        <div class="bloco-hd">${esc(titulo)}</div>
+        <div class="muted">Sem dados suficientes.</div>
+      </div>`;
+  }
+  const rows = lista.map((r, idx) => `
+    <tr>
+      <td class="c" style="font-weight:800;color:#6366f1">${idx + 1}</td>
+      <td style="font-weight:700">${esc(r.nome.length > 22 ? `${r.nome.slice(0, 22)}…` : r.nome)}</td>
+      <td class="c">${fmtNum(r.viagens, 0)}</td>
+      <td class="r nowrap">${fmtNum(r.toneladas, 1)} t</td>
+      <td class="r nowrap">${fmtNum(r.tonMedia * 1000, 0)}</td>
+      <td class="r nowrap" style="font-weight:800;color:${r.nota ? COR_NOTA_IDEAL[r.nota] : '#64748b'}">
+        ${r.pctIdealMedio != null ? `${fmtNum(r.pctIdealMedio, 0)}%` : '—'}
+      </td>
+      <td class="c">${badgeNotaHtml(r.nota)}</td>
+    </tr>`).join('');
+
+  return `
+    <div class="bloco">
+      <div class="bloco-hd">${esc(titulo)}</div>
+      <table class="data">
+        <colgroup>
+          <col style="width:8%"/><col style="width:28%"/><col style="width:10%"/>
+          <col style="width:14%"/><col style="width:14%"/><col style="width:12%"/><col style="width:14%"/>
+        </colgroup>
+        <thead><tr>
+          <th class="c">#</th><th>${esc(colNome)}</th><th class="c">Viag.</th>
+          <th class="r">Ton</th><th class="r">kg/viag</th><th class="r">% ideal</th><th class="c">Nota</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+function rankingMelhoresHtml(
+  operacao: OperacaoDiaAnalise,
+  capacidade: ResumoCapacidadeDia | null | undefined,
+  _tipo: PeriodoOperacional['tipo'],
+): string {
+  const viagensCap = capacidade?.viagens || [];
+
+  let motoristas = agregarRankingPorChave(viagensCap, (v) => v.motorista || '—');
+  if (!motoristas.length) {
+    motoristas = operacao.porMotorista
+      .filter((m) => m.chave && m.chave !== '—' && m.viagens > 0)
+      .map((m) => ({
+        nome: m.chave,
+        viagens: m.viagens,
+        toneladas: m.toneladas,
+        tonMedia: m.tonMediaViagem,
+        pctIdealMedio: null as number | null,
+        nota: null as NotaIdealViagem | null,
+      }));
+  }
+
+  let coletores = agregarRankingPorChave(viagensCap, (v) => v.placa || '—');
+  if (!coletores.length) {
+    coletores = operacao.porPlaca
+      .filter((p) => p.chave && p.chave !== '—' && p.viagens > 0)
+      .map((p) => ({
+        nome: p.chave,
+        viagens: p.viagens,
+        toneladas: p.toneladas,
+        tonMedia: p.tonMediaViagem,
+        pctIdealMedio: null as number | null,
+        nota: null as NotaIdealViagem | null,
+      }));
+  }
+
+  const topMot = [...motoristas]
+    .filter((r) => r.viagens >= 1)
+    .sort((a, b) => scoreMelhor(b) - scoreMelhor(a) || b.toneladas - a.toneladas)
+    .slice(0, 10);
+
+  const topCol = [...coletores]
+    .filter((r) => r.viagens >= 1)
+    .sort((a, b) => scoreMelhor(b) - scoreMelhor(a) || b.toneladas - a.toneladas)
+    .slice(0, 10);
+
+  if (!topMot.length && !topCol.length) return '';
+
+  return `
+    <div class="secao-flow">
+      <div class="sec">Melhores números — motoristas e coletores</div>
+      <div class="muted" style="margin-bottom:4px">
+        Ranking por proximidade do peso ideal (100%) + produtividade (kg/viagem). Coletor = veículo (placa).
+      </div>
+      <table class="layout2-tbl">
+        <tr>
+          <td>${tabelaRankingPessoasHtml('Top motoristas', topMot, 'Motorista')}</td>
+          <td>${tabelaRankingPessoasHtml('Top coletores (placas)', topCol, 'Placa')}</td>
+        </tr>
+      </table>
+    </div>`;
+}
+
+/** Amostra equilibrada: ótimo + acima + abaixo do ideal. */
+function detalheViagensCicloHtml(
+  capacidade: ResumoCapacidadeDia | null | undefined,
+  tipo: PeriodoOperacional['tipo'],
+): string {
+  if (!capacidade?.viagens?.length) return '';
+
+  const ordenadas = [...capacidade.viagens].sort(
+    (a, b) => Math.abs((b.ocupacaoPct ?? 100) - 100) - Math.abs((a.ocupacaoPct ?? 100) - 100),
+  );
+  // Ciclo: amostra menor para caber com outras seções (sem página quase vazia)
+  const limite = periodoLongo(tipo) ? 22 : 40;
+  const amostra = ordenadas.slice(0, limite);
+  if (!amostra.length) return '';
+
+  const rows = amostra.map((v) => {
+    const acima = v.ocupacaoPct != null && v.ocupacaoPct > PCT_IDEAL_MAX;
+    const abaixo = v.ocupacaoPct != null && v.ocupacaoPct < PCT_IDEAL_MIN;
+    const statusTxt = acima ? 'ACIMA' : abaixo ? 'ABAIXO' : 'ÓTIMO';
+    const cor = acima ? '#ea580c' : abaixo ? '#b91c1c' : COR_NOTA_IDEAL.otimo;
+    return `
+      <tr>
+        <td style="font-weight:700">${esc(v.placa)}</td>
+        <td>${esc((v.motorista || '—').length > 18 ? `${(v.motorista || '—').slice(0, 18)}…` : (v.motorista || '—'))}</td>
+        <td class="c">${esc(v.tipoLabel)}</td>
+        <td class="r nowrap">${fmtNum(v.pesoKg, 0)}</td>
+        <td class="r nowrap">${v.pesoIdealKg != null ? fmtNum(v.pesoIdealKg, 0) : '—'}</td>
+        <td class="r nowrap" style="font-weight:800;color:${cor}">
+          ${v.ocupacaoPct != null ? `${fmtNum(v.ocupacaoPct, 0)}%` : '—'}
+        </td>
+        <td class="c" style="font-weight:800;color:${cor};font-size:5.5px">${statusTxt}</td>
+        <td class="c">${badgeNotaHtml(v.notaIdeal)}</td>
+      </tr>`;
+  }).join('');
+
+  return `
+    <div class="secao-flow">
+      <div class="sec">Detalhe das viagens do ciclo vs peso ideal</div>
+      <div class="bloco">
+        <div class="muted" style="margin-bottom:3px">
+          Até ${fmtNum(limite, 0)} viagens com maior desvio do ideal. Status: ACIMA (&gt;${PCT_IDEAL_MAX}%),
+          ÓTIMO (${PCT_IDEAL_MIN}–${PCT_IDEAL_MAX}%) ou ABAIXO (&lt;${PCT_IDEAL_MIN}%).
+        </div>
+        <table class="data">
+          <colgroup>
+            <col style="width:11%"/><col style="width:18%"/><col style="width:10%"/>
+            <col style="width:11%"/><col style="width:11%"/><col style="width:11%"/>
+            <col style="width:12%"/><col style="width:16%"/>
+          </colgroup>
+          <thead><tr>
+            <th>Placa</th><th>Motorista</th><th class="c">Tipo</th>
+            <th class="r">Peso</th><th class="r">Ideal</th><th class="r">% ideal</th>
+            <th class="c">vs ideal</th><th class="c">Nota</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
       </div>
     </div>`;
 }
@@ -398,7 +707,7 @@ function desempenhoPorTipoHtml(
   return `
     <div class="secao-firma">
       <div class="sec">Desempenho por tipo de caminhão</div>
-      <div class="bloco">
+      <div class="bloco-keep">
         <div class="muted" style="margin-bottom:4px">
           Peso médio da viagem vs peso ideal do tipo (volume × densidade do contrato).
           Ótimo = ${PCT_IDEAL_MIN}–${PCT_IDEAL_MAX}% do ideal.
@@ -555,21 +864,23 @@ function tabelaDiariaHtml(dias: DadoDiario[], diasComDados: number, tipo: Period
           </td>
         </tr>
       </table>
-      <table class="data">
-        <colgroup>
-          <col style="width:14%"/><col style="width:10%"/><col style="width:14%"/>
-          <col style="width:14%"/><col style="width:14%"/><col style="width:14%"/><col style="width:10%"/>
-        </colgroup>
-        <thead><tr>
-          <th>Data</th><th class="c">Viagens</th><th></th>
-          <th class="r">Toneladas</th><th class="r">KM</th><th class="r">Horas</th><th class="c">Veíc.</th>
-        </tr></thead>
-        <tbody>${linhas}</tbody>
-      </table>
+      <div class="bloco">
+        <table class="data">
+          <colgroup>
+            <col style="width:14%"/><col style="width:10%"/><col style="width:14%"/>
+            <col style="width:14%"/><col style="width:14%"/><col style="width:14%"/><col style="width:10%"/>
+          </colgroup>
+          <thead><tr>
+            <th>Data</th><th class="c">Viagens</th><th></th>
+            <th class="r">Toneladas</th><th class="r">KM</th><th class="r">Horas</th><th class="c">Veíc.</th>
+          </tr></thead>
+          <tbody>${linhas}</tbody>
+        </table>
+      </div>
     </div>`;
 }
 
-function graficosDimHtml(operacao: OperacaoDiaAnalise, tipo: PeriodoOperacional['tipo']): string {
+function graficosDimHtml(operacao: OperacaoDiaAnalise, _tipo: PeriodoOperacional['tipo']): string {
   const temTurno = operacao.porTurno.some((l) => l.chave !== '—' && l.viagens > 0);
   const temRegional = operacao.porRegional.some((l) => l.chave !== '—' && l.viagens > 0);
   const temDistrito = operacao.porDistrito.some(
@@ -579,22 +890,21 @@ function graficosDimHtml(operacao: OperacaoDiaAnalise, tipo: PeriodoOperacional[
   if (!temTurno && !temRegional && !temDistrito) return '';
 
   const distrito = temDistrito ? tabelaDistritoHtml(operacao.porDistrito) : '';
-  const quebraTurnoReg = periodoLongo(tipo) && temDistrito ? ' page-break' : '';
 
   const turnoRegional = (temTurno || temRegional) ? `
-    <div class="secao${quebraTurnoReg}">
+    <div class="secao-flow">
       <table class="layout2-tbl">
         <tr>
           ${temTurno ? `
           <td>
-            <div class="bloco">
+            <div class="bloco-keep">
               <div class="bloco-hd">Viagens por turno</div>
               ${barraTabelaHtml(operacao.porTurno, 'viagens', '#7c3aed')}
             </div>
           </td>` : '<td></td>'}
           ${temRegional ? `
           <td>
-            <div class="bloco">
+            <div class="bloco-keep">
               <div class="bloco-hd">Viagens por regional</div>
               ${barraTabelaHtml(operacao.porRegional, 'viagens', '#6366f1')}
             </div>
@@ -608,7 +918,7 @@ function graficosDimHtml(operacao: OperacaoDiaAnalise, tipo: PeriodoOperacional[
 
 function tabelaPlacasHtml(
   operacao: OperacaoDiaAnalise,
-  tipo: PeriodoOperacional['tipo'],
+  _tipo: PeriodoOperacional['tipo'],
   placasReserva: string[] | undefined,
   limOpts: OptsAnaliseContratoDia,
 ): string {
@@ -627,8 +937,7 @@ function tabelaPlacasHtml(
 
   if (!eficiencia.length) return '';
 
-  const quebra = periodoLongo(tipo) ? ' page-break' : '';
-
+  // Sem quebra forçada: ranking de veículos segue turno/regional na mesma sequência
   const row = (l: LinhaEficienciaPlaca) => {
     const tipoLbl = l.mediaRefLabel && l.mediaRefLabel !== 'dia'
       ? l.mediaRefLabel
@@ -654,10 +963,10 @@ function tabelaPlacasHtml(
   };
 
   return `
-    <div class="secao${quebra}">
+    <div class="secao-flow">
       <div class="sec">Ranking por veículo — vs ideal do tipo</div>
-      <div class="bloco">
-        <div class="muted" style="margin-bottom:4px">
+      <div class="bloco-keep">
+        <div class="muted" style="margin-bottom:3px">
           Ordenado pelos maiores desvios do peso ideal do próprio tipo (Mini/Toco/Basculante/Truck).
         </div>
         <table class="data">
@@ -703,6 +1012,9 @@ export function gerarHtmlRelatorioOperacionalPeriodo(opts: {
     densidadeKgL: opts.densidadeKgL,
   };
   const op = operacao.resumo;
+  // Totais do ciclo (SQL = CONTADOR DE VIAGENS) são a fonte canônica do período.
+  // O detalhe operacional (op) alimenta breakdowns; se divergir, o banner/hero seguem o SQL.
+  const viagensPeriodo = totais.viagens > 0 ? totais.viagens : op.viagens;
   const gerado = opts.geradoEm ?? new Date();
   const dataGeracao = gerado.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' });
   const horaGeracao = gerado.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
@@ -723,7 +1035,7 @@ export function gerarHtmlRelatorioOperacionalPeriodo(opts: {
     : '';
 
   const { tonH } = metricasPorHora(op.toneladas, op.km, op.horas);
-  const viagensMediaDia = diasComDados > 0 ? op.viagens / diasComDados : 0;
+  const viagensMediaDia = diasComDados > 0 ? viagensPeriodo / diasComDados : 0;
   const tonMediaDia = diasComDados > 0 ? op.toneladas / diasComDados : 0;
   const pctOtimo = capacidade && capacidade.viagensClassificadas > 0
     ? (capacidade.otimo / capacidade.viagensClassificadas) * 100
@@ -758,6 +1070,8 @@ export function gerarHtmlRelatorioOperacionalPeriodo(opts: {
     .filter(Boolean)
     .join(' · ');
 
+  const heroOp = { ...op, viagens: viagensPeriodo };
+
   return `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -777,25 +1091,28 @@ export function gerarHtmlRelatorioOperacionalPeriodo(opts: {
     <div class="banner">
       Período: <strong>${esc(formatarIsoParaBr(periodo.dataInicio))}</strong> a
       <strong>${esc(formatarIsoParaBr(periodo.dataFim))}</strong>
-      · ${labelViagens(op.viagens)}
+      · ${labelViagens(viagensPeriodo)}
       · ${fmtNum(op.toneladas, 1)} t · ${fmtNum(op.km, 0)} km
       · ${op.caminhoes ?? op.coletores} veículo${(op.caminhoes ?? op.coletores) !== 1 ? 's' : ''}${frotaReservaTxt}
       ${mixTipos ? `<span class="nota">Mix por tipo: ${esc(mixTipos)}</span>` : ''}
     </div>
 
-    ${heroResumoHtml(op)}
+    ${heroResumoHtml(heroOp)}
     ${cards}
   </div>
 
   ${qualidadeViagensHtml(capacidade)}
   ${desempenhoPorTipoHtml(operacao, limOpts, capacidade)}
+  ${viagensAcimaIdealHtml(capacidade, periodo.tipo)}
+  ${rankingMelhoresHtml(operacao, capacidade, periodo.tipo)}
+  ${detalheViagensCicloHtml(capacidade, periodo.tipo)}
   ${insightsHtml(insights)}
   ${tabelaDiariaHtml(dias, diasComDados, periodo.tipo)}
   ${graficosDimHtml(operacao, periodo.tipo)}
   ${tabelaPlacasHtml(operacao, periodo.tipo, placasReserva, limOpts)}
 
   <div class="footer">
-    Sistemma · ${esc(tituloTipo)} · ${labelViagens(totais.viagens)} · ${esc(periodo.label)}
+    Sistemma · ${esc(tituloTipo)} · ${labelViagens(viagensPeriodo)} · ${esc(periodo.label)}
     · Ideal por tipo = volume (L) × densidade (kg/L) do contrato
   </div>
 </body>

@@ -485,16 +485,20 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
 
     const linhasTabela = viagens.map((v: any) => {
       const probs = filtrarProblemasDashboard(v.problemas);
+      const fora = v.foraDashboard || v.descartada || !v.completa;
+      const status = fora
+        ? `<strong style="color:#dc2626">FORA DO DASH</strong>${v.motivoForaDashboard ? ` — ${v.motivoForaDashboard}` : ''}${probs.length ? `<br/>${probs.join('; ')}` : ''}`
+        : (probs.join('; ') || (v.corrigidaHodometro ? 'No dash (KM tratado)' : '—'));
       return `
       <tr>
         <td>${v.linha}</td>
         <td>${v.data || '—'}</td>
         <td>${v.placa || '—'}</td>
         <td>${v.motorista || '—'}</td>
-        <td>${v.rota || '—'}</td>
+        <td style="text-align:center;font-weight:700;color:${fora ? '#dc2626' : '#16a34a'}">${v.contadorViagens ?? '—'}</td>
         <td>${v.kmTotal != null ? v.kmTotal.toLocaleString('pt-BR', { maximumFractionDigits: 1 }) : (v.kmTotalCalculado != null ? v.kmTotalCalculado.toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + '*' : '—')}</td>
         <td>${v.pesoTotal != null ? Number(v.pesoTotal).toLocaleString('pt-BR', { maximumFractionDigits: 1 }) : '—'}</td>
-        <td style="color:#b45309; font-size:9px">${probs.join('; ') || '—'}</td>
+        <td style="color:${fora ? '#dc2626' : '#b45309'}; font-size:9px">${status}</td>
       </tr>
     `;
     }).join('');
@@ -552,16 +556,19 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
   </div>
 
   <div class="summary">
-    <div class="card"><div class="num">${relatorio.totalViagens || 0}</div><div class="label">Total de Viagens</div></div>
-    <div class="card completas"><div class="num">${validas}</div><div class="label">Válidas (dashboard)</div></div>
-    <div class="card incompletas"><div class="num">${inconsistentes}</div><div class="label">Inconsistentes</div></div>
-    ${descartadas > 0 ? `<div class="card"><div class="num">${descartadas}</div><div class="label">Ignoradas (sem dados)</div></div>` : ''}
-    <div class="card"><div class="num">${relatorio.percentualCompleto || 0}%</div><div class="label">% Válidas</div></div>
+    <div class="card"><div class="num">${relatorio.somaContadorViagens ?? relatorio.totalViagens ?? 0}</div><div class="label">CONTADOR planilha</div></div>
+    <div class="card completas"><div class="num">${relatorio.somaContadorNoDashboard ?? validas}</div><div class="label">CONTADOR no dashboard</div></div>
+    <div class="card incompletas"><div class="num">${relatorio.somaContadorForaDashboard ?? inconsistentes}</div><div class="label">CONTADOR fora do dash</div></div>
+    ${descartadas > 0 ? `<div class="card"><div class="num">${descartadas}</div><div class="label">Linhas ignoradas</div></div>` : ''}
+    <div class="card"><div class="num">${relatorio.percentualCompleto || 0}%</div><div class="label">% Linhas válidas</div></div>
   </div>
 
   <div class="aviso">
-    As ${validas} viagem(ns) válidas entram no dashboard. As ${inconsistentes} inconsistente(s) ficam fora dos KPIs.
-    ${descartadas > 0 ? `${descartadas} linha(s) sem placa, KM Total e Peso Total foram ignoradas e não entram no sistema. ` : ''}
+    CONTADOR DE VIAGENS na planilha: <strong>${relatorio.somaContadorViagens ?? '—'}</strong>.
+    Entram no dashboard: <strong>${relatorio.somaContadorNoDashboard ?? validas}</strong>.
+    Ficam fora: <strong>${relatorio.somaContadorForaDashboard ?? 0}</strong>
+    (${inconsistentes} linha(s) inconsistente(s)${descartadas > 0 ? ` + ${descartadas} ignorada(s)` : ''}).
+    ${descartadas > 0 ? `${descartadas} linha(s) sem placa, KM Total e Peso Total foram ignoradas. ` : ''}
     Regras: KM máx. 300, peso &gt; 0, sem negativos, horas com ":" (não ";").
   </div>
 
@@ -580,19 +587,19 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
   ${resumoPlacasHtml}
 
   ${viagens.length > 0 ? `
-  <div class="section-title">Amostra — viagens fora do dashboard (${viagens.length}${viagens.length >= 500 ? '+' : ''})</div>
+  <div class="section-title">Viagens que NÃO sobem / tratadas (${viagens.length}${viagens.length >= 500 ? '+' : ''})</div>
   <table>
     <thead>
       <tr>
-        <th>Linha</th><th>Data</th><th>Placa</th><th>Motorista</th><th>Rota</th>
-        <th>KM Total</th><th>Peso (t)</th><th>Problemas</th>
+        <th>Linha</th><th>Data</th><th>Placa</th><th>Motorista</th><th>Contador</th>
+        <th>KM Total</th><th>Peso (t)</th><th>Status / Problemas</th>
       </tr>
     </thead>
     <tbody>
       ${linhasTabela}
     </tbody>
   </table>
-  <div class="obs">* KM Total calculado a partir de KM Saída e KM Chegada quando ausente na planilha</div>
+  <div class="obs">* Contador = CONTADOR DE VIAGENS. Linhas FORA DO DASH não entram nos KPIs.</div>
   ` : ''}
 
   <div class="footer">
@@ -1015,15 +1022,15 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
                     </div>
                     <div style={{ background: '#eff6ff', borderRadius: '6px', padding: '0.4rem 0.5rem', textAlign: 'center' }}>
                       <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#2563eb' }}>{dadosViagens.somaContadorViagens ?? '—'}</div>
-                      <div style={{ fontSize: '0.58rem', color: '#1e40af' }}>Soma contador</div>
+                      <div style={{ fontSize: '0.58rem', color: '#1e40af' }}>CONTADOR planilha</div>
                     </div>
                     <div style={{ background: '#f0fdf4', borderRadius: '6px', padding: '0.4rem 0.5rem', textAlign: 'center' }}>
-                      <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#16a34a' }}>{dadosViagens.viagensCalculadasDashboard ?? dadosViagens.viagensCompletas ?? 0}</div>
-                      <div style={{ fontSize: '0.58rem', color: '#166534' }}>Viagens KPI</div>
+                      <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#16a34a' }}>{dadosViagens.somaContadorNoDashboard ?? dadosViagens.viagensCalculadasDashboard ?? 0}</div>
+                      <div style={{ fontSize: '0.58rem', color: '#166534' }}>CONTADOR no dash</div>
                     </div>
                     <div style={{ background: '#fef2f2', borderRadius: '6px', padding: '0.4rem 0.5rem', textAlign: 'center' }}>
-                      <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#dc2626' }}>{(dadosViagens.viagensInconsistentesTotal ?? dadosViagens.viagensIncompletas) || 0}</div>
-                      <div style={{ fontSize: '0.58rem', color: '#991b1b' }}>Fora do dashboard</div>
+                      <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#dc2626' }}>{dadosViagens.somaContadorForaDashboard ?? (dadosViagens.viagensInconsistentesTotal ?? 0)}</div>
+                      <div style={{ fontSize: '0.58rem', color: '#991b1b' }}>CONTADOR fora</div>
                     </div>
                     {(dadosViagens.linhasSemContador ?? 0) > 0 && (
                       <div style={{ background: '#fffbeb', borderRadius: '6px', padding: '0.4rem 0.5rem', textAlign: 'center' }}>
@@ -1178,7 +1185,7 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
                   {dadosViagens.viagens && dadosViagens.viagens.length > 0 && (
                     <div style={{ marginTop: '0.5rem' }}>
                       <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#475569', marginBottom: '0.25rem' }}>
-                        Amostra — inconsistentes, hodômetro e pesagem alta (até 10):
+                        Amostra — viagens FORA DO DASH / tratadas (até 10):
                       </div>
                       <div style={{ maxHeight: '180px', overflowY: 'auto', fontSize: '0.6rem' }}>
                         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -1187,27 +1194,31 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
                               <th style={{ padding: '3px 5px', textAlign: 'left' }}>Linha</th>
                               <th style={{ padding: '3px 5px', textAlign: 'left' }}>Data</th>
                               <th style={{ padding: '3px 5px', textAlign: 'left' }}>Placa</th>
-                              <th style={{ padding: '3px 5px', textAlign: 'left' }}>Motorista</th>
+                              <th style={{ padding: '3px 5px', textAlign: 'center' }}>Cont.</th>
                               <th style={{ padding: '3px 5px', textAlign: 'left' }}>KM</th>
                               <th style={{ padding: '3px 5px', textAlign: 'left' }}>Peso</th>
-                              <th style={{ padding: '3px 5px', textAlign: 'left' }}>Problemas</th>
+                              <th style={{ padding: '3px 5px', textAlign: 'left' }}>Status</th>
                             </tr>
                           </thead>
                           <tbody>
-                            {(dadosViagens.viagens || []).slice(0, 10).map((v: any, i: number) => (
+                            {(dadosViagens.viagens || []).slice(0, 10).map((v: any, i: number) => {
+                              const fora = v.foraDashboard || v.descartada || v.completa === false;
+                              return (
                               <tr
                                 key={i}
                                 style={{
                                   borderBottom: '1px solid #e2e8f0',
-                                  background: v.alertaPesagemAlta
-                                    ? '#fff7ed'
-                                    : (v.corrigidaHodometro ? '#f0fdf4' : (v.temValorNegativo ? '#fef2f2' : undefined)),
+                                  background: fora
+                                    ? '#fef2f2'
+                                    : v.alertaPesagemAlta
+                                      ? '#fff7ed'
+                                      : (v.corrigidaHodometro ? '#f0fdf4' : undefined),
                                 }}
                               >
                                 <td style={{ padding: '3px 5px' }}>{v.linha}</td>
                                 <td style={{ padding: '3px 5px' }}>{v.data || '—'}</td>
                                 <td style={{ padding: '3px 5px' }}>{v.placa || '—'}</td>
-                                <td style={{ padding: '3px 5px' }}>{v.motorista || '—'}</td>
+                                <td style={{ padding: '3px 5px', textAlign: 'center', fontWeight: 700, color: fora ? '#dc2626' : '#16a34a' }}>{v.contadorViagens ?? '—'}</td>
                                 <td style={{ padding: '3px 5px', color: v.corrigidaHodometro ? '#166534' : (!v.kmTotal && !v.kmTotalCalculado ? '#dc2626' : '#16a34a') }}>
                                   {(() => {
                                     if (!v.corrigidaHodometro) {
@@ -1233,32 +1244,28 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
                                 </td>
                                 <td style={{
                                   padding: '3px 5px',
-                                  color: v.alertaPesagemAlta ? '#9a3412' : (v.corrigidaHodometro ? '#166534' : '#b45309'),
+                                  color: fora ? '#dc2626' : (v.corrigidaHodometro ? '#166534' : '#b45309'),
                                   fontSize: '0.55rem',
                                 }}>
-                                  {(v.problemas || [])
-                                    .filter((p: string) => {
-                                      const pl = p.toLowerCase();
-                                      if (v.corrigidaHodometro && (
-                                        pl.includes('hodômetro')
-                                        || pl.includes('hodometro')
-                                        || pl.includes('km zerado')
-                                        || pl.includes('km total corrigido')
-                                        || pl.includes('km total mantido')
-                                        || pl.includes('motivo do tratamento')
-                                        || pl.includes('leitura foi descartada')
-                                        || pl.includes('km saída')
-                                        || pl.includes('km chegada')
-                                      )) {
-                                        return true;
-                                      }
-                                      if (v.alertaPesagemAlta && pl.includes('pesagem alta')) return true;
-                                      return !pl.includes('placa será unificada') && !pl.startsWith('corrigido automaticamente');
-                                    })
-                                    .join('; ') || (v.corrigidaHodometro ? 'KM zerado — peso/viagens mantidos' : '—')}
+                                  {fora
+                                    ? (v.motivoForaDashboard || 'FORA DO DASH')
+                                    : ((v.problemas || [])
+                                      .filter((p: string) => {
+                                        const pl = p.toLowerCase();
+                                        if (v.corrigidaHodometro && (
+                                          pl.includes('hodômetro')
+                                          || pl.includes('hodometro')
+                                          || pl.includes('km zerado')
+                                          || pl.includes('km total')
+                                        )) return true;
+                                        if (v.alertaPesagemAlta && pl.includes('pesagem alta')) return true;
+                                        return !pl.includes('placa será unificada') && !pl.startsWith('corrigido automaticamente');
+                                      })
+                                      .join('; ') || (v.corrigidaHodometro ? 'No dash (KM tratado)' : '—'))}
                                 </td>
                               </tr>
-                            ))}
+                              );
+                            })}
                           </tbody>
                         </table>
                       </div>

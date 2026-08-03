@@ -235,7 +235,7 @@ function addGrupo(
   const k = chave || '—';
   if (!map.has(k)) map.set(k, criarGrupo(k));
   const g = map.get(k)!;
-  const vg = contarViagensPorRotaRegistro(reg) || Math.max(m.viagens, 1);
+  const vg = contarViagensPorRotaRegistro(reg);
   g.registros += 1;
   g.viagens += vg;
   g.toneladas += m.toneladas;
@@ -588,7 +588,7 @@ export function analisarOperacaoDia(registros: Record<string, unknown>[]): Opera
 
   for (const reg of fonte) {
     const m = extrairMetricasCardViagem(reg, cols);
-    const vg = contarViagensPorRotaRegistro(reg as Record<string, unknown>) || Math.max(m.viagens, 1);
+    const vg = contarViagensPorRotaRegistro(reg as Record<string, unknown>);
 
     viagens += vg;
     toneladas += m.toneladas;

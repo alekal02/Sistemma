@@ -6,7 +6,7 @@ import { PlanilhaUpload } from '../entities/PlanilhaUpload';
 import { Servico } from '../entities/Servico';
 import PlanilhaService from './PlanilhaService';
 import { prepararViagemParaImportacao, aplicarFiltroViagensValidasDashboard } from './validacaoViagemService';
-import { contarViagensPorRotaRegistro } from './viagensPorRotaService';
+import { contarViagensPorRotaRegistro, sqlSumViagens } from './viagensPorRotaService';
 import {
   compararMetricasDia,
   formatarDataBr,
@@ -170,9 +170,10 @@ export class DeduplicacaoService {
   }
 
   /**
-   * ⭐ Remove duplicatas no banco via SQL direto.
-   * Mantém apenas o registro MAIS ANTIGO (menor id) para cada
-   * combinação (dataSaida, placa, turno, distrito, regional) de um mesmo serviço.
+   * ⭐ Remove duplicatas EXATAS no banco via SQL.
+   * Chave ampla demais (só data+placa+turno+regional) apagava rotas distintas
+   * do mesmo caminhão no mesmo dia — ex.: CONTADOR 456 na planilha → 455 no dash.
+   * Mantém o registro mais antigo (menor id) só quando métricas operacionais coincidem.
    */
   private async limparDuplicatas(servicoId?: string): Promise<number> {
     if (!servicoId) return 0;
@@ -188,10 +189,14 @@ export class DeduplicacaoService {
                  ROW_NUMBER() OVER (
                    PARTITION BY
                      c."dataSaida"::date,
-                     c."placa",
-                     c."turno",
+                     COALESCE(NULLIF(TRIM(UPPER(c."placa")), ''), 'SEM_PLACA'),
+                     COALESCE(NULLIF(TRIM(UPPER(c."turno")), ''), 'SEM_TURNO'),
                      COALESCE(NULLIF(TRIM(UPPER(c."distrito")), ''), 'SEM_DISTRITO'),
-                     COALESCE(NULLIF(TRIM(UPPER(c."regional")), ''), 'SEM_REGIONAL')
+                     COALESCE(NULLIF(TRIM(UPPER(c."regional")), ''), 'SEM_REGIONAL'),
+                     COALESCE(ROUND(c."kmSaida"::numeric, 1), -1),
+                     COALESCE(ROUND(c."kmTotal"::numeric, 1), -1),
+                     COALESCE(ROUND(c."pesoTotal"::numeric, 1), -1),
+                     COALESCE(c."numeroViagens", c."viagensPorRota", -1)
                    ORDER BY c.id ASC
                  ) as rn
           FROM coleta_dados c
@@ -203,7 +208,7 @@ export class DeduplicacaoService {
 
     const removidos = result?.[1] || 0;
     if (removidos > 0) {
-      console.log(`[Dedup SQL] ${removidos} duplicata(s) removida(s) do servico ${servicoId}`);
+      console.log(`[Dedup SQL] ${removidos} duplicata(s) exata(s) removida(s) do servico ${servicoId}`);
     }
     return removidos;
   }
@@ -218,7 +223,8 @@ export class DeduplicacaoService {
 
   /**
    * Gera a chave única para um registro (rota operacional).
-   * dataSaida + placa + turno + distrito + regional
+   * Inclui KM/peso/contador para NÃO colapsar rotas distintas do mesmo
+   * caminhão no mesmo dia (turno/regional iguais).
    */
   gerarChave(
     dataSaida: Date | string | null,
@@ -226,6 +232,10 @@ export class DeduplicacaoService {
     turno: string | null,
     distrito?: string | null,
     regional?: string | null,
+    kmSaida?: number | null,
+    kmTotal?: number | null,
+    pesoTotal?: number | null,
+    numeroViagens?: number | null,
   ): string {
     let data: string;
     if (dataSaida instanceof Date) {
@@ -239,7 +249,19 @@ export class DeduplicacaoService {
     const turnoNorm = this.normalizarCampoChave(turno, 'SEM_TURNO');
     const distritoNorm = this.normalizarCampoChave(distrito, 'SEM_DISTRITO');
     const regionalNorm = this.normalizarCampoChave(regional, 'SEM_REGIONAL');
-    return `${data}|${placaNorm}|${turnoNorm}|${distritoNorm}|${regionalNorm}`;
+    const round1 = (n: number | null | undefined) =>
+      n != null && !Number.isNaN(Number(n)) ? String(Math.round(Number(n) * 10) / 10) : 'NA';
+    return [
+      data,
+      placaNorm,
+      turnoNorm,
+      distritoNorm,
+      regionalNorm,
+      round1(kmSaida),
+      round1(kmTotal),
+      round1(pesoTotal),
+      numeroViagens != null && !Number.isNaN(Number(numeroViagens)) ? String(Math.round(Number(numeroViagens))) : 'NA',
+    ].join('|');
   }
 
   /**
@@ -252,8 +274,29 @@ export class DeduplicacaoService {
       coleta.turno,
       coleta.distrito,
       coleta.regional,
+      coleta.kmSaida,
+      coleta.kmTotal,
+      coleta.pesoTotal,
+      coleta.numeroViagens ?? coleta.viagensPorRota,
     );
   }
+
+  private gerarChaveDeLinha(l: LinhaParseada): string {
+    return this.gerarChave(
+      l.dataSaida,
+      l.placa,
+      l.turno,
+      l.distrito,
+      l.regional,
+      l.kmSaida,
+      l.kmTotal,
+      l.pesoTotal,
+      l.numeroViagens,
+    );
+  }
+
+  private static readonly CHAVE_USADA =
+    'dataSaida + placa + turno + distrito + regional + kmSaida + kmTotal + pesoTotal + contador';
 
   /** Recalcula metadados do upload após deduplicação SQL. */
   private async sincronizarContagemUploadAposDedup(uploadId: number): Promise<number> {
@@ -486,7 +529,12 @@ export class DeduplicacaoService {
         kmRota2: this.getNum(raw, 'KM ROTA 02'),
         kmRota3: this.getNum(raw, 'KM ROTA 03'),
         kmRota4: this.getNum(raw, 'KM ROTA 04'),
-        numeroViagens: this.getInt(raw, 'Nº DE VIAGENS'),
+        numeroViagens: this.getInt(raw, 'CONTADOR DE VIAGENS')
+          ?? this.getInt(raw, 'CONTADOR VIAGENS')
+          ?? this.getInt(raw, 'Nº DE VIAGENS')
+          ?? this.getInt(raw, 'NUMERO DE VIAGENS')
+          ?? this.getInt(raw, 'NÚMERO DE VIAGENS')
+          ?? this.getInt(raw, 'NR VIAGENS'),
         diaSemana: this.getInt(raw, 'DIA DA SEMANA'),
       };
 
@@ -582,12 +630,12 @@ export class DeduplicacaoService {
         novos: linhas.map((l, i) => ({
           indice: i,
           classificacao: 'novo' as ClassificacaoLinha,
-          chave: this.gerarChave(l.dataSaida, l.placa, l.turno, l.distrito, l.regional),
+          chave: this.gerarChaveDeLinha(l),
           dadosPlanilha: l,
         })),
         duplicados: [],
         conflitantes: [],
-        chaveUsada: 'dataSaida + placa + turno + distrito + regional',
+        chaveUsada: DeduplicacaoService.CHAVE_USADA,
       };
     }
 
@@ -601,17 +649,17 @@ export class DeduplicacaoService {
         novos: linhas.map((l, i) => ({
           indice: i,
           classificacao: 'novo' as ClassificacaoLinha,
-          chave: this.gerarChave(l.dataSaida, l.placa, l.turno, l.distrito, l.regional),
+          chave: this.gerarChaveDeLinha(l),
           dadosPlanilha: l,
         })),
         duplicados: [],
         conflitantes: [],
-        chaveUsada: 'dataSaida + placa + turno + distrito + regional',
+        chaveUsada: DeduplicacaoService.CHAVE_USADA,
       };
     }
 
     // Gerar chaves de todas as linhas da planilha
-    const chavesPlanilha = linhas.map(l => this.gerarChave(l.dataSaida, l.placa, l.turno, l.distrito, l.regional));
+    const chavesPlanilha = linhas.map(l => this.gerarChaveDeLinha(l));
     
     // ⭐ DEBUG: mostrar as chaves geradas
     console.log('[DEBUG analisarPlanilha] servicoId:', servicoId);
@@ -717,7 +765,7 @@ export class DeduplicacaoService {
       novos,
       duplicados,
       conflitantes,
-      chaveUsada: 'dataSaida + placa + turno',
+      chaveUsada: DeduplicacaoService.CHAVE_USADA,
     };
   }
 
@@ -1082,7 +1130,7 @@ export class DeduplicacaoService {
         .select("to_char(c.dataSaida, 'YYYY-MM-DD')", 'data')
         .addSelect('COUNT(*)::int', 'rotas')
         .addSelect(
-          'COALESCE(SUM(COALESCE(NULLIF(c.viagensPorRota, 0), c.numeroViagens, 1)), 0)',
+          sqlSumViagens('c'),
           'viagens',
         )
         .addSelect('COALESCE(SUM(c.pesoTotal), 0)', 'peso_kg')

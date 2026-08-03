@@ -26,6 +26,7 @@ export type SeveridadeGargaloViagem = 'critico' | 'atencao' | 'info';
 
 export interface ViagemCapacidadeItem {
   placa: string;
+  motorista: string;
   rota: string;
   tipo: TipoLimiteCaminhao | null;
   tipoLabel: string;
@@ -263,6 +264,12 @@ export function analisarCapacidadeViagensDia(
     const placa = normalizarPlaca(
       String(obterValorRegistro(reg, undefined, 'placa') ?? encontrarValor(reg, 'PLACA') ?? ''),
     ) || '—';
+    const motoristaRaw = String(
+      obterValorRegistro(reg, undefined, 'motorista')
+      ?? encontrarValor(reg, 'MOTORISTA')
+      ?? '',
+    ).trim();
+    const motorista = motoristaRaw || '—';
     const rota = obterRotaRegistro(reg, opts.colunaRota);
     const pesos = extrairPesosViagemKgSeguros(reg);
 
@@ -278,6 +285,7 @@ export function analisarCapacidadeViagensDia(
       });
       itensBrutos.push({
         placa,
+        motorista,
         rota,
         tipo,
         tipoLabel: tipo ? LABEL_TIPO_CAMINHAO[tipo] : (tipoRaw || 'Não informado'),

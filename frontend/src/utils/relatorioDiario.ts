@@ -118,7 +118,7 @@ export function agruparPorDia(
     const entry = mapa.get(dataKey)!;
     const viagensLinha = contarViagensPorRotaRegistro(dado);
     entry.rotas += 1;
-    entry.viagens += viagensLinha > 0 ? viagensLinha : (m.toneladas > 0 || m.kmFinal > 0 ? 1 : 0);
+    entry.viagens += viagensLinha;
     entry.toneladas += m.toneladas; // já está em toneladas (peso/1000)
     entry.km += m.kmFinal;
     entry.horas += m.horasTrabalhadas;

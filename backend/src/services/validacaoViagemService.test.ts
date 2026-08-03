@@ -188,6 +188,25 @@ describe('validarViagemParaDashboard — integração com alerta de hodômetro',
     assert.equal(resultado.pesoEfetivo, 8000);
   });
 
+  it('reconhece alerta de hodômetro no topo do objeto plano (após converterColetasParaBrutos)', () => {
+    const c = coleta({
+      kmTotal: 0,
+      dados: undefined as unknown as Record<string, unknown>,
+    });
+    // Simula objeto plano sem `dados` aninhado
+    const plano = {
+      ...c,
+      dados: undefined,
+      _alertaKmHodometro: 'KM zerado por hodômetro inconsistente (teste). Peso/viagens mantidos.',
+      pesoTotal: 8000,
+      placa: 'PAM5914',
+      motorista: 'TESTE',
+      dataSaida: c.dataSaida,
+    };
+    const resultado = validarViagemParaDashboard(plano as Partial<ColetaData>);
+    assert.equal(resultado.validoDashboard, true, `motivos: ${resultado.motivos.join('; ')}`);
+  });
+
   it('sem alerta de hodômetro, KM zerado É bloqueado normalmente', () => {
     const c = coleta({ kmTotal: 0 });
     const resultado = validarViagemParaDashboard(c);

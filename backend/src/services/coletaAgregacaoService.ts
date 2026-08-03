@@ -6,6 +6,7 @@ import { ColetaData } from '../entities/ColetaData';
 import { PlanilhaUpload } from '../entities/PlanilhaUpload';
 import { aplicarFiltroViagensValidasDashboard } from './validacaoViagemService';
 import { separarMelhoresPiores } from './rankingOperacionalService';
+import { sqlSumViagens } from './viagensPorRotaService';
 
 export interface MetricasColetaSql {
   registros: number;
@@ -158,7 +159,7 @@ export async function getMetricasColetaSql(
   const resumoRaw = await baseQb(uploadIds, dataInicio, dataFim)
     .select([
       'COUNT(*)::int AS registros',
-      'COALESCE(SUM(COALESCE(c."viagensPorRota", 0)), 0) AS viagens',
+      `${sqlSumViagens('c')} AS viagens`,
       'COALESCE(SUM(COALESCE(c."pesoTotal", 0)), 0) AS peso_kg',
       'COALESCE(SUM(COALESCE(c."kmTotal", 0)), 0) AS km_total',
       `COALESCE(SUM(CASE WHEN c."horasForaUnidade" BETWEEN 0 AND 24 THEN c."horasForaUnidade" ELSE 0 END), 0) AS horas`,
@@ -235,7 +236,7 @@ export async function getAgregacaoColeta(
 
   const selectGrupo = (labelExpr: string) => [
     `${labelExpr} AS label`,
-    'COALESCE(SUM(COALESCE(c."viagensPorRota", 0)), 0) AS viagens',
+    `${sqlSumViagens('c')} AS viagens`,
     'COALESCE(SUM(COALESCE(c."pesoTotal", 0)), 0) AS peso_kg',
     'COALESCE(SUM(COALESCE(c."kmTotal", 0)), 0) AS km_total',
     `COALESCE(SUM(CASE WHEN c."horasForaUnidade" BETWEEN 0 AND 24 THEN c."horasForaUnidade" ELSE 0 END), 0) AS horas`,
@@ -480,7 +481,7 @@ function metricaSql(eixoYNorm: string): string {
   if (eixoYNorm.includes('PESO')) return 'COALESCE(SUM(COALESCE(c."pesoTotal", 0)), 0)';
   if (eixoYNorm.includes('KM')) return 'COALESCE(SUM(COALESCE(c."kmTotal", 0)), 0)';
   if (eixoYNorm.includes('VIAGEM') || eixoYNorm.includes('VIAGENS')) {
-    return 'COALESCE(SUM(COALESCE(c."viagensPorRota", 0)), 0)';
+    return sqlSumViagens('c');
   }
   if (eixoYNorm.includes('HORA')) {
     return `COALESCE(SUM(CASE WHEN c."horasForaUnidade" BETWEEN 0 AND 24 THEN c."horasForaUnidade" ELSE 0 END), 0)`;

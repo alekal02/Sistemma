@@ -503,9 +503,14 @@ function kmAcimaDoLimite(coleta: Partial<ColetaData>, kmEfetivo: number | null):
   return null;
 }
 
-function viagemComAlertaHodometro(coleta: Partial<ColetaData>): boolean {
-  const dados = coleta.dados;
-  if (dados && typeof dados === 'object') {
+function viagemComAlertaHodometro(coleta: Partial<ColetaData> | Record<string, unknown>): boolean {
+  const raw = coleta as Record<string, unknown>;
+  // Objeto plano (converterColetasParaBrutos) expõe o alerta no topo
+  const topo = raw._alertaKmHodometro;
+  if (topo != null && String(topo).trim()) return true;
+
+  const dados = raw.dados;
+  if (dados && typeof dados === 'object' && !Array.isArray(dados)) {
     const alerta = (dados as Record<string, unknown>)._alertaKmHodometro;
     if (alerta != null && String(alerta).trim()) return true;
   }

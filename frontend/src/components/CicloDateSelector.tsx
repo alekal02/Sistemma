@@ -596,6 +596,13 @@ export default function CicloDateSelector({
       };
       const operacao = analisarOperacaoDia(dadosPeriodo);
       const capacidade = analisarCapacidadeViagensDia(dadosPeriodo, limOpts);
+      // Fonte canônica do período = SQL (CONTADOR). Detalhe operacional deve bater com ela.
+      // Se ainda divergir (ex.: falha de carga parcial), prioriza o maior fidedigno do contador SQL.
+      if (operacao.resumo.viagens !== relatorioPeriodo.totais.viagens) {
+        console.warn(
+          `[PDF operacional] Divergência de viagens: detalhe=${operacao.resumo.viagens} SQL=${relatorioPeriodo.totais.viagens}`,
+        );
+      }
       const html = gerarHtmlRelatorioOperacionalPeriodo({
         servicoNome: servicoNome || 'Serviço',
         periodo,

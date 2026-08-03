@@ -16,6 +16,7 @@ import {
   enriquecerCamposColeta,
   validarViagemParaDashboard,
 } from './validacaoViagemService';
+import { sqlSumViagens } from './viagensPorRotaService';
 import { deduplicarKpisLista } from './kpiDeduplicacaoService';
 import { invalidarCacheDadosServico } from './servicoDadosCache';
 import { invalidarCacheDashboardServico } from './comparacaoCache';
@@ -335,7 +336,11 @@ export class PlanilhaService {
     );
     coleta.kmTotal = this.getNum(linha, 'KM TOTAL');
     coleta.numeroViagens = this.getInt(linha, 'CONTADOR DE VIAGENS')
-      ?? this.getInt(linha, 'Nº DE VIAGENS');
+      ?? this.getInt(linha, 'CONTADOR VIAGENS')
+      ?? this.getInt(linha, 'Nº DE VIAGENS')
+      ?? this.getInt(linha, 'NUMERO DE VIAGENS')
+      ?? this.getInt(linha, 'NÚMERO DE VIAGENS')
+      ?? this.getInt(linha, 'NR VIAGENS');
 
     // Dia da semana (1=domingo a 7=sábado)
     const diaSemana = this.getNum(linha, 'DIA DA SEMANA');
@@ -714,7 +719,7 @@ export class PlanilhaService {
         'AVG(c.pesoTotal) as media_peso',
         'SUM(c.kmTotal) as total_km',
         'AVG(c.kmTotal) as media_km',
-        'COALESCE(SUM(c.viagensPorRota), 0) as total_viagens',
+        `${sqlSumViagens('c')} as total_viagens`,
         'COALESCE(AVG(c.viagensPorRota), 0) as media_viagens',
         'SUM(c.horasForaUnidade) as total_horas_fora',
         'AVG(c.horasForaUnidade) as media_horas_fora',
@@ -933,8 +938,8 @@ export class PlanilhaService {
       const obj: Record<string, any> = {};
 
       for (const [key, value] of Object.entries(d)) {
-        // Evita embutir relação TypeORM / JSONB bruto no topo
-        if (key === 'planilhaUpload' || key === 'dados') continue;
+        // Evita embutir relação TypeORM; mantém JSONB `dados` (alertas, CONTADOR, etc.)
+        if (key === 'planilhaUpload') continue;
         obj[key] = value;
       }
 
@@ -1001,21 +1006,10 @@ export class PlanilhaService {
 
     if (!apenasValidos) return objetos;
 
-    return objetos.filter((obj) => {
-      const tipoLinha = String(obj._tipoServico || '');
-      const modeloUnificado = String(obj._modeloPlanilha || '') === 'servicos_unificados';
-      if (
-        pularValidacaoViagem
-        || modeloUnificado
-        || tipoLinha === 'rocadeira'
-        || tipoLinha === 'capina'
-        || tipoLinha === 'varricao'
-        || tipoLinha === 'poda'
-      ) {
-        return obj.validoDashboard !== false;
-      }
-      return validarViagemParaDashboard(obj).validoDashboard;
-    });
+    // Usa o flag já calculado na entidade/objeto — NÃO revalidar o objeto plano
+    // (ele perde `dados` aninhado e o alerta de hodômetro no topo; revalidar
+    // derrubava viagens com KM=0 legítimas, ex.: 455 no SQL → 450 no PDF).
+    return objetos.filter((obj) => obj.validoDashboard !== false && obj._validoDashboard !== false);
   }
 
   /**
@@ -1060,7 +1054,7 @@ export class PlanilhaService {
    */
   async getTopMotoristas(limite: number = 10, filtros?: { dataInicio?: string; dataFim?: string; regional?: string; distrito?: string }) {
     const qb = this.coletaRepo.createQueryBuilder('c')
-      .select(['c.motorista as motorista', 'SUM(c.pesoTotal) as total_peso', 'COUNT(*) as quantidade', 'SUM(c.kmTotal) as total_km', 'COALESCE(SUM(c.viagensPorRota), 0) as total_viagens'])
+      .select([`c.motorista as motorista`, `SUM(c.pesoTotal) as total_peso`, `COUNT(*) as quantidade`, `SUM(c.kmTotal) as total_km`, `${sqlSumViagens('c')} as total_viagens`])
       .where('c.motorista IS NOT NULL')
       .andWhere('c.pesoTotal IS NOT NULL')
       .groupBy('c.motorista')
@@ -1082,7 +1076,7 @@ export class PlanilhaService {
         'COUNT(*) as quantidade',
         'SUM(c.pesoTotal) as total_peso',
         'SUM(c.kmTotal) as total_km',
-        'COALESCE(SUM(c.viagensPorRota), 0) as total_viagens',
+        `${sqlSumViagens('c')} as total_viagens`,
       ])
       .where('c.dataSaida IS NOT NULL')
       .groupBy('COALESCE(c.diaSemana, EXTRACT(DOW FROM c.dataSaida)::int + 1)')
@@ -1119,7 +1113,7 @@ export class PlanilhaService {
    */
   async getPesoPorDia(filtros?: { dataInicio?: string; dataFim?: string; regional?: string; distrito?: string }) {
     const qb = this.coletaRepo.createQueryBuilder('c')
-      .select(['c.dataSaida as data', 'SUM(c.pesoTotal) as total_peso', 'COUNT(*) as quantidade', 'SUM(c.kmTotal) as total_km', 'COALESCE(SUM(c.viagensPorRota), 0) as total_viagens'])
+      .select(['c.dataSaida as data', 'SUM(c.pesoTotal) as total_peso', 'COUNT(*) as quantidade', 'SUM(c.kmTotal) as total_km', `${sqlSumViagens('c')} as total_viagens`])
       .where('c.dataSaida IS NOT NULL')
       .andWhere('c.pesoTotal IS NOT NULL')
       .groupBy('c.dataSaida')
@@ -1135,7 +1129,7 @@ export class PlanilhaService {
    */
   async getTopPlacas(limite: number = 10, filtros?: { dataInicio?: string; dataFim?: string; regional?: string; distrito?: string }) {
     const qb = this.coletaRepo.createQueryBuilder('c')
-      .select(['c.placa as placa', 'SUM(c.pesoTotal) as total_peso', 'COUNT(*) as quantidade', 'SUM(c.kmTotal) as total_km', 'COALESCE(SUM(c.viagensPorRota), 0) as total_viagens'])
+      .select(['c.placa as placa', 'SUM(c.pesoTotal) as total_peso', 'COUNT(*) as quantidade', 'SUM(c.kmTotal) as total_km', `${sqlSumViagens('c')} as total_viagens`])
       .where('c.placa IS NOT NULL')
       .andWhere('c.pesoTotal IS NOT NULL')
       .groupBy('c.placa')
@@ -1486,7 +1480,7 @@ export class PlanilhaService {
 
     const qb = this.coletaRepo.createQueryBuilder('c')
       .select([
-        'COALESCE(SUM(c.viagensPorRota), 0) as viagens',
+        `${sqlSumViagens('c')} as viagens`,
         'COALESCE(SUM(c.pesoTotal), 0) as peso_total_kg',
         'COALESCE(SUM(c.kmTotal), 0) as km_total',
         'COALESCE(SUM(CASE WHEN c.horasForaUnidade BETWEEN 0 AND 24 THEN c.horasForaUnidade ELSE 0 END), 0) as horas_produtivas',
@@ -1594,7 +1588,7 @@ export class PlanilhaService {
       .select([
         'c.dataSaida as data',
         'COUNT(*)::int as rotas',
-        'COALESCE(SUM(COALESCE(NULLIF(c.viagensPorRota, 0), c.numeroViagens, 1)), 0) as viagens',
+        `${sqlSumViagens('c')} as viagens`,
         'COALESCE(SUM(c.pesoTotal), 0) as peso_total_kg',
         'COALESCE(SUM(c.kmTotal), 0) as km_total',
         `COALESCE(SUM(${areaExpr}), 0) as area_m2`,

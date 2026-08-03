@@ -344,7 +344,7 @@ export function contarRotasValidadas(
 }
 
 /**
- * Viagens em linhas validadas — soma do contador das rotas válidas.
+ * Viagens em linhas validadas — soma do CONTADOR DE VIAGENS das rotas válidas.
  * Diferente de contarRotasValidadas(), que conta apenas linhas.
  */
 export function contarViagensValidadas(
@@ -352,13 +352,7 @@ export function contarViagensValidadas(
 ): number {
   const validos = dados.filter((reg) => registroValidoParaDashboard(reg));
   const base = validos.length > 0 ? validos : dados;
-
-  return base.reduce((acc, reg) => {
-    const r = reg as Record<string, unknown>;
-    const cache = Number(r.viagensPorRota ?? r.numeroViagens);
-    if (!Number.isNaN(cache) && cache > 0) return acc + limitarViagens(cache);
-    return acc + contarViagensPorRotaRegistro(reg);
-  }, 0);
+  return sumarizarViagensPorRota(base);
 }
 
 /** Atualiza o campo persistido na entidade ColetaData */
@@ -367,4 +361,29 @@ export function aplicarViagensPorRota(coleta: ColetaData): number {
   coleta.viagensPorRota = qtd;
   if (qtd > 0) coleta.numeroViagens = qtd;
   return qtd;
+}
+
+/**
+ * Expressão SQL por linha: CONTADOR DE VIAGENS fidedigno.
+ * Prioridade: viagensPorRota → numeroViagens → JSONB CONTADOR.
+ * Sem aspas nas colunas tipadas — o QueryBuilder do TypeORM cita `alias.campo`.
+ * NÃO inventa 1 por linha (isso inflava KPIs vs planilha/PDF).
+ */
+export function sqlExprViagensLinha(alias = 'c'): string {
+  const a = alias;
+  return `COALESCE(
+    NULLIF(${a}.viagensPorRota, 0),
+    NULLIF(${a}.numeroViagens, 0),
+    NULLIF(NULLIF(TRIM(${a}.dados->>'CONTADOR DE VIAGENS'), '')::double precision, 0),
+    NULLIF(NULLIF(TRIM(${a}.dados->>'CONTADOR VIAGENS'), '')::double precision, 0),
+    NULLIF(NULLIF(TRIM(${a}.dados->>'Nº DE VIAGENS'), '')::double precision, 0),
+    NULLIF(NULLIF(TRIM(${a}.dados->>'NUMERO DE VIAGENS'), '')::double precision, 0),
+    NULLIF(NULLIF(TRIM(${a}.dados->>'NÚMERO DE VIAGENS'), '')::double precision, 0),
+    0
+  )`;
+}
+
+/** SUM das viagens por rota (contador) — usar em agregações de dashboard/ciclo */
+export function sqlSumViagens(alias = 'c'): string {
+  return `COALESCE(SUM(${sqlExprViagensLinha(alias)}), 0)`;
 }
