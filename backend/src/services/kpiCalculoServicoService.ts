@@ -412,8 +412,8 @@ export function ajustarKpisFaturamentoCicloConsolidada(
 
         const mostrarProjecao =
           proj.cicloEmAndamento
-          && proj.diasComDados > 0
-          && proj.diasComDados < proj.diasTotaisCiclo
+          && proj.diasDecorridos > 0
+          && proj.diasDecorridos < proj.diasTotaisCiclo
           && proj.projetado > realizado;
 
         if (mostrarProjecao) {
@@ -423,7 +423,7 @@ export function ajustarKpisFaturamentoCicloConsolidada(
             nome: 'Faturamento Estimado',
             valor: proj.projetado,
             formatado: fmt(proj.projetado),
-            detalhe: `Projeção ciclo • Realizado ${fmt(proj.realizado)} • média ${fmt(proj.mediaDiaria)}/dia • ${proj.diasComDados} de ${proj.diasTotaisCiclo} dias`,
+            detalhe: `Projeção ciclo • Realizado ${fmt(proj.realizado)} • média ${fmt(proj.mediaDiaria)}/dia • ${proj.diasDecorridos} de ${proj.diasTotaisCiclo} dias decorridos`,
             faturamentoRealizado: proj.realizado,
             faturamentoProjetado: proj.projetado,
             ehProjecaoCiclo: true,

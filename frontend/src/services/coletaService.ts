@@ -105,16 +105,17 @@ export interface ResultadoUpload {
   viagensValidasDashboard?: number
   viagensCorrigidas?: number
   consolidacao?: {
-    registrosPreservados: number
+    registrosRemovidosAusentes: number
     uploadsRemovidos: number
     uploadsRemovidosIds: number[]
-    diasPreservados: string[]
+    diasRemovidosAusentes: string[]
   }
   resumo?: {
     viagensInconsistentes?: number
     viagensValidasDashboard?: number
     viagensCorrigidas?: number
   }
+  avisos?: string[]
 }
 
 const coletaService = {
@@ -184,7 +185,6 @@ const coletaService = {
         undPrincipal: string | null
       }>
       avisos?: string[]
-      mensagem?: string
     }
   },
 

@@ -1,3 +1,5 @@
+import { normalizarPlaca } from './normalizarPlaca';
+
 /** Limites de peso/volume por tipo — alinhados ao backend pesoMaximoCaminhao.ts */
 
 export const TIPOS_LIMITE_CAMINHAO = ['MINI', 'TOCO', 'BASCULANTE', 'TRUCK'] as const;
@@ -139,6 +141,59 @@ export function densidadeOptsToInput(opts?: {
   densidadeKgL?: MapaLimiteCaminhao | null;
 } | null): DensidadeResiduoInput {
   return densidadeInputDoConfig(opts);
+}
+
+/**
+ * Densidade efetiva da viagem/placa:
+ * densidadeKgLPorPlaca[placa] → densidade do tipo → global → 0,55.
+ */
+export function resolverDensidadeParaViagem(opts: {
+  placa?: string | null;
+  tipo?: TipoLimiteCaminhao | null;
+  densidade?: DensidadeResiduoInput;
+  porPlaca?: Record<string, number> | null;
+}): number {
+  const placa = normalizarPlaca(opts.placa);
+  if (placa && opts.porPlaca) {
+    const densPlaca =
+      normalizarDensidadeKgLValor(opts.porPlaca[placa])
+      ?? normalizarDensidadeKgLValor(
+        Object.entries(opts.porPlaca).find(([k]) => normalizarPlaca(k) === placa)?.[1] as number,
+      );
+    if (densPlaca != null) return densPlaca;
+  }
+  if (opts.tipo) return resolverDensidadePorTipo(opts.tipo, opts.densidade);
+  const { global } = extrairDensidadeInput(opts.densidade);
+  return normalizarDensidadeKgLValor(global) ?? DENSIDADE_RESIDUO_KG_L_PADRAO;
+}
+
+/** Peso ideal (kg): volume do tipo × densidade efetiva (placa/tipo/global). */
+export function calcularPesoIdealViagem(opts: {
+  placa?: string | null;
+  tipo?: TipoLimiteCaminhao | null;
+  volumeOverrides?: MapaLimiteCaminhao | null;
+  densidade?: DensidadeResiduoInput;
+  porPlaca?: Record<string, number> | null;
+}): number {
+  if (!opts.tipo) return 0;
+  const volumes = resolverLimitesVolumeL(opts.volumeOverrides);
+  const dens = resolverDensidadeParaViagem(opts);
+  return calcularPesoIdealKg(volumes[opts.tipo], dens);
+}
+
+/** Normaliza mapa de densidades por placa a partir do formulário. */
+export function normalizarMapaDensidadesPorPlacaForm(
+  form: Record<string, string>,
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(form)) {
+    const placa = normalizarPlaca(k);
+    const raw = String(v || '').trim();
+    if (!placa || !raw) continue;
+    const n = normalizarDensidadeKgLValor(Number(raw.replace(',', '.')));
+    if (n != null) out[placa] = n;
+  }
+  return out;
 }
 
 function extrairDensidadeInput(raw?: DensidadeResiduoInput): {

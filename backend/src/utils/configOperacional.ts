@@ -11,6 +11,8 @@ export interface ConfigOperacionalContrato {
   densidadeResiduoKgL?: number | null;
   /** Densidade (kg/L) por tipo de caminhão. */
   densidadeKgL?: { MINI?: number; TOCO?: number; BASCULANTE?: number; TRUCK?: number };
+  /** Densidade (kg/L) por placa — override do tipo/global. */
+  densidadeKgLPorPlaca?: Record<string, number>;
   /**
    * Pasta absoluta (vista pelo backend) onde salvar a última planilha ao fechar o ciclo.
    * Em Docker: ex. `/data/planilhas-ciclo/NomeDoContrato`

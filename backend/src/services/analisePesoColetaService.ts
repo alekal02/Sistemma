@@ -1,6 +1,8 @@
 import { encontrarValorColuna } from './FormulaEngine';
 import { colunaEhPlaca, normalizarPlaca } from '../utils/normalizarPlaca';
 import { detectarTodasColunas } from './metricaExecutivaService';
+import { parseDataPlanilha } from '../utils/formatarDataPlanilha';
+import { dateUtcParaIso } from '../utils/dateColumnTransformer';
 import {
   TIPOS_CAMINHAO_ORDEM,
   normalizarTipoCaminhaoPeso,
@@ -12,7 +14,6 @@ import {
 } from '../config/pesoMaximoCaminhao';
 import {
   contarViagensPorRotaRegistro,
-  extrairPesosViagemPlanilhaRegistro,
   extrairPesosViagemRegistro,
   obterPesoTotalRegistro,
   sumarizarViagensPorRota,
@@ -42,6 +43,20 @@ export function normalizarMapaDensidadesKgL(
     if (n != null) out[t] = n;
   }
   return Object.keys(out).length ? out : {};
+}
+
+/** Normaliza mapa de densidades por placa (kg/L). Chaves = placas normalizadas. */
+export function normalizarMapaDensidadesPorPlaca(
+  raw: unknown,
+): Record<string, number> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    const placa = normalizarPlaca(String(k || ''));
+    const dens = normalizarDensidadeResiduoKgL(v);
+    if (placa && dens != null) out[placa] = dens;
+  }
+  return out;
 }
 
 export interface FaixaPesoAnalise {
@@ -100,6 +115,15 @@ export interface RotaPesoExtremo {
   viagens: number;
 }
 
+/** Operação de um dia do ciclo (viagens + peso). */
+export interface AnalisePesoDia {
+  data: string;
+  viagens: number;
+  rotas: number;
+  pesoTotalKg: number;
+  pesoMedioKg: number;
+}
+
 export interface AnalisePesoColeta {
   numeroViagens: number;
   pesoMedioKg: number;
@@ -117,6 +141,8 @@ export interface AnalisePesoColeta {
   densidadeOtima: number;
   mediaIdealKg: number;
   perdaTon: number;
+  /** Série diária do ciclo — viagens e peso médio/total */
+  porDia?: AnalisePesoDia[];
 }
 
 const COLUNAS_TIPO_CAMINHAO = [
@@ -390,8 +416,8 @@ function calcularExtremosViagens(
   let rotaMaxima: RotaPesoExtremo | null = null;
 
   for (const reg of dados) {
-    // Direto da planilha: PESO 1 … PESO 4 — evita 76.998 kg (total da rota)
-    const pesosViagem = extrairPesosViagemPlanilhaRegistro(reg);
+    // Respeita CONTADOR DE VIAGENS — ignora PESO 2–4 extras na mesma linha
+    const pesosViagem = extrairPesosViagemRegistro(reg, _colPeso);
     if (pesosViagem.length === 0) continue;
 
     const nomeRota = obterNomeRotaRegistro(reg, colRota) || '—';
@@ -424,14 +450,56 @@ function registrarFaixaVsIdeal(
   volumes: LimitesVolumeL,
   densidades: Record<TipoCaminhaoPeso, number>,
   limites: LimitesPesoKg,
-): void {
-  if (!(peso > 0)) return;
+  densPlaca?: number | null,
+): 'classificado' | 'sem_ideal' | 'ignorado' {
+  if (!(peso > 0)) return 'ignorado';
   const tipoEfetivo = tipo ?? inferirTipoPorPeso(peso, limites);
-  const ideal = pesoIdealDoTipo(tipoEfetivo, volumes, densidades);
-  if (!(ideal > 0)) return;
+  const dens = (densPlaca != null && densPlaca > 0) ? densPlaca : densidades[tipoEfetivo];
+  const vol = volumes[tipoEfetivo];
+  const ideal = (vol > 0 && dens > 0) ? Math.round(vol * dens * 100) / 100 : 0;
+  if (!(ideal > 0)) return 'sem_ideal';
   const pctIdeal = (peso / ideal) * 100;
   const idx = idxFaixaPorId(classificarFaixaVsIdeal(pctIdeal));
   if (idx >= 0) faixaContagem[idx]++;
+  return 'classificado';
+}
+
+function isoDataRegistro(reg: Record<string, unknown>, colData: string): string | null {
+  const raw = colData
+    ? (reg[colData] ?? encontrarValorColuna(reg, colData))
+    : (reg.dataSaida ?? reg['DATA SAIDA'] ?? reg['DATA']);
+  const parsed = parseDataPlanilha(raw);
+  if (!parsed || isNaN(parsed.getTime())) return null;
+  return dateUtcParaIso(parsed);
+}
+
+export function agruparPesoPorDia(
+  dados: Record<string, unknown>[],
+  colData: string,
+  colPeso: string,
+): AnalisePesoDia[] {
+  const mapa = new Map<string, { viagens: number; pesoTotalKg: number; rotas: number }>();
+  for (const reg of dados) {
+    const iso = isoDataRegistro(reg, colData);
+    if (!iso) continue;
+    const viagens = contarViagensPorRotaRegistro(reg);
+    const pesoTotal = obterPesoTotalRegistro(reg, colPeso);
+    if (viagens <= 0 && !(pesoTotal > 0)) continue;
+    const atual = mapa.get(iso) || { viagens: 0, pesoTotalKg: 0, rotas: 0 };
+    atual.viagens += viagens > 0 ? viagens : 0;
+    atual.pesoTotalKg += pesoTotal > 0 ? pesoTotal : 0;
+    atual.rotas += 1;
+    mapa.set(iso, atual);
+  }
+  return [...mapa.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([data, v]) => ({
+      data,
+      viagens: v.viagens,
+      rotas: v.rotas,
+      pesoTotalKg: Math.round(v.pesoTotalKg * 100) / 100,
+      pesoMedioKg: v.viagens > 0 ? Math.round((v.pesoTotalKg / v.viagens) * 100) / 100 : 0,
+    }));
 }
 
 /**
@@ -448,6 +516,7 @@ export function analisarPesoColeta(
   opts?: {
     densidadeOtima?: number;
     densidadeKgL?: Partial<Record<TipoCaminhaoPeso, number>> | null;
+    densidadeKgLPorPlaca?: Record<string, number> | null;
     limitesPeso?: Partial<LimitesPesoKg>;
     limitesVolume?: Partial<LimitesVolumeL>;
     colunaTipoCaminhao?: string;
@@ -468,6 +537,7 @@ export function analisarPesoColeta(
     BASCULANTE: normalizarDensidadeResiduoKgL(opts?.densidadeKgL?.BASCULANTE) ?? densGlobal,
     TRUCK: normalizarDensidadeResiduoKgL(opts?.densidadeKgL?.TRUCK) ?? densGlobal,
   };
+  const densPorPlaca = normalizarMapaDensidadesPorPlaca(opts?.densidadeKgLPorPlaca);
   const colTipo = opts?.colunaTipoCaminhao?.trim() || cols.colTipo || '';
 
   let totalPesoKg = 0;
@@ -478,16 +548,25 @@ export function analisarPesoColeta(
   for (const reg of dados) {
     const pesoTotal = obterPesoTotalRegistro(reg, colPeso);
     const viagensReg = contarViagensPorRotaRegistro(reg);
-    // Faixas e extremos: só PESO 1–4 da planilha
-    const pesosViagem = extrairPesosViagemPlanilhaRegistro(reg);
+    // Faixas: PESO 1–4 limitado ao CONTADOR DE VIAGENS (não conta peso extra da linha)
+    const pesosViagem = extrairPesosViagemRegistro(reg, colPeso);
 
     if (viagensReg <= 0 && pesoTotal <= 0 && pesosViagem.length === 0) continue;
 
     if (pesoTotal > 0) totalPesoKg += pesoTotal;
 
     const tipoReg = obterTipoCaminhaoRegistro(reg, colTipo || undefined);
+    const placaReg = normalizarPlaca(
+      String(
+        (cols.colPlaca ? encontrarValorColuna(reg, cols.colPlaca) : null)
+        ?? (reg as any).placa
+        ?? (reg as any).PLACA
+        ?? '',
+      ),
+    );
+    const densPlaca = placaReg ? densPorPlaca[placaReg] : undefined;
     for (const p of pesosViagem) {
-      registrarFaixaVsIdeal(faixaContagem, p, tipoReg, volumes, densidades, limites);
+      registrarFaixaVsIdeal(faixaContagem, p, tipoReg, volumes, densidades, limites, densPlaca);
     }
   }
 
@@ -521,6 +600,8 @@ export function analisarPesoColeta(
     pct: totalClassificados > 0 ? (faixaContagem[i] / totalClassificados) * 100 : 0,
   }));
 
+  const porDia = agruparPesoPorDia(dados, cols.colData || '', colPeso);
+
   return {
     numeroViagens: totalViagens,
     pesoMedioKg: Math.round(pesoMedioKg * 100) / 100,
@@ -533,6 +614,7 @@ export function analisarPesoColeta(
     densidadeOtima,
     mediaIdealKg,
     perdaTon: Math.round(perdaTon * 100) / 100,
+    porDia,
   };
 }
 

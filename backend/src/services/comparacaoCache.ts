@@ -64,9 +64,13 @@ export function fingerprintLimitesContrato(configOperacional?: {
   pesoMaximoKg?: Record<string, number> | null;
   volumeL?: Record<string, number> | null;
   densidadeResiduoKgL?: number | null;
+  densidadeKgL?: Record<string, number> | null;
+  densidadeKgLPorPlaca?: Record<string, number> | null;
 } | null): string {
   const peso = configOperacional?.pesoMaximoKg || {};
   const vol = configOperacional?.volumeL || {};
   const dens = configOperacional?.densidadeResiduoKgL ?? null;
-  return JSON.stringify({ p: peso, v: vol, d: dens });
+  const densTipo = configOperacional?.densidadeKgL || {};
+  const densPlaca = configOperacional?.densidadeKgLPorPlaca || {};
+  return JSON.stringify({ p: peso, v: vol, d: dens, dt: densTipo, dp: densPlaca });
 }

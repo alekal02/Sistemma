@@ -39,6 +39,7 @@ import {
   cicloEstaFechado,
   fecharCicloServico,
   listarCiclosFechados,
+  reabrirCicloServico,
 } from '../services/cicloPlanilhaService';
 import {
   gerarRelatorioSobrecargaPeso,
@@ -89,6 +90,7 @@ import {
   getMetricasColetaSql,
   getRankingsColetaSql,
   getAgregacaoColeta,
+  getMapeamentoOperacional as agregarMapeamentoOperacional,
   resolverKpiColetaSql,
   metricaExecutivaDeColetaSql,
   agregarGraficoColetaSql,
@@ -1017,6 +1019,48 @@ export class ServicoController {
     } catch (error) {
       console.error('Erro na agregação de coleta:', error);
       return res.status(500).json({ error: 'Erro ao agregar dados de coleta' });
+    }
+  }
+
+  /**
+   * GET /api/contracts/:contractId/servicos/:id/mapeamento-operacional
+   * Cruzamento rota × motorista × placa com tempo e km no período.
+   */
+  async getMapeamentoOperacional(req: Request, res: Response): Promise<any> {
+    try {
+      const id = req.params.id as string;
+      const servico = await this.repository.findOne({ where: { id }, select: ['id', 'tipo'] as any });
+      if (!servico) return res.status(404).json({ error: 'Serviço não encontrado' });
+      const ehColeta = servico.tipo === TipoServico.COLETA_CAMINHAO || servico.tipo === 'coleta_caminhao';
+      if (!ehColeta) {
+        return res.status(400).json({ error: 'Mapeamento disponível apenas para serviços de coleta' });
+      }
+
+      const data = typeof req.query.data === 'string' ? req.query.data : undefined;
+      const dataInicio = typeof req.query.dataInicio === 'string' ? req.query.dataInicio : undefined;
+      const dataFim = typeof req.query.dataFim === 'string' ? req.query.dataFim : undefined;
+
+      if (data && !/^\d{4}-\d{2}-\d{2}$/.test(data)) {
+        return res.status(400).json({ error: 'Data inválida. Use YYYY-MM-DD.' });
+      }
+      if (dataInicio && !/^\d{4}-\d{2}-\d{2}$/.test(dataInicio)) {
+        return res.status(400).json({ error: 'dataInicio inválida. Use YYYY-MM-DD.' });
+      }
+      if (dataFim && !/^\d{4}-\d{2}-\d{2}$/.test(dataFim)) {
+        return res.status(400).json({ error: 'dataFim inválida. Use YYYY-MM-DD.' });
+      }
+
+      const cacheKey = ['mapeamento-operacional-v6', id, data || '', dataInicio || '', dataFim || ''].join(':');
+      const cached = getCache<any>(cacheKey);
+      if (cached) return res.json(cached);
+
+      const resultado = await agregarMapeamentoOperacional(id, { data, dataInicio, dataFim });
+      const response = { ...resultado, tipoServico: servico.tipo };
+      setCache(cacheKey, response);
+      return res.json(response);
+    } catch (error) {
+      console.error('Erro no mapeamento operacional:', error);
+      return res.status(500).json({ error: 'Erro ao montar mapeamento operacional' });
     }
   }
 
@@ -2212,6 +2256,7 @@ export class ServicoController {
     contract: Contract | null,
     query: Record<string, any>,
     limiteKpis?: number,
+    pularAnalisePeso = false,
   ): Promise<{
     id: string;
     nome: string;
@@ -2358,26 +2403,29 @@ export class ServicoController {
 
       // KPIs via SQL; análise de peso ainda precisa das linhas (faixas PESO 1–4, frota, cenário).
       let analisePesoSql: AnalisePesoColeta | null = null;
-      try {
-        const dadosBrutos = await obterDadosServicoComCache(servico.id);
-        const dadosFiltradosSql = this.aplicarFiltros(dadosBrutos || [], filtros);
-        if (dadosFiltradosSql?.length) {
-          const dadosNormSql = normalizarDados(dadosFiltradosSql);
-          const limitesContratoSql = resolverLimitesDoContrato(contract?.configOperacional);
-          analisePesoSql = analisarPesoColeta(dadosNormSql, servico.id, {
-            colunaTipoCaminhao: cfgFat?.colunaTipoCaminhao
-              || detectarTodasColunas(dadosNormSql, servico.id).colTipo
-              || undefined,
-            limitesPeso: limitesContratoSql.peso,
-            limitesVolume: limitesContratoSql.volume,
-            densidadeOtima: normalizarDensidadeResiduoKgL(
-              contract?.configOperacional?.densidadeResiduoKgL,
-            ),
-            densidadeKgL: contract?.configOperacional?.densidadeKgL || null,
-          });
+      if (!pularAnalisePeso) {
+        try {
+          const dadosBrutos = await obterDadosServicoComCache(servico.id);
+          const dadosFiltradosSql = this.aplicarFiltros(dadosBrutos || [], filtros);
+          if (dadosFiltradosSql?.length) {
+            const dadosNormSql = normalizarDados(dadosFiltradosSql);
+            const limitesContratoSql = resolverLimitesDoContrato(contract?.configOperacional);
+            analisePesoSql = analisarPesoColeta(dadosNormSql, servico.id, {
+              colunaTipoCaminhao: cfgFat?.colunaTipoCaminhao
+                || detectarTodasColunas(dadosNormSql, servico.id).colTipo
+                || undefined,
+              limitesPeso: limitesContratoSql.peso,
+              limitesVolume: limitesContratoSql.volume,
+              densidadeOtima: normalizarDensidadeResiduoKgL(
+                contract?.configOperacional?.densidadeResiduoKgL,
+              ),
+              densidadeKgL: contract?.configOperacional?.densidadeKgL || null,
+              densidadeKgLPorPlaca: contract?.configOperacional?.densidadeKgLPorPlaca || null,
+            });
+          }
+        } catch (errAnalise: any) {
+          console.warn('[calcularKpisParaComparacao] analisePeso (SQL path):', errAnalise?.message || errAnalise);
         }
-      } catch (errAnalise: any) {
-        console.warn('[calcularKpisParaComparacao] analisePeso (SQL path):', errAnalise?.message || errAnalise);
       }
 
       return {
@@ -2493,7 +2541,7 @@ export class ServicoController {
     });
 
     const limitesContrato = resolverLimitesDoContrato(contract?.configOperacional);
-    const analisePeso = servico.tipo === 'coleta_caminhao'
+    const analisePeso = !pularAnalisePeso && servico.tipo === 'coleta_caminhao'
       ? analisarPesoColeta(dadosNorm, servico.id, {
           colunaTipoCaminhao: cfgFat?.colunaTipoCaminhao
             || detectarTodasColunas(dadosNorm, servico.id).colTipo
@@ -2504,6 +2552,7 @@ export class ServicoController {
             contract?.configOperacional?.densidadeResiduoKgL,
           ),
           densidadeKgL: contract?.configOperacional?.densidadeKgL || null,
+          densidadeKgLPorPlaca: contract?.configOperacional?.densidadeKgLPorPlaca || null,
         })
       : null;
 
@@ -2577,12 +2626,30 @@ export class ServicoController {
         servicosComDados,
         ENDPOINTS_PESADOS_CONCURRENCY,
         async s => {
-          const r = await this.calcularKpisParaComparacao(contractId, s, contract, req.query as Record<string, any>);
-          return {
-            ...r,
-            contratoId: contract.id,
-            contratoNome: contract.numeroContrato || '-',
-          };
+          try {
+            const r = await this.calcularKpisParaComparacao(contractId, s, contract, req.query as Record<string, any>);
+            return {
+              ...r,
+              contratoId: contract.id,
+              contratoNome: contract.numeroContrato || '-',
+            };
+          } catch (errServico: any) {
+            console.error(
+              `[comparar-por-tipo] falhou em "${s.nome}" (${s.id}):`,
+              errServico?.message || errServico,
+            );
+            return {
+              id: s.id,
+              nome: s.nome,
+              tipo: s.tipo,
+              totalRegistros: 0,
+              periodo: undefined,
+              analisePeso: null,
+              kpis: [],
+              contratoId: contract.id,
+              contratoNome: contract.numeroContrato || '-',
+            };
+          }
         },
       );
 
@@ -2827,11 +2894,14 @@ export class ServicoController {
   /**
    * GET /api/dashboard/comparar-por-tipo?tipoServico=coleta_caminhao&servicoIds=id1,id2
    * Compara KPIs entre serviços do mesmo tipo — inclusive entre contratos diferentes
+   * perfil=tv → payload leve (sem análise de peso, poucos KPIs) para wallboard
    */
   async getCompararKpisGlobal(req: Request, res: Response): Promise<any> {
     try {
       const tipoServico = req.query.tipoServico as string | undefined;
       const servicoIdsParam = req.query.servicoIds as string | undefined;
+      const perfilTv = String(req.query.perfil || '').toLowerCase() === 'tv';
+      const limiteKpisTv = perfilTv ? 8 : undefined;
 
       if (!tipoServico) {
         return res.status(400).json({ error: 'tipoServico é obrigatório' });
@@ -2886,6 +2956,7 @@ export class ServicoController {
           escopo: 'global',
           tipoServico,
           tipoServicoLabel: TIPOS_SERVICO_META[tipoServico]?.label || tipoServico,
+          perfil: perfilTv ? 'tv' : undefined,
           servicos: [],
           kpiLinhas: [],
           insights: [],
@@ -2899,22 +2970,42 @@ export class ServicoController {
         ENDPOINTS_PESADOS_CONCURRENCY,
         async s => {
           const contract = contractMap.get(s.contract_id) || null;
-          const r = await this.calcularKpisParaComparacao(
-            s.contract_id,
-            s,
-            contract,
-            req.query as Record<string, any>,
-          );
-          return {
-            ...r,
-            contratoId: s.contract_id,
-            contratoNome: contract?.numeroContrato || '-',
-          };
+          try {
+            const r = await this.calcularKpisParaComparacao(
+              s.contract_id,
+              s,
+              contract,
+              req.query as Record<string, any>,
+              limiteKpisTv,
+              perfilTv,
+            );
+            return {
+              ...r,
+              contratoId: s.contract_id,
+              contratoNome: contract?.numeroContrato || '-',
+            };
+          } catch (errServico: any) {
+            console.error(
+              `[comparar-por-tipo] falhou em "${s.nome}" (${s.id}):`,
+              errServico?.message || errServico,
+            );
+            return {
+              id: s.id,
+              nome: s.nome,
+              tipo: s.tipo,
+              totalRegistros: 0,
+              periodo: undefined,
+              analisePeso: null,
+              kpis: [],
+              contratoId: s.contract_id,
+              contratoNome: contract?.numeroContrato || '-',
+            };
+          }
         },
       );
 
       const matriz = this.montarMatrizComparacaoKpis(resultados, {
-        incluirAnalisePeso: tipoServico === 'coleta_caminhao',
+        incluirAnalisePeso: !perfilTv && tipoServico === 'coleta_caminhao',
       });
       const periodosUnicos = new Map(
         resultados
@@ -2925,6 +3016,7 @@ export class ServicoController {
       const response = {
         escopo: 'global',
         tipoServico,
+        perfil: perfilTv ? 'tv' : undefined,
         mesReferencia: req.query.mesReferencia ? parseInt(String(req.query.mesReferencia), 10) : undefined,
         anoReferencia: req.query.anoReferencia ? parseInt(String(req.query.anoReferencia), 10) : undefined,
         periodosDistintos: periodosUnicos.size > 1,
@@ -2938,6 +3030,82 @@ export class ServicoController {
     } catch (error: any) {
       console.error('Erro ao comparar KPIs global:', error?.message || error);
       return res.status(500).json({ error: 'Erro ao comparar KPIs entre serviços' });
+    }
+  }
+
+  /**
+   * GET /api/dashboard/qualidade-ideal-3d?tipoServico=coleta_caminhao&servicoIds=...&dataInicio&dataFim
+   * Pontos agregados (dia × rota) para scatter 3D no TV Mode.
+   */
+  async getQualidadeIdeal3d(req: Request, res: Response): Promise<any> {
+    try {
+      const tipoServico = String(req.query.tipoServico || TipoServico.COLETA_CAMINHAO);
+      if (tipoServico !== TipoServico.COLETA_CAMINHAO && tipoServico !== 'coleta_caminhao') {
+        return res.status(400).json({ error: 'Disponível apenas para coleta_caminhao' });
+      }
+
+      const servicoIds = String(req.query.servicoIds || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const dataInicio = String(req.query.dataInicio || '');
+      const dataFim = String(req.query.dataFim || '');
+
+      if (!servicoIds.length) {
+        return res.status(400).json({ error: 'servicoIds é obrigatório' });
+      }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dataInicio) || !/^\d{4}-\d{2}-\d{2}$/.test(dataFim)) {
+        return res.status(400).json({ error: 'dataInicio e dataFim (yyyy-MM-dd) são obrigatórios' });
+      }
+
+      const { agregarQualidadeIdeal3d } = await import('../services/qualidadeIdeal3dService');
+      const result = await agregarQualidadeIdeal3d({ servicoIds, dataInicio, dataFim });
+      return res.json({
+        tipoServico: 'coleta_caminhao',
+        tipoServicoLabel: TIPOS_SERVICO_META.coleta_caminhao?.label || 'Coleta com caminhão',
+        ...result,
+      });
+    } catch (error: any) {
+      console.error('Erro qualidade-ideal-3d:', error?.message || error);
+      return res.status(500).json({ error: 'Erro ao agregar qualidade vs ideal 3D' });
+    }
+  }
+
+  /**
+   * GET /api/dashboard/evolucao-operacional?servicoIds=...&dataInicio&dataFim
+   * Séries diárias: peso ideal + tempo TOCO/TRUCADO/MINI + velocidade + km/t + HR/t.
+   */
+  async getEvolucaoOperacional(req: Request, res: Response): Promise<any> {
+    try {
+      const tipoServico = String(req.query.tipoServico || TipoServico.COLETA_CAMINHAO);
+      if (tipoServico !== TipoServico.COLETA_CAMINHAO && tipoServico !== 'coleta_caminhao') {
+        return res.status(400).json({ error: 'Disponível apenas para coleta_caminhao' });
+      }
+
+      const servicoIds = String(req.query.servicoIds || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const dataInicio = String(req.query.dataInicio || '');
+      const dataFim = String(req.query.dataFim || '');
+
+      if (!servicoIds.length) {
+        return res.status(400).json({ error: 'servicoIds é obrigatório' });
+      }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dataInicio) || !/^\d{4}-\d{2}-\d{2}$/.test(dataFim)) {
+        return res.status(400).json({ error: 'dataInicio e dataFim (yyyy-MM-dd) são obrigatórios' });
+      }
+
+      const { agregarEvolucaoOperacional } = await import('../services/evolucaoOperacionalService');
+      const result = await agregarEvolucaoOperacional({ servicoIds, dataInicio, dataFim });
+      return res.json({
+        tipoServico: 'coleta_caminhao',
+        tipoServicoLabel: TIPOS_SERVICO_META.coleta_caminhao?.label || 'Coleta com caminhão',
+        ...result,
+      });
+    } catch (error: any) {
+      console.error('Erro evolucao-operacional:', error?.message || error);
+      return res.status(500).json({ error: 'Erro ao agregar evolução operacional' });
     }
   }
 
@@ -4359,6 +4527,7 @@ async getModeloExecutivo(req: Request, res: Response): Promise<any> {
           rotas: acc.rotas + d.rotas,
           viagens: acc.viagens + d.viagens,
           pesoTotalKg: acc.pesoTotalKg + d.pesoTotalKg,
+          pesoTotalTon: acc.pesoTotalTon + d.pesoTotalTon,
           kmTotal: acc.kmTotal + d.kmTotal,
           areaM2: acc.areaM2 + d.areaM2,
           metroLinear: acc.metroLinear + d.metroLinear,
@@ -4370,6 +4539,7 @@ async getModeloExecutivo(req: Request, res: Response): Promise<any> {
           rotas: 0,
           viagens: 0,
           pesoTotalKg: 0,
+          pesoTotalTon: 0,
           kmTotal: 0,
           areaM2: 0,
           metroLinear: 0,
@@ -4630,6 +4800,51 @@ async getModeloExecutivo(req: Request, res: Response): Promise<any> {
         return res.status(400).json({ error: msg });
       }
       console.error('Erro ao fechar ciclo:', msg);
+      return res.status(500).json({ error: msg });
+    }
+  }
+
+  /**
+   * POST /api/contracts/:contractId/servicos/:id/ciclos/reabrir
+   * Body: { mesReferencia, anoReferencia }
+   */
+  async reabrirCiclo(req: Request, res: Response): Promise<any> {
+    try {
+      const contractId = req.params.contractId as string;
+      const id = req.params.id as string;
+      const mesReferencia = parseInt(String(req.body?.mesReferencia), 10);
+      const anoReferencia = parseInt(String(req.body?.anoReferencia), 10);
+
+      if (!mesReferencia || !anoReferencia || mesReferencia < 1 || mesReferencia > 12 || anoReferencia < 2000) {
+        return res.status(400).json({ error: 'mesReferencia e anoReferencia sao obrigatorios' });
+      }
+
+      const servico = await this.repository.findOne({ where: { id, contract_id: contractId } });
+      if (!servico) {
+        return res.status(404).json({ error: 'Servico nao encontrado' });
+      }
+
+      const resultado = await reabrirCicloServico({
+        servicoId: id,
+        contractId,
+        mesReferencia,
+        anoReferencia,
+      });
+
+      invalidarCacheDadosServico(id);
+      invalidarCacheDashboardServico(id);
+
+      return res.json({
+        message: `Ciclo ${resultado.ciclo.label} reaberto com sucesso`,
+        ciclo: resultado.ciclo,
+        uploadIds: resultado.uploadIds,
+      });
+    } catch (error: any) {
+      const msg = error?.message || 'Erro ao reabrir ciclo';
+      if (msg.includes('não está fechado') || msg.includes('Nenhuma planilha')) {
+        return res.status(400).json({ error: msg });
+      }
+      console.error('Erro ao reabrir ciclo:', msg);
       return res.status(500).json({ error: msg });
     }
   }

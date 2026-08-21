@@ -1,5 +1,5 @@
-import { useCallback, useState, type CSSProperties, type ReactNode } from 'react';
-import { FiDownload, FiExternalLink } from 'react-icons/fi';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { FiChevronDown, FiDownload, FiExternalLink } from 'react-icons/fi';
 import { useToast } from '../contexts/ToastContext';
 import pdfService from '../services/pdfService';
 import type { AnalisePesoColeta, CompararPorTipoServico } from '../services/servicoService';
@@ -19,6 +19,14 @@ import {
 } from '../utils/gerarNomePdf';
 
 export type QuinzenaPdf = 1 | 2;
+
+type PdfPesoId = 'ciclo' | 'melhoria' | 'q1' | 'q2';
+
+interface OpcaoPdfPeso {
+  id: PdfPesoId;
+  label: string;
+  descricao: string;
+}
 
 interface Props {
   servicos: CompararPorTipoServico[];
@@ -69,9 +77,70 @@ export default function AnalisePesoPainel({
   onBuscarCicloAnterior,
 }: Props) {
   const { adicionarToast } = useToast();
-  const [exportando, setExportando] = useState<'ciclo' | 'melhoria' | 1 | 2 | null>(null);
+  const [exportando, setExportando] = useState<PdfPesoId | null>(null);
+  const [menuPdfAberto, setMenuPdfAberto] = useState(false);
+  const [pdfsMarcados, setPdfsMarcados] = useState<PdfPesoId[]>([]);
+  const menuPdfRef = useRef<HTMLDivElement>(null);
   const comDados = servicos.filter((s) => s.analisePeso);
   const labelTipo = tipoServicoLabel || 'Coleta com caminhão';
+
+  const opcoesPdf = useMemo((): OpcaoPdfPeso[] => {
+    const lista: OpcaoPdfPeso[] = [
+      {
+        id: 'ciclo',
+        label: 'PDF Ciclo',
+        descricao: 'Comparativo de peso do ciclo/período atual',
+      },
+      {
+        id: 'melhoria',
+        label: 'PDF Melhoria',
+        descricao: 'Viagens e peso por dia — ciclo anterior × ciclo atual',
+      },
+    ];
+    if (onBuscarQuinzena) {
+      lista.push(
+        {
+          id: 'q1',
+          label: 'PDF 1ª Quinzena',
+          descricao: 'Comparativo dos primeiros 15 dias do ciclo',
+        },
+        {
+          id: 'q2',
+          label: 'PDF 2ª Quinzena',
+          descricao: 'Comparativo dos dias 16 até o fim do ciclo',
+        },
+      );
+    }
+    return lista;
+  }, [onBuscarQuinzena]);
+
+  useEffect(() => {
+    setPdfsMarcados((atuais) => atuais.filter((id) => opcoesPdf.some((o) => o.id === id)));
+  }, [opcoesPdf]);
+
+  useEffect(() => {
+    if (!menuPdfAberto) return;
+    const fechar = (ev: MouseEvent) => {
+      if (menuPdfRef.current && !menuPdfRef.current.contains(ev.target as Node)) {
+        setMenuPdfAberto(false);
+      }
+    };
+    const tecla = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') setMenuPdfAberto(false);
+    };
+    document.addEventListener('mousedown', fechar);
+    document.addEventListener('keydown', tecla);
+    return () => {
+      document.removeEventListener('mousedown', fechar);
+      document.removeEventListener('keydown', tecla);
+    };
+  }, [menuPdfAberto]);
+
+  const alternarPdfMarcado = useCallback((id: PdfPesoId) => {
+    setPdfsMarcados((atuais) => (
+      atuais.includes(id) ? atuais.filter((x) => x !== id) : [...atuais, id]
+    ));
+  }, []);
 
   const baixarPdf = useCallback(async (
     lista: CompararPorTipoServico[],
@@ -149,7 +218,7 @@ export default function AnalisePesoPainel({
 
   const exportarPdfQuinzena = useCallback(async (quinzena: QuinzenaPdf) => {
     if (!onBuscarQuinzena) return;
-    setExportando(quinzena);
+    setExportando(quinzena === 1 ? 'q1' : 'q2');
     try {
       const res = await onBuscarQuinzena(quinzena);
       if (!res) {
@@ -173,6 +242,20 @@ export default function AnalisePesoPainel({
       setExportando(null);
     }
   }, [adicionarToast, baixarPdf, onBuscarQuinzena]);
+
+  const gerarPdfsMarcados = useCallback(async () => {
+    if (pdfsMarcados.length === 0) {
+      adicionarToast('Marque pelo menos um relatório para gerar', 'warning');
+      return;
+    }
+    setMenuPdfAberto(false);
+    for (const id of pdfsMarcados) {
+      if (id === 'ciclo') await exportarPdfCiclo();
+      else if (id === 'melhoria') await exportarPdfMelhoria();
+      else if (id === 'q1') await exportarPdfQuinzena(1);
+      else if (id === 'q2') await exportarPdfQuinzena(2);
+    }
+  }, [pdfsMarcados, adicionarToast, exportarPdfCiclo, exportarPdfMelhoria, exportarPdfQuinzena]);
 
   if (comDados.length === 0) {
     if (servicos.length === 0) return null;
@@ -205,50 +288,70 @@ export default function AnalisePesoPainel({
           </span>
         </div>
         <div className="vg-peso-painel-acoes">
-          <button
-            type="button"
-            className="vg-peso-painel-export"
-            onClick={exportarPdfCiclo}
-            disabled={ocupado}
-            title="Exportar PDF do ciclo/período atual"
-          >
-            <FiDownload size={14} />
-            {exportando === 'ciclo' ? 'Gerando...' : 'PDF Ciclo'}
-          </button>
-          <button
-            type="button"
-            className="vg-peso-painel-export vg-peso-painel-export-melhoria"
-            onClick={exportarPdfMelhoria}
-            disabled={ocupado || !onBuscarCicloAnterior || comDados.length === 0}
-            title="PDF: ciclo anterior × ciclo atual — RESULTADO (TON) ÷ peso ideal = viagens ao aterro sem necessidade"
-          >
-            <FiDownload size={14} />
-            {exportando === 'melhoria' ? 'Gerando...' : 'PDF Melhoria'}
-          </button>
-          {onBuscarQuinzena && (
-            <>
-              <button
-                type="button"
-                className="vg-peso-painel-export vg-peso-painel-export-quinzena"
-                onClick={() => exportarPdfQuinzena(1)}
-                disabled={ocupado}
-                title="PDF comparativo da 1ª quinzena (primeiros 15 dias do ciclo)"
-              >
-                <FiDownload size={14} />
-                {exportando === 1 ? 'Gerando...' : 'PDF 1ª Quinzena'}
-              </button>
-              <button
-                type="button"
-                className="vg-peso-painel-export vg-peso-painel-export-quinzena"
-                onClick={() => exportarPdfQuinzena(2)}
-                disabled={ocupado}
-                title="PDF comparativo da 2ª quinzena (dias 16 até o fim do ciclo)"
-              >
-                <FiDownload size={14} />
-                {exportando === 2 ? 'Gerando...' : 'PDF 2ª Quinzena'}
-              </button>
-            </>
-          )}
+          <div className="vg-peso-pdf-menu" ref={menuPdfRef}>
+            <button
+              type="button"
+              className="vg-peso-painel-export"
+              onClick={() => setMenuPdfAberto((v) => !v)}
+              disabled={ocupado}
+              title="Escolher quais PDFs gerar"
+            >
+              <FiDownload size={14} />
+              {ocupado
+                ? 'Gerando...'
+                : pdfsMarcados.length > 0
+                  ? `PDFs (${pdfsMarcados.length})`
+                  : 'Relatórios PDF'}
+              <FiChevronDown size={12} />
+            </button>
+            {menuPdfAberto && (
+              <div className="vg-peso-pdf-painel" role="dialog" aria-label="Selecionar relatórios PDF">
+                <div className="vg-peso-pdf-painel-titulo">Selecione os relatórios</div>
+                <div className="vg-peso-pdf-lista">
+                  {opcoesPdf.map((op) => {
+                    const marcado = pdfsMarcados.includes(op.id);
+                    const melhoriaIndisponivel = op.id === 'melhoria' && !onBuscarCicloAnterior;
+                    return (
+                      <label
+                        key={op.id}
+                        className={
+                          'vg-peso-pdf-opcao'
+                          + (marcado ? ' marcado' : '')
+                          + (melhoriaIndisponivel ? ' indisponivel' : '')
+                        }
+                      >
+                        <input
+                          type="checkbox"
+                          checked={marcado}
+                          disabled={melhoriaIndisponivel}
+                          onChange={() => alternarPdfMarcado(op.id)}
+                        />
+                        <span>
+                          <span className="vg-peso-pdf-opcao-label">{op.label}</span>
+                          <span className="vg-peso-pdf-opcao-desc">
+                            {melhoriaIndisponivel
+                              ? 'Comparação ciclo anterior × atual indisponível neste modo'
+                              : op.descricao}
+                          </span>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <button
+                  type="button"
+                  className="vg-peso-pdf-gerar"
+                  onClick={() => gerarPdfsMarcados()}
+                  disabled={pdfsMarcados.length === 0 || ocupado}
+                >
+                  <FiDownload size={13} />
+                  {pdfsMarcados.length <= 1
+                    ? 'Gerar PDF'
+                    : `Gerar ${pdfsMarcados.length} PDFs`}
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -256,9 +359,9 @@ export default function AnalisePesoPainel({
         A <strong>densidade (kg/L)</strong> é definida no contrato por tipo de caminhão
         (com fallback da densidade padrão) e usada no peso ideal (volume × densidade).
         Após alterar no contrato, clique em <strong>Atualizar</strong> nesta comparação.
-        Use <strong>PDF Melhoria</strong> para comparar o <strong>ciclo anterior</strong> com o
-        <strong> ciclo atual</strong> (mês de medição − 1):
-        |RESULTADO TON| × 1000 ÷ peso ideal ≈ viagens ao aterro sem necessidade (PERDA).
+        Em <strong>Relatórios PDF</strong>, marque os arquivos desejados — inclusive
+        <strong> Melhoria</strong> para o comparativo <strong>ciclo anterior × atual</strong>
+        (viagens, peso médio por dia e perda/superávit de carga).
       </p>
 
       <div className="vg-peso-comp-wrap">

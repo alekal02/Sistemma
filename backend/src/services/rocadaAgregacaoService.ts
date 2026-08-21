@@ -7,13 +7,15 @@ import { PlanilhaUpload } from '../entities/PlanilhaUpload';
 import { aplicarFiltroViagensValidasDashboard } from './validacaoViagemService';
 import { calcularFaturamentoRocadaPorAreas } from '../utils/rocadaTipoExecucao';
 
+import { sqlJsonNumero } from './viagensPorRotaService';
+
 /** Expressão SQL da área m² no JSONB (aliases canônicos). */
 export const AREA_M2_SQL = `
   COALESCE(
-    NULLIF(c.dados->>'Area m²', '')::double precision,
-    NULLIF(c.dados->>'AREA_M2', '')::double precision,
-    NULLIF(c.dados->>'M2', '')::double precision,
-    NULLIF(c.dados->>'AREA_ROCADA', '')::double precision,
+    ${sqlJsonNumero('c', 'Area m²')},
+    ${sqlJsonNumero('c', 'AREA_M2')},
+    ${sqlJsonNumero('c', 'M2')},
+    ${sqlJsonNumero('c', 'AREA_ROCADA')},
     0
   )
 `;

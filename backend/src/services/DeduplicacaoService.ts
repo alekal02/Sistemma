@@ -18,10 +18,12 @@ import { parseDataPlanilha } from '../utils/formatarDataPlanilha';
 import { normalizarPlaca } from '../utils/normalizarPlaca';
 import {
   aplicarReferenciaCicloNoUpload,
+  apagarDatasDeUploadsAbertos,
   obterUploadIdsModificaveis,
+  prepararDatasImportacaoCiclo,
   verificarDatasEmCicloFechado,
 } from './cicloPlanilhaService';
-import { normalizarDiaInicioCiclo } from '../utils/periodoCicloContrato';
+import { limitarDiasAusentesAoPeriodoDaPlanilha, normalizarDiaInicioCiclo } from '../utils/periodoCicloContrato';
 import { invalidarCacheDadosServico } from './servicoDadosCache';
 import { invalidarCacheDashboardServico } from '../controllers/ServicoController';
 import { invalidarCacheSaudeContratos } from '../controllers/ContractController';
@@ -318,51 +320,27 @@ export class DeduplicacaoService {
   }
 
   /**
-   * Após substituir por data: move dias que só existiam nas planilhas antigas
-   * para o upload novo e remove os uploads antigos vazios (ciclo aberto).
-   * Assim o serviço fica com uma planilha ativa sem perder informação.
+   * Após substituir por data: remove uploads antigos vazios do ciclo aberto.
+   * Dias ausentes na planilha nova já foram apagados em importarPorData.
    */
   private async consolidarUploadsAposSubstituicao(
     servicoId: string,
     novoUploadId: number,
   ): Promise<{
-    registrosPreservados: number;
     uploadsRemovidos: number;
     uploadsRemovidosIds: number[];
-    diasPreservados: string[];
   }> {
     const uploadIdsAntigos = (await obterUploadIdsModificaveis(servicoId))
       .filter((id) => id !== novoUploadId);
 
     if (uploadIdsAntigos.length === 0) {
       return {
-        registrosPreservados: 0,
         uploadsRemovidos: 0,
         uploadsRemovidosIds: [],
-        diasPreservados: [],
       };
     }
 
-    // Dias que ainda restam nas planilhas antigas (não estavam na nova → não foram apagados)
-    const diasRows = await this.coletaRepo.createQueryBuilder('c')
-      .select("DISTINCT to_char(c.dataSaida, 'YYYY-MM-DD')", 'data')
-      .where('c.planilhaUploadId IN (:...ids)', { ids: uploadIdsAntigos })
-      .andWhere('c.dataSaida IS NOT NULL')
-      .orderBy('data', 'ASC')
-      .getRawMany<{ data: string }>();
-    const diasPreservados = diasRows.map((r) => r.data).filter(Boolean);
-
-    let registrosPreservados = 0;
-    if (diasPreservados.length > 0) {
-      const upd = await this.coletaRepo.createQueryBuilder()
-        .update(ColetaData)
-        .set({ planilhaUploadId: novoUploadId })
-        .where('planilhaUploadId IN (:...ids)', { ids: uploadIdsAntigos })
-        .execute();
-      registrosPreservados = upd.affected || 0;
-    }
-
-    // Remover shells vazios (e qualquer antigo sem linhas restantes)
+    // Remover shells vazios (uploads antigos sem linhas restantes)
     const uploadsRemovidosIds: number[] = [];
     for (const oldId of uploadIdsAntigos) {
       const restantes = await this.coletaRepo.count({ where: { planilhaUploadId: oldId } });
@@ -385,15 +363,13 @@ export class DeduplicacaoService {
       }
     }
 
-    if (registrosPreservados > 0 || uploadsRemovidosIds.length > 0) {
+    if (uploadsRemovidosIds.length > 0) {
       await this.sincronizarContagemUploadAposDedup(novoUploadId);
     }
 
     return {
-      registrosPreservados,
       uploadsRemovidos: uploadsRemovidosIds.length,
       uploadsRemovidosIds,
-      diasPreservados,
     };
   }
 
@@ -578,7 +554,7 @@ export class DeduplicacaoService {
     for (const ch of chaves) {
       const chNorm = this.normalizarChave(ch);
       if (keyNorm.length > 0 && chNorm.includes(keyNorm)) return ch;
-      if (keyNorm.length > 0 && keyNorm.includes(chNorm)) return ch;
+      if (chNorm.length >= 5 && keyNorm.includes(chNorm)) return ch;
     }
     return null;
   }
@@ -1232,9 +1208,13 @@ export class DeduplicacaoService {
       }
     }
 
-    // Dias no sistema que a planilha nova não traz — serão preservados na consolidação
+    // Dias no sistema, no intervalo da planilha nova, que o arquivo não traz.
+    // Datas fora desse intervalo (ciclo anterior) NÃO entram — não serão removidas.
+    const minPlanilha = datasPlanilha[0];
+    const maxPlanilha = datasPlanilha[datasPlanilha.length - 1];
     for (const [data, sistema] of mapaSistema) {
       if (datasPlanilhaSet.has(data)) continue;
+      if (!minPlanilha || data < minPlanilha || data > maxPlanilha) continue;
       if (sistema.rotas === 0 && sistema.viagens === 0) continue;
       diasSomenteSistema++;
       dias.push({
@@ -1243,7 +1223,7 @@ export class DeduplicacaoService {
         status: 'somente_sistema',
         planilha: null,
         sistema,
-        diferencas: ['Só no sistema — será mantido ao substituir a planilha'],
+        diferencas: ['Só no sistema — será removido ao substituir a planilha'],
       });
     }
 
@@ -1276,9 +1256,10 @@ export class DeduplicacaoService {
   /**
    * Importa uma planilha usando estratégia baseada em DATA.
    * 
-   * 'atualizar_data' → apaga TODOS os registros do banco cuja dataSaida
-   *   esteja na planilha, depois insere todos os dados novos.
-   *   Ideal para substituir planilhas corrigidas de um período.
+   * 'atualizar_data' → a planilha é a verdade do PERÍODO que ela cobre:
+   *   apaga os dias presentes no arquivo (ciclo aberto) e reinsere; também
+   *   remove buracos entre a 1ª e a última data do arquivo. Datas de ciclo
+   *   já fechado, ou anteriores ao intervalo da planilha, nunca são apagadas.
    * 
    * 'inserir_data' → insere apenas registros de datas que AINDA NÃO
    *   existem no banco. Datas já existentes são ignoradas.
@@ -1304,20 +1285,22 @@ export class DeduplicacaoService {
     datasExistentes: number;
     datasNovas: number;
     datasApagadas: { data: string; registrosRemovidos: number }[];
+    diasRemovidosAusentes: { data: string; registrosRemovidos: number }[];
+    datasIgnoradasCicloFechado?: string[];
+    avisos?: string[];
     modo: 'atualizar_data' | 'inserir_data';
     viagensInconsistentes?: number;
     viagensValidasDashboard?: number;
     viagensCorrigidas?: number;
     duplicatasRemovidasSql?: number;
     consolidacao?: {
-      registrosPreservados: number;
+      registrosRemovidosAusentes: number;
+      diasRemovidosAusentes: string[];
       uploadsRemovidos: number;
       uploadsRemovidosIds: number[];
-      diasPreservados: string[];
     };
   }> {
     const linhas = this.parsearLinhas(buffer);
-    await this.validarImportacaoNaoInvadeCicloFechado(servicoId, linhas);
 
     // Agrupar por data
     const mapaDatas = new Map<string, LinhaParseada[]>();
@@ -1330,7 +1313,21 @@ export class DeduplicacaoService {
       mapaDatas.get(chaveData)!.push(linha);
     }
 
-    const datasUnicas = Array.from(mapaDatas.keys()).sort();
+    let datasUnicas = Array.from(mapaDatas.keys()).sort();
+    const avisos: string[] = [];
+    let datasIgnoradasCicloFechado: string[] = [];
+    let cicloAlvo: { dataInicio: string; dataFim: string } | null = null;
+
+    if (servicoId && datasUnicas.length > 0) {
+      const prep = await prepararDatasImportacaoCiclo(servicoId, datasUnicas);
+      cicloAlvo = prep.cicloAlvo;
+      datasIgnoradasCicloFechado = prep.bloqueadasFechado;
+      avisos.push(...prep.avisos);
+      if (prep.datas.length === 0 && prep.bloqueadasFechado.length > 0) {
+        await this.validarImportacaoNaoInvadeCicloFechado(servicoId, linhas);
+      }
+      datasUnicas = prep.datas;
+    }
 
     // Criar registro de upload
     const upload = this.uploadRepo.create({
@@ -1349,6 +1346,7 @@ export class DeduplicacaoService {
     const uploadSalvo = await this.uploadRepo.save(upload);
 
     const datasApagadas: { data: string; registrosRemovidos: number }[] = [];
+    const diasRemovidosAusentes: { data: string; registrosRemovidos: number }[] = [];
     let importados = 0;
     let ignorados = 0;
     let viagensInconsistentes = 0;
@@ -1364,41 +1362,39 @@ export class DeduplicacaoService {
     const datasParaImportar: string[] = [];
 
     if (estrategia === 'atualizar_data') {
-      // Remove registros de TODAS as datas da planilha
-      if (uploadIds.length > 0) {
-        for (const dataStr of datasUnicas) {
-          const dataInicio = new Date(dataStr + 'T00:00:00');
-          const dataFim = new Date(dataStr + 'T23:59:59');
+      if (servicoId && datasUnicas.length > 0) {
+        datasApagadas.push(...await apagarDatasDeUploadsAbertos(servicoId, datasUnicas));
 
-          const registrosParaApagar = await this.coletaRepo.createQueryBuilder('c')
+        if (uploadIds.length > 0) {
+          const diasSistemaRows = await this.coletaRepo.createQueryBuilder('c')
+            .select("DISTINCT to_char(c.dataSaida, 'YYYY-MM-DD')", 'data')
             .where('c.planilhaUploadId IN (:...uploadIds)', { uploadIds })
-            .andWhere('c.dataSaida BETWEEN :inicio AND :fim', { inicio: dataInicio, fim: dataFim })
-            .getCount();
+            .andWhere('c.dataSaida IS NOT NULL')
+            .orderBy('data', 'ASC')
+            .getRawMany<{ data: string }>();
 
-          if (registrosParaApagar > 0) {
-            await this.coletaRepo.createQueryBuilder()
-              .delete()
-              .from('coleta_dados')
-              .where('planilhaUploadId IN (:...uploadIds)', { uploadIds })
-              .andWhere('dataSaida BETWEEN :inicio AND :fim', { inicio: dataInicio, fim: dataFim })
-              .execute();
+          const diasSistema = diasSistemaRows
+            .map((r) => r.data)
+            .filter((d): d is string => Boolean(d))
+            .filter((d) => (
+              !cicloAlvo || (d >= cicloAlvo.dataInicio && d <= cicloAlvo.dataFim)
+            ));
 
-            datasApagadas.push({ data: dataStr, registrosRemovidos: registrosParaApagar });
-          }
+          const buracos = limitarDiasAusentesAoPeriodoDaPlanilha(
+            diasSistema,
+            datasUnicas,
+          );
+          diasRemovidosAusentes.push(...await apagarDatasDeUploadsAbertos(servicoId, buracos));
         }
       }
-      // Importa todas as datas
       datasParaImportar.push(...datasUnicas);
     } else {
       // 'inserir_data': só importa datas que NÃO existem
       if (uploadIds.length > 0) {
         for (const dataStr of datasUnicas) {
-          const dataInicio = new Date(dataStr + 'T00:00:00');
-          const dataFim = new Date(dataStr + 'T23:59:59');
-
           const count = await this.coletaRepo.createQueryBuilder('c')
             .where('c.planilhaUploadId IN (:...uploadIds)', { uploadIds })
-            .andWhere('c.dataSaida BETWEEN :inicio AND :fim', { inicio: dataInicio, fim: dataFim })
+            .andWhere('c.dataSaida = :data', { data: dataStr })
             .getCount();
 
           if (count === 0) {
@@ -1479,18 +1475,21 @@ export class DeduplicacaoService {
     importados = await this.sincronizarContagemUploadAposDedup(uploadSalvo.id);
 
     let consolidacao: {
-      registrosPreservados: number;
+      registrosRemovidosAusentes: number;
+      diasRemovidosAusentes: string[];
       uploadsRemovidos: number;
       uploadsRemovidosIds: number[];
-      diasPreservados: string[];
     } | undefined;
 
-    // Substituição por data: preserva dias só da antiga e remove planilhas antigas
+    // Substituição por data: remove planilhas antigas vazias (dias ausentes já foram apagados)
     if (estrategia === 'atualizar_data' && servicoId) {
-      consolidacao = await this.consolidarUploadsAposSubstituicao(servicoId, uploadSalvo.id);
-      if (consolidacao.registrosPreservados > 0) {
-        await this.limparDuplicatas(servicoId);
-      }
+      const limpeza = await this.consolidarUploadsAposSubstituicao(servicoId, uploadSalvo.id);
+      consolidacao = {
+        registrosRemovidosAusentes: diasRemovidosAusentes.reduce((s, d) => s + d.registrosRemovidos, 0),
+        diasRemovidosAusentes: diasRemovidosAusentes.map((d) => d.data),
+        uploadsRemovidos: limpeza.uploadsRemovidos,
+        uploadsRemovidosIds: limpeza.uploadsRemovidosIds,
+      };
       importados = await this.sincronizarContagemUploadAposDedup(uploadSalvo.id);
 
       const uploadAtual = await this.uploadRepo.findOne({ where: { id: uploadSalvo.id } });
@@ -1504,9 +1503,9 @@ export class DeduplicacaoService {
           }),
           viagensValidasDashboard: importados,
           consolidacao: {
-            registrosPreservados: consolidacao.registrosPreservados,
+            registrosRemovidosAusentes: consolidacao.registrosRemovidosAusentes,
             uploadsRemovidos: consolidacao.uploadsRemovidos,
-            diasPreservados: consolidacao.diasPreservados,
+            diasRemovidosAusentes: consolidacao.diasRemovidosAusentes,
           },
         };
         await this.uploadRepo.save(uploadAtual);
@@ -1529,6 +1528,9 @@ export class DeduplicacaoService {
       datasExistentes: datasApagadas.length,
       datasNovas: datasParaImportar.length,
       datasApagadas,
+      diasRemovidosAusentes,
+      datasIgnoradasCicloFechado,
+      avisos,
       modo: estrategia,
       viagensInconsistentes,
       viagensValidasDashboard: importados,

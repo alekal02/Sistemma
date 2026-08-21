@@ -4,9 +4,20 @@
 import AppDataSource from '../database/data-source';
 import { ColetaData } from '../entities/ColetaData';
 import { PlanilhaUpload } from '../entities/PlanilhaUpload';
+import { Servico } from '../entities/Servico';
+import { Contract } from '../entities/Contract';
+import { normalizarTipoCaminhaoPeso } from '../config/pesoMaximoCaminhao';
 import { aplicarFiltroViagensValidasDashboard } from './validacaoViagemService';
 import { separarMelhoresPiores } from './rankingOperacionalService';
-import { sqlSumViagens } from './viagensPorRotaService';
+import { sqlSumViagens, sqlSumPesoEfetivoKg, sqlExprPesoEfetivoKg, contarViagensPorRotaRegistro } from './viagensPorRotaService';
+import { calcularHorasProdutivaImprodutivaRegistro } from './horasProdutivasService';
+import { calcularPesoIdealViagem, densidadeOptsToInput } from './relatorioDia/escalaIdealPeso';
+import { montarViagensPesoDoRegistro, type ViagemPesoRotaItem } from './viagemPesoRotaService';
+import {
+  classificarTempoPorTipo,
+  tempoParaEncherPorMedia,
+  tipoParaTempoEncher,
+} from './evolucaoOperacionalMetricas';
 
 export interface MetricasColetaSql {
   registros: number;
@@ -160,7 +171,7 @@ export async function getMetricasColetaSql(
     .select([
       'COUNT(*)::int AS registros',
       `${sqlSumViagens('c')} AS viagens`,
-      'COALESCE(SUM(COALESCE(c."pesoTotal", 0)), 0) AS peso_kg',
+      `${sqlSumPesoEfetivoKg('c')} AS peso_kg`,
       'COALESCE(SUM(COALESCE(c."kmTotal", 0)), 0) AS km_total',
       `COALESCE(SUM(CASE WHEN c."horasForaUnidade" BETWEEN 0 AND 24 THEN c."horasForaUnidade" ELSE 0 END), 0) AS horas`,
       `COUNT(DISTINCT NULLIF(TRIM(c.placa), ''))::int AS placas`,
@@ -168,14 +179,14 @@ export async function getMetricasColetaSql(
       `COUNT(DISTINCT NULLIF(TRIM(c.regional), ''))::int AS regionais`,
       `COUNT(DISTINCT NULLIF(TRIM(c.distrito), ''))::int AS distritos`,
       'COALESCE(SUM(COALESCE(c."numeroColetores", 0)), 0) AS soma_coletores',
-      `COALESCE(SUM((COALESCE(c."pesoTotal", 0) / 1000.0) * (${tarifa})), 0) AS faturamento`,
+      `COALESCE(SUM((${sqlExprPesoEfetivoKg('c')}) / 1000.0 * (${tarifa})), 0) AS faturamento`,
     ])
     .getRawOne();
 
   const porTipo = await baseQb(uploadIds, dataInicio, dataFim)
     .select([
       `COALESCE(NULLIF(TRIM(c."tipoCaminhao"), ''), 'Não informado') AS tipo`,
-      `COALESCE(SUM((COALESCE(c."pesoTotal", 0) / 1000.0) * (${tarifa})), 0) AS fat`,
+      `COALESCE(SUM((${sqlExprPesoEfetivoKg('c')}) / 1000.0 * (${tarifa})), 0) AS fat`,
     ])
     .groupBy(`COALESCE(NULLIF(TRIM(c."tipoCaminhao"), ''), 'Não informado')`)
     .getRawMany();
@@ -237,7 +248,7 @@ export async function getAgregacaoColeta(
   const selectGrupo = (labelExpr: string) => [
     `${labelExpr} AS label`,
     `${sqlSumViagens('c')} AS viagens`,
-    'COALESCE(SUM(COALESCE(c."pesoTotal", 0)), 0) AS peso_kg',
+    `${sqlSumPesoEfetivoKg('c')} AS peso_kg`,
     'COALESCE(SUM(COALESCE(c."kmTotal", 0)), 0) AS km_total',
     `COALESCE(SUM(CASE WHEN c."horasForaUnidade" BETWEEN 0 AND 24 THEN c."horasForaUnidade" ELSE 0 END), 0) AS horas`,
   ];
@@ -277,6 +288,421 @@ export async function getAgregacaoColeta(
     porDistrito: mapRanking(porDistrito),
     dataInicio: dataInicio || toIsoDate(bounds?.min_d),
     dataFim: dataFim || toIsoDate(bounds?.max_d),
+  };
+}
+
+export interface LinhaMapeamentoOperacional {
+  rota: string;
+  motorista: string;
+  placa: string;
+  tipoCaminhao: string | null;
+  dias: number;
+  viagens: number;
+  tonelagem: number;
+  kmTotal: number;
+  /** Jornada base → base (fora da unidade) */
+  horasTotais: number;
+  /** Tempo dentro das rotas (chegada→saída) */
+  horasProdutivas: number;
+  /** Tempo fora das rotas (deslocamento / ociosidade) */
+  horasImprodutivas: number;
+  horasPorViagem: number;
+  horasProdutivasPorViagem: number;
+  kmPorViagem: number;
+  tonPorHora: number;
+  /** % do tempo total que foi produtivo (0–100) */
+  percentualProdutivo: number;
+}
+
+export interface MapeamentoOperacionalResult {
+  resumo: {
+    linhas: number;
+    truncado: boolean;
+    rotas: number;
+    motoristas: number;
+    placas: number;
+    viagens: number;
+    kmTotal: number;
+    horasTotais: number;
+    horasProdutivas: number;
+    horasImprodutivas: number;
+    percentualProdutivo: number;
+    tonelagem: number;
+  };
+  /** Cruzamento rota × motorista × placa, ordenado por horas produtivas desc */
+  linhas: LinhaMapeamentoOperacional[];
+  /**
+   * Top rotas pela melhor produtividade para encher o peso ideal
+   * (menor tempo equivalente = melhor). Campo legado `topRotasLentas`.
+   */
+  topRotasLentas: TopRotaProdutividadeEncher[];
+  /** PESO 1–4 com hora produtiva da viagem (trecho ou rateio da rota). */
+  viagensPesoRota: ViagemPesoRotaItem[];
+  dataInicio: string | null;
+  dataFim: string | null;
+}
+
+export interface TopRotaProdutividadeEncher {
+  rota: string;
+  viagens: number;
+  horasTotais: number;
+  horasProdutivas: number;
+  horasImprodutivas: number;
+  horasPorViagem: number;
+  kmTotal: number;
+  tipoPredominante: string | null;
+  pesoKg: number;
+  pesoMedioKg: number;
+  pesoIdealKg: number | null;
+  pctIdeal: number | null;
+  /** HR produtiva da média da viagem até 100% da caixa (menor = melhor). */
+  tempoEqEncher: number | null;
+  /** true = kg médio já atingiu o ideal (tempo real); false = estimado pela média. */
+  atingiuIdeal: boolean;
+  estimado: boolean;
+  tonPorHora: number;
+  faixa: 'bom' | 'regular' | 'ruim' | null;
+}
+
+const MAPEAMENTO_MAX_LINHAS = 5000;
+const MAPEAMENTO_MAX_REGISTROS = 25000;
+
+/**
+ * Mapeamento operacional do ciclo: rota × motorista × placa com tempo e km.
+ * Horas produtivas = dentro da rota; improdutivas = fora da unidade − produtivas.
+ */
+export async function getMapeamentoOperacional(
+  servicoId: string,
+  opts: { dataInicio?: string; dataFim?: string; data?: string } = {},
+): Promise<MapeamentoOperacionalResult> {
+  const uploadIds = await getUploadIds(servicoId);
+  const { dataInicio, dataFim } = parsePeriodo(opts);
+  const vazio: MapeamentoOperacionalResult = {
+    resumo: {
+      linhas: 0, truncado: false, rotas: 0, motoristas: 0, placas: 0,
+      viagens: 0, kmTotal: 0, horasTotais: 0, horasProdutivas: 0,
+      horasImprodutivas: 0, percentualProdutivo: 0, tonelagem: 0,
+    },
+    linhas: [],
+    topRotasLentas: [],
+    viagensPesoRota: [],
+    dataInicio: dataInicio || null,
+    dataFim: dataFim || null,
+  };
+  if (!uploadIds.length) return vazio;
+
+  const servico = await AppDataSource.getRepository(Servico).findOne({
+    where: { id: servicoId },
+    select: ['id', 'contract_id'],
+  });
+  const contrato = servico
+    ? await AppDataSource.getRepository(Contract).findOne({ where: { id: servico.contract_id } })
+    : null;
+  const cfgOp = contrato?.configOperacional;
+  const densInput = densidadeOptsToInput({
+    densidadeResiduoKgL: cfgOp?.densidadeResiduoKgL ?? null,
+    densidadeKgL: cfgOp?.densidadeKgL || null,
+  });
+
+  const registros = await baseQb(uploadIds, dataInicio, dataFim)
+    .select([
+      'c.id',
+      'c.dataSaida',
+      'c.distrito',
+      'c.regional',
+      'c.motorista',
+      'c.placa',
+      'c.tipoCaminhao',
+      'c.kmTotal',
+      'c.pesoTotal',
+      'c.horaSaida',
+      'c.horaChegada',
+      'c.horasForaUnidade',
+      'c.tempoForaUnidade',
+      'c.viagensPorRota',
+      'c.numeroViagens',
+      'c.peso1',
+      'c.peso2',
+      'c.peso3',
+      'c.peso4',
+      'c.dados',
+    ])
+    .orderBy('c.dataSaida', 'ASC')
+    .take(MAPEAMENTO_MAX_REGISTROS + 1)
+    .getMany();
+
+  const truncadoRegistros = registros.length > MAPEAMENTO_MAX_REGISTROS;
+  const lista = truncadoRegistros ? registros.slice(0, MAPEAMENTO_MAX_REGISTROS) : registros;
+  if (!lista.length) return vazio;
+
+  type Acc = {
+    rota: string;
+    motorista: string;
+    placa: string;
+    tipoCounts: Map<string, number>;
+    dias: Set<string>;
+    viagens: number;
+    pesoKg: number;
+    kmTotal: number;
+    horasTotais: number;
+    horasProdutivas: number;
+    horasImprodutivas: number;
+  };
+
+  const mapa = new Map<string, Acc>();
+  const porRota = new Map<string, {
+    viagens: number;
+    kmTotal: number;
+    horasTotais: number;
+    horasProdutivas: number;
+    horasImprodutivas: number;
+    pesoKg: number;
+    tipoCounts: Map<string, number>;
+  }>();
+
+  let sumViagens = 0;
+  let sumKm = 0;
+  let sumPeso = 0;
+  let sumTotais = 0;
+  let sumProd = 0;
+  let sumImprod = 0;
+  const setRotas = new Set<string>();
+  const setMotoristas = new Set<string>();
+  const setPlacas = new Set<string>();
+  const viagensPesoRota: ViagemPesoRotaItem[] = [];
+
+  for (const reg of lista) {
+    const rota = (reg.distrito || reg.regional || 'Não informado').trim() || 'Não informado';
+    const motorista = (reg.motorista || 'Não informado').trim() || 'Não informado';
+    const placa = (reg.placa || 'Não informado').trim() || 'Não informado';
+    const chave = `${rota}\0${motorista}\0${placa}`;
+
+    const obj = {
+      ...reg,
+      ...(reg.dados && typeof reg.dados === 'object' ? reg.dados : {}),
+      horaSaida: reg.horaSaida,
+      horaChegada: reg.horaChegada,
+      horasForaUnidade: reg.horasForaUnidade,
+      tempoForaUnidade: reg.tempoForaUnidade,
+      dados: reg.dados,
+    };
+    const horas = calcularHorasProdutivaImprodutivaRegistro(obj);
+    const viagens = contarViagensPorRotaRegistro(reg);
+    const km = Number(reg.kmTotal) || 0;
+    const peso = Number(reg.pesoTotal) || 0;
+    const dia = toIsoDate(reg.dataSaida);
+
+    let acc = mapa.get(chave);
+    if (!acc) {
+      acc = {
+        rota,
+        motorista,
+        placa,
+        tipoCounts: new Map(),
+        dias: new Set(),
+        viagens: 0,
+        pesoKg: 0,
+        kmTotal: 0,
+        horasTotais: 0,
+        horasProdutivas: 0,
+        horasImprodutivas: 0,
+      };
+      mapa.set(chave, acc);
+    }
+    acc.viagens += viagens;
+    acc.pesoKg += peso;
+    acc.kmTotal += km;
+    acc.horasTotais += horas.horasTotais;
+    acc.horasProdutivas += horas.horasProdutivas;
+    acc.horasImprodutivas += horas.horasImprodutivas;
+    if (dia) acc.dias.add(dia);
+    const tipo = (reg.tipoCaminhao || '').trim();
+    if (tipo) acc.tipoCounts.set(tipo, (acc.tipoCounts.get(tipo) || 0) + viagens);
+
+    let rAcc = porRota.get(rota);
+    if (!rAcc) {
+      rAcc = {
+        viagens: 0, kmTotal: 0, horasTotais: 0, horasProdutivas: 0, horasImprodutivas: 0,
+        pesoKg: 0, tipoCounts: new Map(),
+      };
+      porRota.set(rota, rAcc);
+    }
+    rAcc.viagens += viagens;
+    rAcc.kmTotal += km;
+    rAcc.horasTotais += horas.horasTotais;
+    rAcc.horasProdutivas += horas.horasProdutivas;
+    rAcc.horasImprodutivas += horas.horasImprodutivas;
+    rAcc.pesoKg += peso;
+    const tipoNorm = normalizarTipoCaminhaoPeso(reg.tipoCaminhao);
+    if (tipoNorm) rAcc.tipoCounts.set(tipoNorm, (rAcc.tipoCounts.get(tipoNorm) || 0) + viagens);
+
+    sumViagens += viagens;
+    sumKm += km;
+    sumPeso += peso;
+    sumTotais += horas.horasTotais;
+    sumProd += horas.horasProdutivas;
+    sumImprod += horas.horasImprodutivas;
+    setRotas.add(rota);
+    setMotoristas.add(motorista);
+    setPlacas.add(placa);
+
+    const tipoNormViagem = normalizarTipoCaminhaoPeso(reg.tipoCaminhao);
+    const pesoIdealViagem = tipoNormViagem
+      ? calcularPesoIdealViagem({
+        tipo: tipoNormViagem,
+        placa: placa !== 'Não informado' ? placa : null,
+        volumeOverrides: cfgOp?.volumeL || null,
+        densidade: densInput,
+        porPlaca: cfgOp?.densidadeKgLPorPlaca || null,
+      }) || null
+      : null;
+    viagensPesoRota.push(...montarViagensPesoDoRegistro({
+      data: dia,
+      rota,
+      placa,
+      motorista,
+      tipo: tipoNormViagem,
+      pesos: [reg.peso1, reg.peso2, reg.peso3, reg.peso4],
+      objHoras: obj,
+      pesoIdealKg: pesoIdealViagem && pesoIdealViagem > 0 ? pesoIdealViagem : null,
+    }));
+  }
+
+  const linhasAll: LinhaMapeamentoOperacional[] = Array.from(mapa.values()).map((acc) => {
+    let tipoCaminhao: string | null = null;
+    let best = -1;
+    for (const [t, n] of acc.tipoCounts) {
+      if (n > best) {
+        best = n;
+        tipoCaminhao = t;
+      }
+    }
+    const horasProdutivas = round2(acc.horasProdutivas);
+    const horasTotais = round2(acc.horasTotais);
+    const horasImprodutivas = round2(acc.horasImprodutivas);
+    const tonelagem = round2(acc.pesoKg / 1000);
+    const viagens = acc.viagens;
+    const kmTotal = round2(acc.kmTotal);
+    return {
+      rota: acc.rota,
+      motorista: acc.motorista,
+      placa: acc.placa,
+      tipoCaminhao,
+      dias: acc.dias.size,
+      viagens,
+      tonelagem,
+      kmTotal,
+      horasTotais,
+      horasProdutivas,
+      horasImprodutivas,
+      horasPorViagem: viagens > 0 ? round2(horasTotais / viagens) : 0,
+      horasProdutivasPorViagem: viagens > 0 ? round2(horasProdutivas / viagens) : 0,
+      kmPorViagem: viagens > 0 ? round2(kmTotal / viagens) : 0,
+      tonPorHora: horasProdutivas > 0 ? round2(tonelagem / horasProdutivas) : 0,
+      percentualProdutivo: horasTotais > 0 ? round2((horasProdutivas / horasTotais) * 100) : 0,
+    };
+  });
+
+  linhasAll.sort((a, b) => b.horasProdutivas - a.horasProdutivas || b.viagens - a.viagens);
+  const truncadoLinhas = linhasAll.length > MAPEAMENTO_MAX_LINHAS;
+  const linhas = truncadoLinhas ? linhasAll.slice(0, MAPEAMENTO_MAX_LINHAS) : linhasAll;
+
+  const rotasMontadas: TopRotaProdutividadeEncher[] = Array.from(porRota.entries())
+    .map(([rota, r]) => {
+      const horasProdutivas = round2(r.horasProdutivas);
+      let tipoPredominante: string | null = null;
+      let bestTipo = -1;
+      for (const [t, n] of r.tipoCounts) {
+        if (n > bestTipo) {
+          bestTipo = n;
+          tipoPredominante = t;
+        }
+      }
+      const pesoIdealKg = tipoPredominante
+        ? calcularPesoIdealViagem({
+          tipo: normalizarTipoCaminhaoPeso(tipoPredominante),
+          volumeOverrides: cfgOp?.volumeL || null,
+          densidade: densInput,
+          porPlaca: cfgOp?.densidadeKgLPorPlaca || null,
+        }) || null
+        : null;
+      const pesoIdeal = pesoIdealKg && pesoIdealKg > 0 ? pesoIdealKg : null;
+      const pesoMedioKg = r.viagens > 0 ? r.pesoKg / r.viagens : 0;
+      const pctIdeal = pesoIdeal && pesoMedioKg > 0
+        ? round2((pesoMedioKg / pesoIdeal) * 100)
+        : null;
+      const calc = pesoIdeal
+        ? tempoParaEncherPorMedia({
+          horasProd: r.horasProdutivas,
+          pesoKg: r.pesoKg,
+          pesoIdealKg: pesoIdeal,
+          viagens: r.viagens,
+        })
+        : null;
+      const tempoEqEncher = calc?.tempoH ?? null;
+      const tipoFaixa = tipoParaTempoEncher(tipoPredominante);
+      const faixaRaw = tempoEqEncher != null && tipoFaixa
+        ? classificarTempoPorTipo(tempoEqEncher, tipoFaixa)
+        : null;
+      const faixa: TopRotaProdutividadeEncher['faixa'] =
+        faixaRaw === 'bom' || faixaRaw === 'regular' || faixaRaw === 'ruim' ? faixaRaw : null;
+      const tonelagem = r.pesoKg / 1000;
+      return {
+        rota,
+        viagens: r.viagens,
+        horasTotais: round2(r.horasTotais),
+        horasProdutivas,
+        horasImprodutivas: round2(r.horasImprodutivas),
+        horasPorViagem: r.viagens > 0 ? round2(horasProdutivas / r.viagens) : 0,
+        kmTotal: round2(r.kmTotal),
+        tipoPredominante,
+        pesoKg: round2(r.pesoKg),
+        pesoMedioKg: round2(pesoMedioKg),
+        pesoIdealKg: pesoIdeal != null ? round2(pesoIdeal) : null,
+        pctIdeal,
+        tempoEqEncher,
+        atingiuIdeal: calc?.atingiuIdeal ?? false,
+        estimado: calc?.estimado ?? false,
+        tonPorHora: horasProdutivas > 0 ? round2(tonelagem / horasProdutivas) : 0,
+        faixa,
+      };
+    })
+    .filter((r) => r.viagens > 0 && r.horasProdutivas > 0);
+
+  const comEncher = rotasMontadas.filter((r) => r.tempoEqEncher != null && r.tempoEqEncher > 0);
+  const topRotasLentas = (comEncher.length ? comEncher : rotasMontadas)
+    .sort((a, b) => {
+      if (comEncher.length) {
+        return (a.tempoEqEncher || 99) - (b.tempoEqEncher || 99)
+          || (b.tonPorHora - a.tonPorHora);
+      }
+      return b.horasPorViagem - a.horasPorViagem;
+    });
+
+  const horasTotais = round2(sumTotais);
+  const horasProdutivas = round2(sumProd);
+  const horasImprodutivas = round2(sumImprod);
+
+  return {
+    resumo: {
+      linhas: linhas.length,
+      truncado: truncadoRegistros || truncadoLinhas,
+      rotas: setRotas.size,
+      motoristas: setMotoristas.size,
+      placas: setPlacas.size,
+      viagens: sumViagens,
+      kmTotal: round2(sumKm),
+      horasTotais,
+      horasProdutivas,
+      horasImprodutivas,
+      percentualProdutivo: horasTotais > 0 ? round2((horasProdutivas / horasTotais) * 100) : 0,
+      tonelagem: round2(sumPeso / 1000),
+    },
+    linhas,
+    topRotasLentas,
+    viagensPesoRota,
+    dataInicio: dataInicio || toIsoDate(lista[0]?.dataSaida),
+    dataFim: dataFim || toIsoDate(lista[lista.length - 1]?.dataSaida),
   };
 }
 
@@ -478,7 +904,7 @@ function dimSql(dim: string): string | null {
 
 function metricaSql(eixoYNorm: string): string {
   if (!eixoYNorm || eixoYNorm === 'COUNT' || eixoYNorm === 'COUNT(*)') return 'COUNT(*)::float';
-  if (eixoYNorm.includes('PESO')) return 'COALESCE(SUM(COALESCE(c."pesoTotal", 0)), 0)';
+  if (eixoYNorm.includes('PESO')) return sqlSumPesoEfetivoKg('c');
   if (eixoYNorm.includes('KM')) return 'COALESCE(SUM(COALESCE(c."kmTotal", 0)), 0)';
   if (eixoYNorm.includes('VIAGEM') || eixoYNorm.includes('VIAGENS')) {
     return sqlSumViagens('c');

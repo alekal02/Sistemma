@@ -288,20 +288,37 @@ export class WuzapiService {
     return this.unwrap(data);
   }
 
+  /**
+   * A WuzAPI monta o DocumentMessage com Url E DirectPath separados; enviar o
+   * directPath no campo Url faz o whatsmeow falhar (HTTP 500 no /chat/downloaddocument).
+   */
   async downloadDocument(payload: {
-    Url: string;
+    Url?: string;
+    DirectPath?: string;
     Mimetype?: string;
     MediaKey: string;
     FileSHA256: string;
     FileEncSHA256?: string;
     FileLength: number;
   }): Promise<{ data: string; mimetype?: string }> {
-    const { data } = await this.client.post('/chat/downloaddocument', payload);
-    const unwrapped = this.unwrap<{ Data?: string; data?: string; Mimetype?: string; mimetype?: string }>(data);
-    return {
-      data: unwrapped.Data || unwrapped.data || '',
-      mimetype: unwrapped.Mimetype || unwrapped.mimetype,
-    };
+    try {
+      const { data } = await this.client.post('/chat/downloaddocument', {
+        Url: payload.Url || '',
+        DirectPath: payload.DirectPath || '',
+        Mimetype: payload.Mimetype || '',
+        MediaKey: payload.MediaKey,
+        FileSHA256: payload.FileSHA256,
+        FileEncSHA256: payload.FileEncSHA256 || '',
+        FileLength: payload.FileLength,
+      });
+      const unwrapped = this.unwrap<{ Data?: string; data?: string; Mimetype?: string; mimetype?: string }>(data);
+      return {
+        data: unwrapped.Data || unwrapped.data || '',
+        mimetype: unwrapped.Mimetype || unwrapped.mimetype,
+      };
+    } catch (error: unknown) {
+      throw this.erroMsg('Falha ao baixar o documento do WhatsApp', error);
+    }
   }
 
   /**

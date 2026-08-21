@@ -49,9 +49,9 @@ export class PlanilhaUpload {
     /** Ex.: servicos_unificados, rocada, coleta */
     modelo?: string;
     consolidacao?: {
-      registrosPreservados: number;
+      registrosRemovidosAusentes: number;
       uploadsRemovidos: number;
-      diasPreservados: string[];
+      diasRemovidosAusentes: string[];
     };
   } | null;
 

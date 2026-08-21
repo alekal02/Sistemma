@@ -179,11 +179,43 @@ export function contarViagensPreenchidasPorPesoRegistro(
   return total;
 }
 
+function pesoCelulaJsonExata(dados: unknown, ...nomes: string[]): number {
+  if (!dados || typeof dados !== 'object' || Array.isArray(dados)) return 0;
+  const raw = dados as Record<string, unknown>;
+  const alvos = nomes.map((n) => n.replace(/[\r\n]+/g, ' ').trim().toUpperCase());
+  for (const [chave, val] of Object.entries(raw)) {
+    if (val === null || val === undefined || val === '') continue;
+    const rotulo = chave.replace(/[\r\n]+/g, ' ').trim().toUpperCase();
+    if (!alvos.includes(rotulo)) continue;
+    const n = parseNumeroBr(val);
+    if (!isNaN(n) && n > 0) return n;
+  }
+  return 0;
+}
+
+function somaPesosCelulaJson(registro: Partial<ColetaData> | Record<string, unknown>): number {
+  const dados = (registro as Partial<ColetaData>).dados ?? registro;
+  let soma = 0;
+  for (let i = 1; i <= 5; i++) {
+    soma += pesoCelulaJsonExata(dados, `PESO ${i}`, `PESO${i}`);
+  }
+  return soma;
+}
+
 /** PESO TOTAL da rota (linha). */
 export function obterPesoTotalRegistro(
   registro: Partial<ColetaData> | Record<string, unknown>,
   colPeso?: string,
 ): number {
+  const dados = (registro as Partial<ColetaData>).dados;
+  const somaCelulas = somaPesosCelulaJson(registro);
+  const totalJson = pesoCelulaJsonExata(dados ?? registro, 'PESO TOTAL', 'PESOTOTAL');
+  if (somaCelulas > 0) {
+    if (totalJson > 0 && totalJson <= somaCelulas * 1.02) return totalJson;
+    return somaCelulas;
+  }
+  if (totalJson > 0) return totalJson;
+
   const raw = registro as Record<string, unknown>;
   const tipado = parseNumeroBr(raw.pesoTotal);
   if (!isNaN(tipado) && tipado > 0) return tipado;
@@ -374,11 +406,11 @@ export function sqlExprViagensLinha(alias = 'c'): string {
   return `COALESCE(
     NULLIF(${a}.viagensPorRota, 0),
     NULLIF(${a}.numeroViagens, 0),
-    NULLIF(NULLIF(TRIM(${a}.dados->>'CONTADOR DE VIAGENS'), '')::double precision, 0),
-    NULLIF(NULLIF(TRIM(${a}.dados->>'CONTADOR VIAGENS'), '')::double precision, 0),
-    NULLIF(NULLIF(TRIM(${a}.dados->>'Nº DE VIAGENS'), '')::double precision, 0),
-    NULLIF(NULLIF(TRIM(${a}.dados->>'NUMERO DE VIAGENS'), '')::double precision, 0),
-    NULLIF(NULLIF(TRIM(${a}.dados->>'NÚMERO DE VIAGENS'), '')::double precision, 0),
+    NULLIF(${sqlJsonNumero(a, 'CONTADOR DE VIAGENS')}, 0),
+    NULLIF(${sqlJsonNumero(a, 'CONTADOR VIAGENS')}, 0),
+    NULLIF(${sqlJsonNumero(a, 'Nº DE VIAGENS')}, 0),
+    NULLIF(${sqlJsonNumero(a, 'NUMERO DE VIAGENS')}, 0),
+    NULLIF(${sqlJsonNumero(a, 'NÚMERO DE VIAGENS')}, 0),
     0
   )`;
 }
@@ -386,4 +418,54 @@ export function sqlExprViagensLinha(alias = 'c'): string {
 /** SUM das viagens por rota (contador) — usar em agregações de dashboard/ciclo */
 export function sqlSumViagens(alias = 'c'): string {
   return `COALESCE(SUM(${sqlExprViagensLinha(alias)}), 0)`;
+}
+
+/**
+ * Número da célula JSONB da planilha. Ignora texto/vazio — o ::float cru
+ * derrubava o ciclo/comparativo com 500 (invalid input syntax).
+ */
+export function sqlJsonNumero(alias: string, chave: string): string {
+  const k = chave.replace(/'/g, "''");
+  const txt = `NULLIF(TRIM(jsonb_extract_path_text(${alias}.dados, '${k}')), '')`;
+  return `(CASE WHEN ${txt} ~ '^[+-]?[0-9]+([.][0-9]+)?$' THEN ${txt}::double precision ELSE NULL END)`;
+}
+
+/** Soma PESO 1–5 só das células da planilha (JSON), não dos campos tipados. */
+function sqlSomaPesosCelulaPlanilha(alias: string): string {
+  const partes = ['PESO 1', 'PESO 2', 'PESO 3', 'PESO 4', 'PESO 5']
+    .map((k) => `COALESCE(${sqlJsonNumero(alias, k)}, 0)`)
+    .join(' + ');
+  return `(${partes})`;
+}
+
+/**
+ * Peso da linha em kg para totais de ciclo/dashboard.
+ * Usa as células PESO 1–5 da planilha (o que o Excel soma nas viagens).
+ * Se PESO TOTAL da planilha ainda for o original (≈ soma das células), usa ele.
+ * Se PESO TOTAL foi inflado na revalidação (id copiado para PESO 2–5), fica com a soma das células.
+ * Sem parciais, cai no PESO TOTAL do JSON e por último no peso1 tipado.
+ */
+export function sqlExprPesoEfetivoKg(alias = 'c'): string {
+  const a = alias;
+  const somaCelulas = sqlSomaPesosCelulaPlanilha(a);
+  const pesoTotalJson = `COALESCE(${sqlJsonNumero(a, 'PESO TOTAL')}, 0)`;
+  return `CASE
+    WHEN ${somaCelulas} > 0 THEN CASE
+      WHEN ${pesoTotalJson} > 0 AND ${pesoTotalJson} <= (${somaCelulas}) * 1.02 THEN ${pesoTotalJson}
+      ELSE ${somaCelulas}
+    END
+    WHEN ${pesoTotalJson} > 0 THEN ${pesoTotalJson}
+    WHEN COALESCE(${a}."peso1", 0) > 0 THEN ${a}."peso1"
+    ELSE COALESCE(${a}."pesoTotal", 0)
+  END`;
+}
+
+/** SUM do peso efetivo — total do dia/período, não média. */
+export function sqlSumPesoEfetivoKg(alias = 'c'): string {
+  return `COALESCE(SUM(${sqlExprPesoEfetivoKg(alias)}), 0)`;
+}
+
+/** Data da viagem como yyyy-MM-dd — agrupa o dia civil, sem fuso quebrando o total. */
+export function sqlDataIsoDia(alias = 'c'): string {
+  return `TO_CHAR(${alias}.dataSaida, 'YYYY-MM-DD')`;
 }

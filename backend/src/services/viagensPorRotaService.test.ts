@@ -1,48 +1,35 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  extrairPesosViagemPlanilhaRegistro,
-  extrairPesosViagemRegistro,
-  MAX_PESO_VIAGEM_KG,
+  obterPesoTotalRegistro,
+  sqlDataIsoDia,
+  sqlExprPesoEfetivoKg,
+  sqlSumPesoEfetivoKg,
 } from './viagensPorRotaService';
 
-describe('extrairPesosViagemPlanilhaRegistro', () => {
-  it('lê peso1–4 tipados e ignora PESO TOTAL', () => {
-    const pesos = extrairPesosViagemPlanilhaRegistro({
-      peso1: 8200,
-      peso2: 9100,
-      peso3: 7800,
-      peso4: 8500,
-      pesoTotal: 76998,
-    });
-    assert.deepEqual(pesos, [8200, 9100, 7800, 8500]);
-    assert.ok(Math.max(...pesos) < MAX_PESO_VIAGEM_KG);
+describe('sql peso efetivo / data ISO do ciclo', () => {
+  it('soma células PESO 1–5 da planilha (JSON), não id/PESO 2–5 tipados', () => {
+    const expr = sqlExprPesoEfetivoKg('c');
+    assert.match(expr, /jsonb_extract_path_text\(c\.dados, 'PESO 1'\)/);
+    assert.match(expr, /jsonb_extract_path_text\(c\.dados, 'PESO TOTAL'\)/);
+    assert.match(expr, /\^\[\+-\]\?\[0-9\]/);
+    assert.equal(expr.includes('AVG'), false);
+    assert.equal(expr.includes('GREATEST'), false);
+    const sum = sqlSumPesoEfetivoKg('c');
+    assert.match(sum, /^COALESCE\(SUM\(/);
   });
 
-  it('lê colunas PESO 1–4 da planilha', () => {
-    const pesos = extrairPesosViagemPlanilhaRegistro({
-      'PESO 1': 2475,
-      'PESO 2': 9000,
-      'PESO TOTAL': 11475,
-    });
-    assert.deepEqual(pesos, [2475, 9000]);
+  it('agrupa o dia civil em yyyy-MM-dd', () => {
+    assert.equal(sqlDataIsoDia('c'), "TO_CHAR(c.dataSaida, 'YYYY-MM-DD')");
   });
 
-  it('não trata PESO TOTAL como PESO 1 via contains', () => {
-    const pesos = extrairPesosViagemPlanilhaRegistro({
-      'PESO TOTAL': 76998,
-      pesoTotal: 76998,
+  it('usa PESO 1–5 da planilha quando o pesoTotal tipado foi inflado com id', () => {
+    const kg = obterPesoTotalRegistro({
+      pesoTotal: 18440,
+      peso1: 8300,
+      peso2: 2535,
+      dados: { 'PESO 1': 8300, 'PESO 2': '', 'PESO TOTAL': 8300 },
     });
-    assert.deepEqual(pesos, []);
-  });
-});
-
-describe('extrairPesosViagemRegistro', () => {
-  it('não inventa viagem com total absurdo', () => {
-    const pesos = extrairPesosViagemRegistro({
-      pesoTotal: 76998,
-      'CONTADOR DE VIAGENS': 1,
-    });
-    assert.deepEqual(pesos, []);
+    assert.equal(kg, 8300);
   });
 });

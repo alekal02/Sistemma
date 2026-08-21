@@ -1,155 +1,41 @@
-export interface PeriodoCicloContrato {
-  mesReferencia: number;
-  anoReferencia: number;
-  diaInicioCiclo: number;
-  dataInicio: string;
-  dataFim: string;
-  label: string;
-}
+export type {
+  PeriodoCicloContrato,
+  PeriodoContratoQuery,
+  QuinzenaPeriodo,
+  PeriodoRecortadoCiclo,
+  JanelasComparativoCiclo,
+} from '@sistemma/shared';
 
-export function normalizarDiaInicioCiclo(dia?: number | null): number {
-  if (dia == null || Number.isNaN(Number(dia))) return 1;
-  return Math.min(28, Math.max(1, Math.floor(Number(dia))));
-}
+export {
+  normalizarDiaInicioCiclo,
+  inferirMesReferenciaAtual,
+  inferirMesReferenciaDeData,
+  inferirCicloReferenciaDeDatas,
+  restringirDatasAoCicloDaDataMaisRecente,
+  calcularCicloMensalContrato,
+  deslocarMesReferencia,
+  limitarDiasAusentesAoPeriodoDaPlanilha,
+  mesInputParaReferencia,
+  referenciaParaMesInput,
+  listarDatasIntervalo,
+  calcularQuinzenasDoPeriodo,
+  isIsoDate,
+  formatarDataBr,
+  isoHojeLocal,
+  recortarPeriodoAteReferencia,
+  primeirosNDiasPeriodo,
+  montarJanelasComparativoCiclo,
+} from '@sistemma/shared';
 
-function pad2(n: number): string {
-  return String(n).padStart(2, '0');
-}
-
-function toISODate(ano: number, mes: number, dia: number): string {
-  return `${ano}-${pad2(mes)}-${pad2(dia)}`;
-}
-
-function formatarDataBr(iso: string): string {
-  const [y, m, d] = iso.split('-');
-  return `${d}/${m}/${y}`;
-}
-
-export function inferirMesReferenciaAtual(
-  diaInicioCiclo: number = 1,
-  hoje: Date = new Date(),
-): { ano: number; mes: number } {
-  const d = normalizarDiaInicioCiclo(diaInicioCiclo);
-  let mes = hoje.getMonth() + 1;
-  let ano = hoje.getFullYear();
-
-  if (d > 1 && hoje.getDate() >= d) {
-    mes += 1;
-    if (mes > 12) {
-      mes = 1;
-      ano += 1;
-    }
-  }
-
-  return { ano, mes };
-}
-
-export function deslocarMesReferencia(
-  mes: number,
-  ano: number,
-  delta: number,
-): { mes: number; ano: number } {
-  let m = mes + delta;
-  let y = ano;
-  while (m < 1) {
-    m += 12;
-    y -= 1;
-  }
-  while (m > 12) {
-    m -= 12;
-    y += 1;
-  }
-  return { mes: m, ano: y };
-}
-
-/** Mês de referência do ciclo que contém a data informada (yyyy-MM-dd). */
-export function inferirMesReferenciaDeData(
-  dataIso: string,
-  diaInicioCiclo: number = 1,
-): { ano: number; mes: number } {
-  const d = normalizarDiaInicioCiclo(diaInicioCiclo);
-  const [anoStr, mesStr, diaStr] = dataIso.split('-');
-  const ano = parseInt(anoStr, 10);
-  const mes = parseInt(mesStr, 10);
-  const dia = parseInt(diaStr, 10);
-  if (!ano || !mes || !dia) return inferirMesReferenciaAtual(diaInicioCiclo);
-
-  if (d === 1) return { ano, mes };
-
-  if (dia >= d) {
-    let mesRef = mes + 1;
-    let anoRef = ano;
-    if (mesRef > 12) {
-      mesRef = 1;
-      anoRef += 1;
-    }
-    return { ano: anoRef, mes: mesRef };
-  }
-
-  return { ano, mes };
-}
-
-/** Inferência a partir de várias datas — usa a data mais recente. */
-export function inferirCicloReferenciaDeDatas(
-  datasIso: string[],
-  diaInicioCiclo: number = 1,
-): { mesReferencia: number; anoReferencia: number } | null {
-  const validas = datasIso.filter(isIsoDate).sort();
-  if (validas.length === 0) return null;
-  const ref = inferirMesReferenciaDeData(validas[validas.length - 1], diaInicioCiclo);
-  return { mesReferencia: ref.mes, anoReferencia: ref.ano };
-}
-
-export function calcularCicloMensalContrato(
-  anoReferencia: number,
-  mesReferencia: number,
-  diaInicioCiclo: number = 1,
-): PeriodoCicloContrato {
-  const d = normalizarDiaInicioCiclo(diaInicioCiclo);
-
-  let dataInicio: string;
-  let dataFim: string;
-
-  if (d === 1) {
-    const ultimoDia = new Date(anoReferencia, mesReferencia, 0).getDate();
-    dataInicio = toISODate(anoReferencia, mesReferencia, 1);
-    dataFim = toISODate(anoReferencia, mesReferencia, ultimoDia);
-  } else {
-    const mesAnt = mesReferencia === 1 ? 12 : mesReferencia - 1;
-    const anoAnt = mesReferencia === 1 ? anoReferencia - 1 : anoReferencia;
-    dataInicio = toISODate(anoAnt, mesAnt, d);
-    dataFim = toISODate(anoReferencia, mesReferencia, d - 1);
-  }
-
-  const nomeMes = new Date(anoReferencia, mesReferencia - 1, 1).toLocaleDateString('pt-BR', {
-    month: 'long',
-    year: 'numeric',
-  });
-
-  const label = d === 1
-    ? nomeMes
-    : `${nomeMes} (${formatarDataBr(dataInicio)} a ${formatarDataBr(dataFim)})`;
-
-  return {
-    mesReferencia,
-    anoReferencia,
-    diaInicioCiclo: d,
-    dataInicio,
-    dataFim,
-    label,
-  };
-}
-
-export interface PeriodoContratoQuery {
-  mes?: number;
-  ano?: number;
-  dataInicio?: string;
-  dataFim?: string;
-}
-
-function isIsoDate(s?: string): boolean {
-  return !!s && /^\d{4}-\d{2}-\d{2}$/.test(s);
-}
+import {
+  calcularCicloMensalContrato,
+  formatarDataBr,
+  inferirMesReferenciaAtual,
+  isIsoDate,
+  normalizarDiaInicioCiclo,
+  recortarPeriodoAteReferencia,
+} from '@sistemma/shared';
+import type { PeriodoCicloContrato, PeriodoContratoQuery } from '@sistemma/shared';
 
 export function parsePeriodosPorContratoQuery(
   query: Record<string, any>,
@@ -243,8 +129,9 @@ export function resolverFiltrosPeriodoQuery(
   }
 
   const periodo = calcularCicloMensalContrato(ano, mes, d);
+  const recorte = recortarPeriodoAteReferencia(periodo.dataInicio, periodo.dataFim);
   return {
-    filtros: { dataInicio: periodo.dataInicio, dataFim: periodo.dataFim },
+    filtros: { dataInicio: recorte.dataInicio, dataFim: recorte.dataFim },
     periodo,
   };
 }

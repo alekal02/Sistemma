@@ -12,6 +12,7 @@ if (allowPublicRegister) {
   router.post('/register', authenticate, authorize('admin'), AuthController.register.bind(AuthController));
 }
 router.post('/login', AuthController.login.bind(AuthController));
+router.post('/refresh', AuthController.refresh.bind(AuthController));
 
 // Rotas protegidas (qualquer usuário autenticado)
 router.get('/me', authenticate, AuthController.me.bind(AuthController));

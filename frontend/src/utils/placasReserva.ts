@@ -9,6 +9,8 @@ export interface ConfigOperacionalContrato {
   volumeL?: { MINI?: number; TOCO?: number; BASCULANTE?: number; TRUCK?: number };
   densidadeResiduoKgL?: number | null;
   densidadeKgL?: { MINI?: number; TOCO?: number; BASCULANTE?: number; TRUCK?: number };
+  /** Densidade (kg/L) por placa — override do tipo/global. */
+  densidadeKgLPorPlaca?: Record<string, number>;
   /** Pasta absoluta (vista pelo backend) para backup da planilha ao fechar o ciclo. */
   pastaBackupPlanilhas?: string | null;
 }

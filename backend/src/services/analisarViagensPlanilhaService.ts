@@ -232,6 +232,10 @@ export interface ResultadoAnaliseViagens {
   somaContadorNoDashboard?: number;
   /** Soma do CONTADOR nas linhas que NÃO sobem ao dashboard */
   somaContadorForaDashboard?: number;
+  /** PESO TOTAL (kg) das linhas que entram no dashboard — mesmo critério da coluna Toneladas do ciclo */
+  pesoKgDashboard?: number;
+  /** PESO TOTAL (kg) das linhas FORA DO DASH / ignoradas — diferença vs a planilha */
+  pesoKgForaDashboard?: number;
   /** Total de viagens com fallback (PESO 1–4) — mesmo critério do dashboard */
   viagensCalculadasDashboard?: number;
   /** Linhas sem contador preenchido */
@@ -424,6 +428,8 @@ export function analisarViagensPlanilha(
   let somaContadorViagens = 0;
   let somaContadorNoDashboard = 0;
   let somaContadorForaDashboard = 0;
+  let pesoKgDashboard = 0;
+  let pesoKgForaDashboard = 0;
   let viagensCalculadasDashboard = 0;
   let linhasSemContador = 0;
   const problemasPorCategoria = new Map<string, Set<number>>();
@@ -507,6 +513,8 @@ export function analisarViagensPlanilha(
     if (validacao.descartada) {
       linhasDescartadasSemDados++;
       if (contador !== null && contador > 0) somaContadorForaDashboard += contador;
+      const pesoDesc = parseNum(valorColuna(linha, idx.pesoTotal));
+      if (pesoDesc != null && pesoDesc > 0) pesoKgForaDashboard += pesoDesc;
       if (viagens.length < MAX_DETALHE_VIAGENS) {
         viagens.push({
           linha: linhaPlanilha,
@@ -543,6 +551,15 @@ export function analisarViagensPlanilha(
     if (contador !== null && contador > 0) {
       if (validacao.validoDashboard) somaContadorNoDashboard += contador;
       else somaContadorForaDashboard += contador;
+    }
+    const pesoLinhaKg = Number(
+      coletaTmp.pesoTotal
+      ?? parseNum(valorColuna(linha, idx.pesoTotal))
+      ?? 0,
+    );
+    if (pesoLinhaKg > 0) {
+      if (validacao.validoDashboard) pesoKgDashboard += pesoLinhaKg;
+      else pesoKgForaDashboard += pesoLinhaKg;
     }
 
     const completa = validacao.validoDashboard;
@@ -677,6 +694,14 @@ export function analisarViagensPlanilha(
       + (somaContadorForaDashboard > 0 ? ` (${somaContadorForaDashboard} viagem(ns) do contador ficam fora).` : '.'),
     );
   }
+  if (pesoKgForaDashboard > 0) {
+    const tDash = (pesoKgDashboard / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 1 });
+    const tFora = (pesoKgForaDashboard / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 1 });
+    partesAviso.push(
+      `Toneladas no ciclo/dashboard = ${tDash} t. `
+      + `${tFora} t ficaram FORA (viagens com erro) e não entram na coluna Toneladas — por isso o total pode divergir da planilha.`,
+    );
+  }
   const avisoDashboard = partesAviso.length > 0 ? partesAviso.join(' ') : null;
 
   return {
@@ -704,6 +729,8 @@ export function analisarViagensPlanilha(
     somaContadorViagens,
     somaContadorNoDashboard,
     somaContadorForaDashboard,
+    pesoKgDashboard,
+    pesoKgForaDashboard,
     viagensCalculadasDashboard,
     linhasSemContador,
     conferenciaCadastro,

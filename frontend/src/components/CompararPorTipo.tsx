@@ -29,6 +29,7 @@ import {
   aplicarQuinzenaAoPeriodo,
   calcularQuinzenasDoPeriodo,
   aplicarCicloAnteriorAoPeriodo,
+  recortarPeriodoAteReferencia,
   type PeriodoContratoState,
 } from '../utils/periodoCicloContrato';
 
@@ -110,12 +111,13 @@ function atualizarPeriodoMedicao(
   ano: number,
 ): PeriodoContratoState {
   const ciclo = calcularCicloMensalContrato(ano, mes, diaInicio);
+  const recorte = recortarPeriodoAteReferencia(ciclo.dataInicio, ciclo.dataFim);
   return {
     modo: 'mediacao',
     mes,
     ano,
-    dataInicio: ciclo.dataInicio,
-    dataFim: ciclo.dataFim,
+    dataInicio: recorte.dataInicio,
+    dataFim: recorte.dataFim,
   };
 }
 

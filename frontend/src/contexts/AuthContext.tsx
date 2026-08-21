@@ -4,11 +4,14 @@
    e persistência do token JWT
    ============================================ */
 import { createContext, useContext, useState, useEffect, type ReactNode } from 'react'
-import api from '../services/api'
-import { migrarStorageLegado, STORAGE_TOKEN, STORAGE_USER } from '../utils/storage'
+import axios from 'axios'
+import api, { limparSessaoLocal, renovarToken } from '../services/api'
+import { migrarStorageLegado, STORAGE_REFRESH, STORAGE_TOKEN, STORAGE_USER } from '../utils/storage'
 
 migrarStorageLegado()
 import type { UserData, AuthResponse } from '../types'
+
+const RENOVAR_SESSAO_MS = 4 * 60 * 60 * 1000
 
 // ---------- Tipos do contexto ----------
 interface AuthContextType {
@@ -29,6 +32,25 @@ interface AuthContextType {
 // ---------- Criação do contexto ----------
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
 
+function gravarSessao(token: string, userData: UserData, refreshToken?: string) {
+  localStorage.setItem(STORAGE_TOKEN, token)
+  localStorage.setItem(STORAGE_USER, JSON.stringify(userData))
+  if (refreshToken) localStorage.setItem(STORAGE_REFRESH, refreshToken)
+  localStorage.removeItem('@abastecimento:token')
+  localStorage.removeItem('@abastecimento:user')
+}
+
+function userDoStorage(): UserData | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_USER)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? parsed : null
+  } catch {
+    return null
+  }
+}
+
 // ---------- Provider ----------
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserData | null>(null)
@@ -36,10 +58,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true)
 
   const limparSessao = () => {
-    localStorage.removeItem(STORAGE_TOKEN)
-    localStorage.removeItem(STORAGE_USER)
-    localStorage.removeItem('@abastecimento:token')
-    localStorage.removeItem('@abastecimento:user')
+    limparSessaoLocal()
     setToken(null)
     setUser(null)
   }
@@ -58,10 +77,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const { data } = await api.get<{ user: UserData }>('/auth/me', {
           headers: { Authorization: `Bearer ${storedToken}` },
         })
-        setToken(storedToken)
+        setToken(localStorage.getItem(STORAGE_TOKEN) || storedToken)
         setUser(data.user)
-      } catch {
-        limparSessao()
+      } catch (err) {
+        if (axios.isAxiosError(err) && err.response?.status === 401) {
+          limparSessao()
+          return
+        }
+        // Rede/backend fora: mantém a sessão da TV até o logout manual
+        const localUser = userDoStorage()
+        if (localUser) {
+          setToken(storedToken)
+          setUser(localUser)
+        }
       } finally {
         setLoading(false)
       }
@@ -70,15 +98,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     validarSessao()
   }, [])
 
+  /* ── Renova o JWT enquanto a tela (TV) permanece ligada ── */
+  useEffect(() => {
+    if (!token) return undefined
+    const tick = async () => {
+      const novo = await renovarToken()
+      if (novo) setToken(novo)
+    }
+    const id = window.setInterval(tick, RENOVAR_SESSAO_MS)
+    const visivel = () => {
+      if (document.visibilityState === 'visible') void tick()
+    }
+    document.addEventListener('visibilitychange', visivel)
+    return () => {
+      window.clearInterval(id)
+      document.removeEventListener('visibilitychange', visivel)
+    }
+  }, [token])
+
   /* ── Login ── */
   const login = async (email: string, senha: string) => {
     const response = await api.post<AuthResponse>('/auth/login', { email, senha })
-    const { token: newToken, user: userData } = response.data
+    const { token: newToken, refreshToken, user: userData } = response.data
 
-    localStorage.setItem(STORAGE_TOKEN, newToken)
-    localStorage.setItem(STORAGE_USER, JSON.stringify(userData))
-    localStorage.removeItem('@abastecimento:token')
-    localStorage.removeItem('@abastecimento:user')
+    gravarSessao(newToken, userData, refreshToken)
 
     setToken(newToken)
     setUser(userData)

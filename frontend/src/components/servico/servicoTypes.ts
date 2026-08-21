@@ -56,7 +56,7 @@ export interface ResumoImportacao {
   validasDashboard: number;
   inconsistentes: number;
   uploadsRemovidos?: number;
-  registrosPreservados?: number;
+  registrosRemovidosAusentes?: number;
   /** Modelo de planilha de roçada detectado (ex.: qgis, betim_trator) */
   modeloRocada?: string | null;
   modeloRocadaLabel?: string | null;

@@ -5,11 +5,13 @@
 import {
   LABEL_FAIXA_IDEAL,
   LABEL_TIPO_CAMINHAO,
+  calcularPesoIdealViagem,
   classificarPesoVsIdeal,
   densidadeOptsToInput,
   faixaIdealKg,
   limitePesoParaTipo,
   normalizarTipoCaminhaoPeso,
+  resolverDensidadeParaViagem,
   resolverLimitesPesoKg,
   resolverPesosIdeaisKg,
   type FaixaIdealViagem,
@@ -35,6 +37,8 @@ export interface ViagemCapacidadeItem {
   limiteKg: number | null;
   /** Peso ideal do tipo (volume × densidade). */
   pesoIdealKg: number | null;
+  /** Densidade efetiva usada no ideal (placa → tipo → global), kg/L. */
+  densidadeKgL: number | null;
   mediaTipoKg: number | null;
   /** % vs peso ideal (preferencial) ou vs máx. se sem ideal. */
   ocupacaoPct: number | null;
@@ -116,6 +120,7 @@ export type OptsCapacidadeDia = {
   volumeL?: MapaLimiteCaminhao | null;
   densidadeResiduoKgL?: number | null;
   densidadeKgL?: MapaLimiteCaminhao | null;
+  densidadeKgLPorPlaca?: Record<string, number> | null;
   colunaRota?: string;
 };
 
@@ -240,6 +245,7 @@ export function analisarCapacidadeViagensDia(
     && ('volumeL' in limitesOrOpts
       || 'densidadeResiduoKgL' in limitesOrOpts
       || 'densidadeKgL' in limitesOrOpts
+      || 'densidadeKgLPorPlaca' in limitesOrOpts
       || 'limitesPesoKg' in limitesOrOpts
       || 'colunaRota' in limitesOrOpts)
   )
@@ -260,10 +266,23 @@ export function analisarCapacidadeViagensDia(
     const tipoRaw = obterTipoCaminhaoRegistro(reg);
     const tipo = normalizarTipoCaminhaoPeso(tipoRaw);
     const limiteKg = limitePesoParaTipo(tipo, limites);
-    const pesoIdealKg = tipo && ideais[tipo] > 0 ? ideais[tipo] : null;
     const placa = normalizarPlaca(
       String(obterValorRegistro(reg, undefined, 'placa') ?? encontrarValor(reg, 'PLACA') ?? ''),
     ) || '—';
+    const densOpts = {
+      placa: placa !== '—' ? placa : null,
+      tipo,
+      densidade: densidadeOptsToInput(opts),
+      porPlaca: opts.densidadeKgLPorPlaca,
+    };
+    const densidadeKgL = tipo ? resolverDensidadeParaViagem(densOpts) : null;
+    const pesoIdealCalc = tipo
+      ? calcularPesoIdealViagem({
+        ...densOpts,
+        volumeOverrides: opts.volumeL,
+      })
+      : 0;
+    const pesoIdealKg = pesoIdealCalc > 0 ? pesoIdealCalc : null;
     const motoristaRaw = String(
       obterValorRegistro(reg, undefined, 'motorista')
       ?? encontrarValor(reg, 'MOTORISTA')
@@ -292,6 +311,7 @@ export function analisarCapacidadeViagensDia(
         pesoKg: Math.round(pesoKg * 100) / 100,
         limiteKg,
         pesoIdealKg,
+        densidadeKgL,
         ocupacaoPct: classif.ocupacaoPct,
         faixaIdeal: classif.faixaIdeal,
         notaIdeal: classif.notaIdeal,

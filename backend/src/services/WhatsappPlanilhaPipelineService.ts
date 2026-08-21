@@ -14,7 +14,7 @@ import { htmlToPdf } from './PdfGeneratorService';
 import { gerarHtmlSaudeDadosServer } from './PdfSaudeDadosHtml';
 import { gerarHtmlRelatorioDiaRocadaServer } from './PdfRelatorioDiaHtml';
 import { analisarViagensPlanilha } from './analisarViagensPlanilhaService';
-import { getAgregacaoColeta } from './coletaAgregacaoService';
+import { getAgregacaoColeta, getMapeamentoOperacional } from './coletaAgregacaoService';
 import { getAgregacaoRocada } from './rocadaAgregacaoService';
 import { extrairCadastroOperacional } from '../utils/configOperacional';
 import { normalizarListaPlacasReserva } from '../utils/placasReserva';
@@ -26,6 +26,10 @@ import { diaSemanaPt } from './relatorioDia/fmt';
 import { calcularKpisOperacaoDiaSql } from './relatorioDia/kpisOperacaoDia';
 import { carregarViagensCapacidadeDia } from './relatorioDia/capacidadeViagemDia';
 import wuzapiService from './WuzapiService';
+import {
+  extrairTextoMensagem,
+  processarComandoTextoWhatsapp,
+} from './WhatsappComandoRelatorioService';
 
 const EXT_PLANILHA = /\.(xlsx|xls|xlsm)$/i;
 const MIME_PLANILHA = /spreadsheet|excel|ms-excel|officedocument\.spreadsheetml|octet-stream/i;
@@ -59,6 +63,7 @@ export interface WuzapiWebhookPayload {
         fileLength?: number | string;
         mediaKey?: string | Uint8Array;
         directPath?: string;
+        DirectPath?: string;
       };
       DocumentMessage?: Record<string, unknown>;
     };
@@ -112,8 +117,8 @@ function normalizarGrupoJid(chat: string): string {
 function bytesToBase64(value: unknown): string | null {
   if (!value) return null;
   if (typeof value === 'string') {
-    // já pode ser base64
-    if (/^[A-Za-z0-9+/=]+$/.test(value) && value.length > 20) return value;
+    // Go serializa []byte como base64 no JSON do webhook
+    if (/^[A-Za-z0-9+/]+={0,2}$/.test(value) && value.length % 4 === 0) return value;
     try {
       return Buffer.from(value, 'utf8').toString('base64');
     } catch {
@@ -160,25 +165,35 @@ async function obterBufferPlanilha(payload: WuzapiWebhookPayload, doc: Record<st
     return { buffer: Buffer.from(raw, 'base64'), nomeArquivo: nome };
   }
 
-  const url = doc.url || doc.URL || doc.directPath;
+  const url = doc.url || doc.URL || '';
+  const directPath = doc.directPath || doc.DirectPath || '';
   const mediaKey = bytesToBase64(doc.mediaKey || doc.MediaKey);
   const fileSHA256 = bytesToBase64(doc.fileSHA256 || doc.FileSHA256);
   const fileEncSHA256 = bytesToBase64(doc.fileEncSHA256 || doc.FileEncSHA256);
   const fileLength = Number(doc.fileLength || doc.FileLength || 0);
   const mimetype = doc.mimetype || doc.Mimetype || 'application/octet-stream';
 
-  if (!url || !mediaKey || !fileSHA256 || !fileLength) {
+  if ((!url && !directPath) || !mediaKey || !fileSHA256 || !fileLength) {
     throw new Error('Webhook sem base64 e sem metadados suficientes para baixar o documento.');
   }
 
-  const downloaded = await wuzapiService.downloadDocument({
-    Url: String(url),
-    Mimetype: String(mimetype),
-    MediaKey: mediaKey,
-    FileSHA256: fileSHA256,
-    FileEncSHA256: fileEncSHA256 || undefined,
-    FileLength: fileLength,
-  });
+  let downloaded: { data: string; mimetype?: string };
+  try {
+    downloaded = await wuzapiService.downloadDocument({
+      Url: String(url),
+      DirectPath: String(directPath),
+      Mimetype: String(mimetype),
+      MediaKey: mediaKey,
+      FileSHA256: fileSHA256,
+      FileEncSHA256: fileEncSHA256 || undefined,
+      FileLength: fileLength,
+    });
+  } catch (err: any) {
+    throw new Error(
+      `${err?.message || 'erro ao baixar do WhatsApp'}. `
+      + 'Reenvie a planilha como documento (não como encaminhamento antigo).',
+    );
+  }
 
   if (!downloaded.data) {
     throw new Error('Download do documento retornou vazio.');
@@ -400,6 +415,37 @@ export class WhatsappPlanilhaPipelineService {
       return { processado: false, motivo: 'Não é mensagem de grupo' };
     }
 
+    const msgId = String(info.ID || '');
+    if (msgId && mensagensProcessadas.has(msgId)) {
+      return { processado: false, motivo: `Duplicata ignorada: ${msgId}` };
+    }
+
+    const grupoJid = normalizarGrupoJid(chat);
+    const textoMsg = extrairTextoMensagem(payload);
+
+    // Comandos de texto (relatorio / ciclo / comparativo) — antes do fluxo de planilha
+    if (textoMsg && !payload.base64) {
+      const { doc: docChk, fileName: fnChk, mimetype: mimeChk } = extrairDocumento(payload);
+      const temDocChk = !!(docChk && Object.keys(docChk).length > 0);
+      if (!temDocChk || (!isPlanilha(fnChk, mimeChk) && !EXT_PLANILHA.test(fnChk))) {
+        if (msgId) {
+          mensagensProcessadas.add(msgId);
+          if (mensagensProcessadas.size > MAX_CACHE_MSG) {
+            const primeiro = mensagensProcessadas.values().next().value;
+            if (primeiro) mensagensProcessadas.delete(primeiro);
+          }
+        }
+        const cmd = await processarComandoTextoWhatsapp({
+          grupoJid,
+          texto: textoMsg,
+          isFromMe: info.IsFromMe === true,
+        });
+        if (cmd.processado) {
+          return { processado: true, motivo: 'comando-texto', resultado: { comando: true } };
+        }
+      }
+    }
+
     const { doc, fileName, mimetype } = extrairDocumento(payload);
     const temDocumento = !!(doc && Object.keys(doc).length > 0) || !!payload.base64;
 
@@ -422,7 +468,6 @@ export class WhatsappPlanilhaPipelineService {
       return { processado: false, motivo: `Extensão ignorada: ${fileName}` };
     }
 
-    const msgId = String(info.ID || '');
     if (msgId && mensagensProcessadas.has(msgId)) {
       return { processado: false, motivo: `Duplicata ignorada: ${msgId}` };
     }
@@ -434,7 +479,6 @@ export class WhatsappPlanilhaPipelineService {
       }
     }
 
-    const grupoJid = normalizarGrupoJid(chat);
     const mapaRepo = AppDataSource.getRepository(WhatsappGrupoMapa);
     const mapa = await mapaRepo.findOne({
       where: { grupoJid, ativo: true },
@@ -460,25 +504,9 @@ export class WhatsappPlanilhaPipelineService {
       return { processado: false, motivo: 'WuzAPI não configurada (WUZAPI_URL/WUZAPI_TOKEN)' };
     }
 
-    try {
-      await wuzapiService.enviarTexto(
-        grupoJid,
-        `📥 Planilha recebida (${fileName || 'arquivo'}). Identificando tipo e importando no contrato…`,
-      );
-    } catch (err: any) {
-      console.warn('[WhatsappPipeline] Falha ao avisar grupo:', err?.message || err);
-    }
-
     const { buffer, nomeArquivo: nomeRaw } = await obterBufferPlanilha(payload, doc);
     const nomeArquivo = EXT_PLANILHA.test(nomeRaw) ? nomeRaw : `${nomeRaw.replace(/\.[^.]+$/, '') || 'planilha'}.xlsx`;
     const importResult = await importarPlanilha(buffer, nomeArquivo, servico, mapa.estrategia);
-
-    try {
-      await wuzapiService.enviarTexto(
-        grupoJid,
-        `✅ ${importResult.mensagem}\nTipo detectado: ${importResult.tipoDetectadoLabel}`,
-      );
-    } catch { /* ignore */ }
 
     return this.posImport(mapa, servico, grupoJid, nomeArquivo, importResult, buffer);
   }
@@ -490,6 +518,7 @@ export class WhatsappPlanilhaPipelineService {
     grupoJid: string,
     bufferPlanilha: Buffer,
     nomeArquivo: string,
+    planilhaUploadId?: number,
   ): Promise<{ pdfSaude: boolean; pdfDiario: boolean; ultimoDia: string | null; erros: string[] }> {
     const contratoNome = contrato?.numeroContrato || '—';
     const tipoSvc = String(servico.tipo || '');
@@ -502,7 +531,12 @@ export class WhatsappPlanilhaPipelineService {
       || tipoSvc === 'pintura_meio_fio'
     );
 
-    const periodo = await PlanilhaService.getPeriodoDadosPorServico(servico.id);
+    // O PDF deve representar o último dia DESTE arquivo, não o maior dia histórico
+    // já existente no serviço (um reenvio de ciclo antigo não pode gerar PDF de outro upload).
+    const periodoUpload = planilhaUploadId
+      ? await PlanilhaService.getPeriodoDadosPorUpload(planilhaUploadId, servico.id)
+      : null;
+    const periodo = periodoUpload || await PlanilhaService.getPeriodoDadosPorServico(servico.id);
     const ultimoDia = periodo?.dataFim || null;
     let pdfSaude = false;
     let pdfDiario = false;
@@ -525,7 +559,7 @@ export class WhatsappPlanilhaPipelineService {
           grupoJid,
           `Saude_Dados_${servico.nome.replace(/[^\w\-]+/g, '_')}.pdf`,
           pdfBuf,
-          `🩺 Saúde dos dados — ${servico.nome} (${nomeArquivo})`,
+          `Saúde dos dados — ${servico.nome}`,
         );
         pdfSaude = true;
       } catch (err: any) {
@@ -568,14 +602,14 @@ export class WhatsappPlanilhaPipelineService {
           grupoJid,
           `Relatorio_Dia_${dataFmt}_${servico.nome.replace(/[^\w\-]+/g, '_')}.pdf`,
           pdfDia,
-          `📅 Relatório diário — ${dataBr} (${servico.nome})`,
+          `Roçada ${dataBr} — ${servico.nome}`,
         );
         pdfDiario = true;
       } else if (ehUnidadeNaoRocada) {
         const dias = await PlanilhaService.getMetricasPorDia(servico.id, ultimoDia, ultimoDia);
         const d = dias[0];
         const linhasMsg = [
-          `📅 *${servico.nome}* — último dia ${dataBr}`,
+          `*${servico.nome}* — ${dataBr}`,
           `Registros: ${d?.rotas ?? 0}`,
         ];
         if (Number(d?.metroLinear || 0) > 0) {
@@ -593,7 +627,6 @@ export class WhatsappPlanilhaPipelineService {
         if (Number(d?.quantitativo || 0) > 0) {
           linhasMsg.push(`Quantitativo: ${Number(d?.quantitativo).toLocaleString('pt-BR', { maximumFractionDigits: 3 })}`);
         }
-        linhasMsg.push('_Detalhe completo: abra o dia no Sistemma_');
         await wuzapiService.enviarTexto(grupoJid, linhasMsg.join('\n'));
         pdfDiario = true;
       } else {
@@ -618,7 +651,15 @@ export class WhatsappPlanilhaPipelineService {
           pesoMaximoKg: cfgOp?.pesoMaximoKg || null,
           densidadeResiduoKgL: cfgOp?.densidadeResiduoKgL ?? null,
           densidadeKgL: cfgOp?.densidadeKgL || null,
+          densidadeKgLPorPlaca: cfgOp?.densidadeKgLPorPlaca || null,
         });
+        let viagensPesoRota: Awaited<ReturnType<typeof getMapeamentoOperacional>>['viagensPesoRota'] = [];
+        try {
+          const mapeamento = await getMapeamentoOperacional(servico.id, { data: ultimoDia });
+          viagensPesoRota = mapeamento.viagensPesoRota || [];
+        } catch (errMap: any) {
+          console.warn('[WhatsappPipeline] Mapeamento operacional (viagens peso):', errMap?.message || errMap);
+        }
         const htmlDia = gerarHtmlRelatorioDia({
           aba: 'operacao',
           servicoNome: servico.nome,
@@ -628,9 +669,11 @@ export class WhatsappPlanilhaPipelineService {
           kpisOperacao,
           placasReserva,
           capacidade,
+          viagensPesoRota,
           volumeL: cfgOp?.volumeL || null,
           densidadeResiduoKgL: cfgOp?.densidadeResiduoKgL ?? null,
           densidadeKgL: cfgOp?.densidadeKgL || null,
+          densidadeKgLPorPlaca: cfgOp?.densidadeKgLPorPlaca || null,
         });
         const nomeDia = `${gerarNomePdfRelatorioDia({
           servicoNome: servico.nome,
@@ -644,7 +687,7 @@ export class WhatsappPlanilhaPipelineService {
           grupoJid,
           nomeDia,
           pdfDia,
-          `📅 Relatório de Operação — ${dataBr} (${servico.nome})`,
+          `Operação ${dataBr} — ${servico.nome}`,
         );
         pdfDiario = true;
       }
@@ -674,6 +717,16 @@ export class WhatsappPlanilhaPipelineService {
     const errosPdf: string[] = [];
     const diasPorServico: Array<{ nome: string; dia: string | null }> = [];
 
+    for (const alvo of importResult.alvos) {
+      if (alvo.importados <= 0) continue;
+      try {
+        const { mergePlacasAtivasPorUpload } = await import('./mergePlacasAtivasContratoService');
+        await mergePlacasAtivasPorUpload(alvo.servicoId, importResult.planilhaUploadId);
+      } catch (err: any) {
+        console.warn('[WhatsappPipeline] Merge placas:', err?.message || err);
+      }
+    }
+
     if (mapa.responderPdf) {
       for (const alvo of importResult.alvos) {
         if (alvo.importados <= 0) continue;
@@ -692,6 +745,7 @@ export class WhatsappPlanilhaPipelineService {
           grupoJid,
           bufferPlanilha,
           nomeArquivo,
+          importResult.planilhaUploadId,
         );
         if (envio.pdfSaude) pdfSaudeEnviado = true;
         if (envio.pdfDiario) pdfDiarioEnviado = true;
@@ -709,29 +763,28 @@ export class WhatsappPlanilhaPipelineService {
       }
     }
 
+    const servicosTxt = importResult.alvos
+      .filter((a) => a.importados > 0)
+      .map((a) => `${a.servicoNome} (${a.importados})`)
+      .join(' · ');
     const diasTxt = diasPorServico
       .filter((d) => d.dia)
       .map((d) => `${d.nome}: ${String(d.dia).split('-').reverse().join('/')}`)
       .join(' · ');
+    const relatoriosEnviados = mapa.responderPdf && (pdfSaudeEnviado || pdfDiarioEnviado);
 
-    const resumo = [
-      `✅ Importação concluída`,
-      `Contrato: ${contratoNome}`,
-      `Arquivo: ${nomeArquivo}`,
-      `Tipo: ${importResult.tipoDetectadoLabel}`,
-      `Linhas: ${importResult.importadas}`,
-      importResult.alvos.length
-        ? `Serviços: ${importResult.alvos.map((a) => `${a.servicoNome} (${a.importados})`).join(' · ')}`
-        : null,
-      diasTxt ? `Último dia operacional: ${diasTxt}` : null,
-      mapa.responderPdf
-        ? `Relatórios: ${pdfDiarioEnviado ? 'enviados' : 'não enviados'}`
-        : 'Relatórios: desativados no mapeamento',
-    ].filter(Boolean).join('\n');
-
-    try {
-      await wuzapiService.enviarTexto(grupoJid, resumo);
-    } catch { /* ignore */ }
+    // Com PDF/relatório no grupo, o arquivo já confirma o sucesso — não manda recap.
+    if (!relatoriosEnviados) {
+      const resumo = [
+        `✅ ${importResult.importadas} registro(s) importado(s)`,
+        servicosTxt ? servicosTxt : null,
+        `Contrato: ${contratoNome}`,
+        diasTxt ? `Último dia: ${diasTxt}` : null,
+      ].filter(Boolean).join('\n');
+      try {
+        await wuzapiService.enviarTexto(grupoJid, resumo);
+      } catch { /* ignore */ }
+    }
 
     return {
       processado: true,

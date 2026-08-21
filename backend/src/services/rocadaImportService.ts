@@ -19,7 +19,13 @@ import {
   type ResultadoParseRocada,
 } from './rocadaPlanilhaParser';
 import { inferirFiltroExecucaoServico } from '../utils/rocadaTipoExecucao';
-import { obterUploadIdsModificaveis } from './cicloPlanilhaService';
+import {
+  obterUploadIdsModificaveis,
+  aplicarReferenciaCicloNoUpload,
+  apagarDatasDeUploadsAbertos,
+  prepararDatasImportacaoCiclo,
+} from './cicloPlanilhaService';
+import { normalizarDiaInicioCiclo } from '../utils/periodoCicloContrato';
 import { invalidarCacheDadosServico } from './servicoDadosCache';
 import { invalidarCacheDashboardServico } from '../controllers/ServicoController';
 import { invalidarCacheSaudeContratos } from '../controllers/ContractController';
@@ -161,9 +167,28 @@ class RocadaImportService {
   }): Promise<ResultadoImportRocadaServico & {
     datasApagadas: { data: string; registrosRemovidos: number }[];
     uploadsRemovidosIds: number[];
+    avisosCiclo: string[];
   }> {
-    const { servico, linhas, nomeArquivo, usuarioId, substituirPorData, parsedMeta, filtroTipo } = opts;
+    const { servico, linhas: linhasBrutas, nomeArquivo, usuarioId, substituirPorData, parsedMeta, filtroTipo } = opts;
     const servicoId = servico.id;
+    const datasTodas = [...new Set(
+      linhasBrutas
+        .map((l) => (l.dataSaida ? l.dataSaida.toISOString().slice(0, 10) : null))
+        .filter((d): d is string => !!d),
+    )];
+    const prep = await prepararDatasImportacaoCiclo(servicoId, datasTodas);
+    const permitidasSet = new Set(prep.datas);
+    const linhas = linhasBrutas.filter((l) => {
+      const d = l.dataSaida ? l.dataSaida.toISOString().slice(0, 10) : null;
+      return Boolean(d && permitidasSet.has(d));
+    });
+    if (linhas.length === 0) {
+      throw new Error(
+        prep.avisos.join(' ')
+          || 'Nenhuma data do ciclo atual nesta planilha — o ciclo anterior não foi alterado.',
+      );
+    }
+    const avisosCiclo = prep.avisos;
     const resumoL = this.resumoLinhas(linhas);
 
     const upload = this.uploadRepo.create({
@@ -184,30 +209,13 @@ class RocadaImportService {
     const datasApagadas: { data: string; registrosRemovidos: number }[] = [];
     const uploadIds = await obterUploadIdsModificaveis(servicoId);
 
-    if (substituirPorData && uploadIds.length > 0) {
+    if (substituirPorData) {
       const datas = [...new Set(
         linhas
           .map((l) => (l.dataSaida ? l.dataSaida.toISOString().slice(0, 10) : null))
           .filter((d): d is string => !!d),
       )];
-
-      for (const dataStr of datas) {
-        const dataInicio = new Date(`${dataStr}T00:00:00`);
-        const dataFim = new Date(`${dataStr}T23:59:59`);
-        const count = await this.coletaRepo.createQueryBuilder('c')
-          .where('c.planilhaUploadId IN (:...uploadIds)', { uploadIds })
-          .andWhere('c.dataSaida BETWEEN :inicio AND :fim', { inicio: dataInicio, fim: dataFim })
-          .getCount();
-        if (count > 0) {
-          await this.coletaRepo.createQueryBuilder()
-            .delete()
-            .from('coleta_dados')
-            .where('planilhaUploadId IN (:...uploadIds)', { uploadIds })
-            .andWhere('dataSaida BETWEEN :inicio AND :fim', { inicio: dataInicio, fim: dataFim })
-            .execute();
-          datasApagadas.push({ data: dataStr, registrosRemovidos: count });
-        }
-      }
+      datasApagadas.push(...await apagarDatasDeUploadsAbertos(servicoId, datas));
     }
 
     const batch: ColetaData[] = [];
@@ -243,12 +251,27 @@ class RocadaImportService {
       substituidos: uploadSalvo.linhasSubstituidas,
       viagensValidasDashboard: importados,
       consolidacao: {
-        registrosPreservados: 0,
+        registrosRemovidosAusentes: 0,
         uploadsRemovidos: uploadsRemovidosIds.length,
-        diasPreservados: [],
+        diasRemovidosAusentes: [],
       },
     };
     await this.uploadRepo.save(uploadSalvo);
+
+    const datasImportadas = [...new Set(
+      linhas
+        .map((l) => (l.dataSaida ? l.dataSaida.toISOString().slice(0, 10) : null))
+        .filter((d): d is string => !!d),
+    )];
+    const servicoContrato = await this.servicoRepo.findOne({
+      where: { id: servicoId },
+      relations: ['contract'],
+    });
+    await aplicarReferenciaCicloNoUpload(
+      uploadSalvo.id,
+      datasImportadas,
+      normalizarDiaInicioCiclo(servicoContrato?.contract?.diaInicioCiclo),
+    );
 
     const colunasCanonicas = [
       'DATA', 'BAIRRO', 'Area m²', 'Equipamento', 'Operador', 'Equipe', 'LOGRADOURO', 'TIPO',
@@ -286,6 +309,7 @@ class RocadaImportService {
       bairros: resumoL.bairros,
       datasApagadas,
       uploadsRemovidosIds,
+      avisosCiclo,
     };
   }
 
@@ -415,6 +439,8 @@ class RocadaImportService {
         const principal = servicoId === alvos.manual.id ? rMan : rMec;
         const avisos = [
           ...parsed.avisos,
+          ...rMan.avisosCiclo,
+          ...rMec.avisosCiclo,
           `Upload distribuído: Manual → "${alvos.manual.nome}" (${rMan.importados} reg., `
             + `${rMan.areaTotalM2.toLocaleString('pt-BR')} m²); `
             + `Mecanizada → "${alvos.mecanizada.nome}" (${rMec.importados} reg., `
@@ -459,7 +485,7 @@ class RocadaImportService {
       filtroTipo,
     });
 
-    const avisos = [...parsed.avisos];
+    const avisos = [...parsed.avisos, ...r.avisosCiclo];
     if (temAmbosTiposNaPlanilha) {
       avisos.push(
         `Dashboard atualizado com Manual (${porTipo.manual.registros} reg., `

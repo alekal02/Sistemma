@@ -16,6 +16,7 @@ import { normalizarMapaLimitesContrato } from '../config/pesoMaximoCaminhao';
 import {
   normalizarDensidadeResiduoKgL,
   normalizarMapaDensidadesKgL,
+  normalizarMapaDensidadesPorPlaca,
 } from '../services/analisePesoColetaService';
 import { invalidarCacheComparacaoContrato } from '../services/comparacaoCache';
 import { garantirServicosPadraoContrato } from '../services/servicosPadraoContratoService';
@@ -181,6 +182,13 @@ export class ContractController {
             : {}),
           ...(configOperacional.densidadeKgL !== undefined
             ? { densidadeKgL: normalizarMapaDensidadesKgL(configOperacional.densidadeKgL) ?? {} }
+            : {}),
+          ...(configOperacional.densidadeKgLPorPlaca !== undefined
+            ? {
+                densidadeKgLPorPlaca: normalizarMapaDensidadesPorPlaca(
+                  configOperacional.densidadeKgLPorPlaca,
+                ),
+              }
             : {}),
           ...(configOperacional.pastaBackupPlanilhas !== undefined
             ? {

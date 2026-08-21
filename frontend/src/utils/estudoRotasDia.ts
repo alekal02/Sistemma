@@ -304,6 +304,7 @@ export function analisarEstudoRotasDia(
     volumeL: opts?.volumeL,
     densidadeResiduoKgL: opts?.densidadeResiduoKgL,
     densidadeKgL: opts?.densidadeKgL,
+    densidadeKgLPorPlaca: opts?.densidadeKgLPorPlaca,
     colunaRota,
   };
   const capacidade = analisarCapacidadeViagensDia(fonte, capOpts);

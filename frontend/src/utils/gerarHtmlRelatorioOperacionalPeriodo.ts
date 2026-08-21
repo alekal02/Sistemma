@@ -860,7 +860,7 @@ function tabelaDiariaHtml(dias: DadoDiario[], diasComDados: number, tipo: Period
           <td class="destaque">
             <div class="dest-tit">Dias com operação</div>
             <div class="dest-val">${diasComDados}/${dias.length}</div>
-            <div class="dest-sub">no período</div>
+            <div class="dest-sub">${tipo === 'ciclo' ? 'decorridos do ciclo' : 'no período'}</div>
           </td>
         </tr>
       </table>
@@ -1000,6 +1000,7 @@ export function gerarHtmlRelatorioOperacionalPeriodo(opts: {
   volumeL?: MapaLimiteCaminhao | null;
   densidadeResiduoKgL?: number | null;
   densidadeKgL?: MapaLimiteCaminhao | null;
+  densidadeKgLPorPlaca?: Record<string, number> | null;
   geradoEm?: Date;
 }): string {
   const {
@@ -1010,6 +1011,7 @@ export function gerarHtmlRelatorioOperacionalPeriodo(opts: {
     volumeL: opts.volumeL,
     densidadeResiduoKgL: opts.densidadeResiduoKgL,
     densidadeKgL: opts.densidadeKgL,
+    densidadeKgLPorPlaca: opts.densidadeKgLPorPlaca,
   };
   const op = operacao.resumo;
   // Totais do ciclo (SQL = CONTADOR DE VIAGENS) são a fonte canônica do período.
@@ -1023,7 +1025,9 @@ export function gerarHtmlRelatorioOperacionalPeriodo(opts: {
     ? 'Relatório Gerencial Semanal'
     : periodo.tipo === 'quinzenal'
       ? 'Relatório Gerencial Quinzenal'
-      : 'Relatório Gerencial do Ciclo Completo';
+      : periodo.emAndamento
+        ? 'Relatório Gerencial do Ciclo (dias decorridos)'
+        : 'Relatório Gerencial do Ciclo Completo';
 
   const insights = gerarInsightsOperacao(operacao, placasReserva, limOpts);
   const frota = resumirFrotaOperacao(
@@ -1035,15 +1039,17 @@ export function gerarHtmlRelatorioOperacionalPeriodo(opts: {
     : '';
 
   const { tonH } = metricasPorHora(op.toneladas, op.km, op.horas);
-  const viagensMediaDia = diasComDados > 0 ? viagensPeriodo / diasComDados : 0;
-  const tonMediaDia = diasComDados > 0 ? op.toneladas / diasComDados : 0;
+  const toneladasPeriodo = totais.toneladas > 0 ? totais.toneladas : op.toneladas;
+  const viagensMediaDia = periodo.diasNoPeriodo > 0 ? viagensPeriodo / periodo.diasNoPeriodo : 0;
+  const tonMediaDia = periodo.diasNoPeriodo > 0 ? toneladasPeriodo / periodo.diasNoPeriodo : 0;
   const pctOtimo = capacidade && capacidade.viagensClassificadas > 0
     ? (capacidade.otimo / capacidade.viagensClassificadas) * 100
     : null;
 
+  const sufixoDia = periodo.tipo === 'ciclo' ? 'do ciclo' : 'do período';
   const cardsItems: { label: string; valor: string; cor: string }[] = [
-    { label: 'Média viagens/dia', valor: fmtNum(viagensMediaDia, 1), cor: '#3b82f6' },
-    { label: 'Média ton/dia', valor: `${fmtNum(tonMediaDia, 1)} t`, cor: '#22c55e' },
+    { label: `Média viagens/dia ${sufixoDia}`, valor: fmtNum(viagensMediaDia, 1), cor: '#3b82f6' },
+    { label: `Média ton/dia ${sufixoDia}`, valor: `${fmtNum(tonMediaDia, 1)} t`, cor: '#22c55e' },
     { label: 'Ton./viagem', valor: `${fmtNum(op.tonMediaColeta, 2)} t`, cor: '#f59e0b' },
     { label: 'KM/viagem', valor: `${fmtNum(op.kmMedioViagem, 1)} km`, cor: '#0891b2' },
     { label: 'Prod./veículo', valor: `${fmtNum(op.prodColetor, 2)} t`, cor: '#6366f1' },
@@ -1070,7 +1076,7 @@ export function gerarHtmlRelatorioOperacionalPeriodo(opts: {
     .filter(Boolean)
     .join(' · ');
 
-  const heroOp = { ...op, viagens: viagensPeriodo };
+  const heroOp = { ...op, viagens: viagensPeriodo, toneladas: toneladasPeriodo };
 
   return `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -1092,7 +1098,8 @@ export function gerarHtmlRelatorioOperacionalPeriodo(opts: {
       Período: <strong>${esc(formatarIsoParaBr(periodo.dataInicio))}</strong> a
       <strong>${esc(formatarIsoParaBr(periodo.dataFim))}</strong>
       · ${labelViagens(viagensPeriodo)}
-      · ${fmtNum(op.toneladas, 1)} t · ${fmtNum(op.km, 0)} km
+      · ${fmtNum(toneladasPeriodo, 1)} t · ${fmtNum(op.km, 0)} km
+      · ${periodo.diasNoPeriodo} dia${periodo.diasNoPeriodo === 1 ? '' : 's'} do período
       · ${op.caminhoes ?? op.coletores} veículo${(op.caminhoes ?? op.coletores) !== 1 ? 's' : ''}${frotaReservaTxt}
       ${mixTipos ? `<span class="nota">Mix por tipo: ${esc(mixTipos)}</span>` : ''}
     </div>

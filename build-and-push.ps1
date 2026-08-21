@@ -140,8 +140,16 @@ function Show-NexusTlsHelp {
     Write-Host ""
 }
 
-$BuildSha = (git rev-parse --short HEAD 2>$null)
-if (-not $BuildSha) { $BuildSha = "local" }
+$BuildSha = "local"
+$GitDescribe = $null
+if (Get-Command git -ErrorAction SilentlyContinue) {
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $BuildSha = (git rev-parse --short HEAD 2>$null)
+    if (-not $BuildSha) { $BuildSha = "local" }
+    $GitDescribe = (git describe --tags --always --dirty 2>$null)
+    $ErrorActionPreference = $prevEap
+}
 
 $env:TAG = $Tag
 $env:REGISTRY = $Registry
@@ -168,7 +176,6 @@ if ($VersionFromFile) {
         Write-Host "Aviso: nao foi possivel atualizar app-version.json (arquivo em uso). Seguindo com VITE_APP_VERSION=$VersionFromFile" -ForegroundColor Yellow
     }
 }
-$GitDescribe = (git describe --tags --always --dirty 2>$null)
 if ($Tag -and $Tag -ne 'latest') {
     $env:VITE_APP_VERSION = $Tag
 } elseif ($VersionFromFile) {
@@ -246,8 +253,8 @@ if ($BuildOnly -or $Up) {
 } else {
     Write-Host "Build e push (buildx linux/amd64)..." -ForegroundColor Green
     Ensure-BuildxAmd64
-    Build-And-PushImage -ContextRel "backend" -DockerfileRel "backend/Dockerfile" -Image $BackendImage -BuildArgs @{ BUILD_SHA = $BuildSha }
-    Build-And-PushImage -ContextRel "frontend" -DockerfileRel "frontend/Dockerfile" -Image $FrontendImage -BuildArgs @{
+    Build-And-PushImage -ContextRel "." -DockerfileRel "backend/Dockerfile" -Image $BackendImage -BuildArgs @{ BUILD_SHA = $BuildSha }
+    Build-And-PushImage -ContextRel "." -DockerfileRel "frontend/Dockerfile" -Image $FrontendImage -BuildArgs @{
         VITE_API_URL = "/api"
         VITE_APP_NAME = "Sistemma"
         VITE_APP_VERSION = $env:VITE_APP_VERSION

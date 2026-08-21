@@ -125,13 +125,13 @@ export function gerarHtmlRelatorioUnidadeCiclo(p: ParamsRelatorioUnidadeCiclo): 
           <div class="card-val">${fmtNum(p.totais.rotas || 0, 0)}</div>
         </td>
         <td class="card" style="border-top-color:#0ea5e9;width:25%">
-          <div class="card-lbl">Dias com dados</div>
-          <div class="card-val">${fmtNum(p.diasComDados, 0)}</div>
+          <div class="card-lbl">Dias do ciclo</div>
+          <div class="card-val">${fmtNum(p.dias.length, 0)}</div>
         </td>
         <td class="card" style="border-top-color:#f59e0b;width:25%">
-          <div class="card-lbl">Média / dia ativo</div>
+          <div class="card-lbl">Média / dia do ciclo</div>
           <div class="card-val">${esc(formatarMetricaUnidade(
-            p.diasComDados > 0 ? metricaTotal / p.diasComDados : 0,
+            p.dias.length > 0 ? metricaTotal / p.dias.length : 0,
             sufixo,
           ))}</div>
         </td>
@@ -193,7 +193,9 @@ export function gerarHtmlRelatorioUnidadeCiclo(p: ParamsRelatorioUnidadeCiclo): 
     <div class="lbl">${esc(labelMetrica)} no ciclo</div>
     <div class="val">${esc(formatarMetricaUnidade(metricaTotal, sufixo))}</div>
     <div class="sub">
-      ${fmtNum(p.totais.rotas || 0, 0)} registro(s) · ${fmtNum(p.diasComDados, 0)} dia(s) com operação
+      ${fmtNum(p.totais.rotas || 0, 0)} registro(s)
+      · ${fmtNum(p.dias.length, 0)} dia(s) do ciclo
+      · ${fmtNum(p.diasComDados, 0)} com operação
     </div>
   </div>
 

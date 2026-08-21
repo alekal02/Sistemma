@@ -1,0 +1,14 @@
+.git
+**/.git
+**/node_modules
+**/dist
+**/.env
+**/.env.*
+**/*.log
+**/uploads
+backend/uploads
+coverage
+*.tar
+**/.cursor
+**/.DS_Store
+**/Thumbs.db

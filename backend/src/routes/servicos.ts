@@ -41,6 +41,9 @@ router.get('/:id/rocada/agregacao', authenticate, (req, res) => controller.getRo
 // GET /api/contracts/:contractId/servicos/:id/coleta/agregacao
 router.get('/:id/coleta/agregacao', authenticate, (req, res) => controller.getColetaAgregacao(req, res));
 
+// GET /api/contracts/:contractId/servicos/:id/mapeamento-operacional
+router.get('/:id/mapeamento-operacional', authenticate, (req, res) => controller.getMapeamentoOperacional(req, res));
+
 // GET /api/contracts/:contractId/servicos/:id/inconsistencias-viagens
 router.get('/:id/inconsistencias-viagens', authenticate, (req, res) => controller.getInconsistenciasViagens(req, res));
 
@@ -55,6 +58,9 @@ router.get('/:id/ciclos/status', authenticate, (req, res) => controller.getStatu
 
 // POST /api/contracts/:contractId/servicos/:id/ciclos/fechar
 router.post('/:id/ciclos/fechar', authenticate, (req, res) => controller.fecharCiclo(req, res));
+
+// POST /api/contracts/:contractId/servicos/:id/ciclos/reabrir
+router.post('/:id/ciclos/reabrir', authenticate, (req, res) => controller.reabrirCiclo(req, res));
 
 // GET /api/contracts/:contractId/servicos/:id/verificacao-viagens
 router.get('/:id/verificacao-viagens', authenticate, (req, res) => controller.getVerificacaoViagens(req, res));

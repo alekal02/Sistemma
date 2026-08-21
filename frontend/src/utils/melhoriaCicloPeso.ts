@@ -3,6 +3,12 @@ import {
   calcularViagensEquivalentesResultado,
   fmtNumPeso,
 } from './analisePesoComparativoMetricas';
+import { recortarPeriodoAteReferencia } from './periodoCicloContrato';
+import { toneladasDoPesoKg } from '@sistemma/shared';
+import {
+  alinharPorOcorrenciaDiaSemana,
+  type ParDiaSemanaCiclo,
+} from './melhoriaCicloOperacao';
 
 export interface ResumoMelhoriaCiclo {
   servico: CompararPorTipoServico;
@@ -11,6 +17,11 @@ export interface ResumoMelhoriaCiclo {
   pesoIdealKg: number;
   pesoMedioKg: number;
   numeroViagens: number;
+  toneladas: number;
+  diasOperados: number;
+  diasDecorridos: number;
+  mediaViagensPorDia: number;
+  mediaPesoPorDiaKg: number;
   /** |resultado| × 1000 / pesoIdeal */
   viagensEquivalentes: number | null;
   /** Só conta como “aterro sem necessidade” quando há PERDA */
@@ -44,6 +55,15 @@ export function montarResumoMelhoriaCiclo(s: CompararPorTipoServico): ResumoMelh
   const viagensEvitaveis = a.perdaTon < 0 && viagensEquivalentes != null
     ? viagensEquivalentes
     : 0;
+  const porDia = (a.porDia || []).filter((d) => d.viagens > 0);
+  const diasOperados = porDia.length;
+  const diasDecorridos = s.periodo?.dataInicio && s.periodo?.dataFim
+    ? recortarPeriodoAteReferencia(s.periodo.dataInicio, s.periodo.dataFim).diasDecorridos
+    : diasOperados;
+  const denom = diasDecorridos > 0 ? diasDecorridos : diasOperados;
+  const toneladas = a.porDia && a.porDia.length > 0
+    ? a.porDia.reduce((s, d) => s + toneladasDoPesoKg(Number(d.pesoTotalKg || 0)), 0)
+    : toneladasDoPesoKg(a.pesoMedioKg * a.numeroViagens);
   return {
     servico: s,
     resultadoTon: a.perdaTon,
@@ -51,9 +71,33 @@ export function montarResumoMelhoriaCiclo(s: CompararPorTipoServico): ResumoMelh
     pesoIdealKg: pesoIdealKg(a),
     pesoMedioKg: a.pesoMedioKg,
     numeroViagens: a.numeroViagens,
+    toneladas,
+    diasOperados,
+    diasDecorridos,
+    mediaViagensPorDia: denom > 0
+      ? Math.round((a.numeroViagens / denom) * 10) / 10
+      : a.numeroViagens,
+    mediaPesoPorDiaKg: denom > 0
+      ? Math.round((a.pesoMedioKg * a.numeroViagens) / denom * 100) / 100
+      : a.pesoMedioKg,
     viagensEquivalentes,
     viagensEvitaveis,
   };
+}
+
+export type DiaComparadoCiclo = ParDiaSemanaCiclo<
+  NonNullable<AnalisePesoColeta['porDia']>[number]
+>;
+
+/** Emparelha os dias pela ocorrência do dia da semana (1ª seg × 1ª seg). */
+export function alinharDiasCicloAnteriorAtual(
+  anterior: CompararPorTipoServico,
+  atual: CompararPorTipoServico,
+): DiaComparadoCiclo[] {
+  return alinharPorOcorrenciaDiaSemana(
+    anterior.analisePeso?.porDia || [],
+    atual.analisePeso?.porDia || [],
+  );
 }
 
 export function calcularDeltaMelhoria(

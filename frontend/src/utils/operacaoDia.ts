@@ -14,6 +14,7 @@ import {
   LABEL_TIPO_CAMINHAO,
   PCT_IDEAL_MAX,
   PCT_IDEAL_MIN,
+  calcularPesoIdealViagem,
   densidadeOptsToInput,
   pctIdealForaDaMargem,
   statusPctVsMargemIdeal,
@@ -365,6 +366,7 @@ export type OptsAnaliseContratoDia = {
   volumeL?: MapaLimiteCaminhao | null;
   densidadeResiduoKgL?: number | null;
   densidadeKgL?: MapaLimiteCaminhao | null;
+  densidadeKgLPorPlaca?: Record<string, number> | null;
 };
 
 /** Insights gerenciais — poucos, priorizando limite/média do tipo (não média geral do dia). */
@@ -496,7 +498,6 @@ export function montarEficienciaPlacas(
 ): LinhaEficienciaPlaca[] {
   const mediasTipo = mediasTonViagemPorTipo(analise);
   const limites = resolverLimitesPesoKg(opts?.limitesPesoKg);
-  const ideais = resolverPesosIdeaisKg(opts?.volumeL, densidadeOptsToInput(opts));
   return analise.porPlaca
     .filter((p) => p.chave !== '—')
     .map((p) => {
@@ -504,7 +505,16 @@ export function montarEficienciaPlacas(
       const pct = ref.media > 0 ? (p.tonMediaViagem / ref.media) * 100 : 100;
       const tipo = ref.tipo || normalizarTipoCaminhaoPeso(p.tipoCaminhao);
       const limiteKg = limitePesoParaTipo(tipo, limites);
-      const pesoIdealKg = tipo && ideais[tipo] > 0 ? ideais[tipo] : null;
+      const pesoIdealCalc = tipo
+        ? calcularPesoIdealViagem({
+          placa: p.chave,
+          tipo,
+          volumeOverrides: opts?.volumeL,
+          densidade: densidadeOptsToInput(opts),
+          porPlaca: opts?.densidadeKgLPorPlaca,
+        })
+        : 0;
+      const pesoIdealKg = pesoIdealCalc > 0 ? pesoIdealCalc : null;
       const { status, pctContrato, pctIdeal } = statusVsContratoETipo({
         tonMediaViagem: p.tonMediaViagem,
         pctMediaTipo: pct,

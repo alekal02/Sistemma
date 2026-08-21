@@ -197,6 +197,11 @@ export default function ContratoOperacaoUnificada({
           || (tipoLabel ? `Importado como ${tipoLabel}.` : 'Planilha importada no serviço correspondente.'),
         'success',
       );
+      const avisos = (result as { avisos?: string[] }).avisos || [];
+      const avisoCiclo = avisos.find((a) => a.includes('ciclo já fechado') || a.includes('ciclo anterior'));
+      if (avisoCiclo) {
+        adicionarToast(avisoCiclo, 'warning');
+      }
       onRefresh();
     } catch (err) {
       const msg = isAxiosError(err)

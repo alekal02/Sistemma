@@ -9,12 +9,14 @@ import { useBreadcrumbs } from '../contexts/BreadcrumbContext';
 import EmptyState from '../components/EmptyState';
 import SkeletonLoader from '../components/SkeletonLoader';
 import CicloDateSelector from '../components/CicloDateSelector';
+import MapeamentoOperacionalPainel from '../components/MapeamentoOperacionalPainel';
 import ServicoMiniFlow from '../components/ServicoMiniFlow';
 import VerificacaoViagensPanel, { type VerificacaoViagensData } from '../components/VerificacaoViagensPanel';
 import type { ColunaDetectada } from '../components/KpiEditor/KpiEditorTypes';
 import { extrairPlacasReservaContrato } from '../utils/placasReserva';
 import type { MapaLimiteCaminhao } from '../utils/limitesCaminhaoContrato';
 import { ehServicoPorUnidade } from '../utils/unidadeServico';
+import type { PeriodoCicloContrato } from '../utils/periodoCicloContrato';
 import servicoService from '../services/servicoService';
 
 /** Acima disso, KPIs/executivo podem truncar no backend (GRAFICOS_DADOS_LIMITE). */
@@ -66,6 +68,7 @@ export default function ServicoVisao() {
   } | null>(null);
   const [verificacaoViagens, setVerificacaoViagens] = useState<VerificacaoViagensData | null>(null);
   const [periodoDados, setPeriodoDados] = useState<{ dataInicio: string; dataFim: string } | null>(null);
+  const [cicloSelecionado, setCicloSelecionado] = useState<PeriodoCicloContrato | null>(null);
   const [registrosTotais, setRegistrosTotais] = useState(0);
   const [mostrarDetalheInconsistencias, setMostrarDetalheInconsistencias] = useState(false);
 
@@ -172,6 +175,7 @@ export default function ServicoVisao() {
 
   const temPlanilha = colunas.length > 0 || totalRegistros > 0;
   const ehRocada = tipoServico === 'rocadeira';
+  const ehColeta = tipoServico === 'coleta_caminhao';
   const ehPorUnidade = ehServicoPorUnidade(tipoServico);
   const volumeAlto = totalRegistros > AVISO_VOLUME_ALTO
     || (inconsistencias?.viagensValidas ?? 0) > AVISO_VOLUME_ALTO;
@@ -339,8 +343,17 @@ export default function ServicoVisao() {
           volumeL={volumeL}
           densidadeResiduoKgL={densidadeResiduoKgL}
           densidadeKgL={densidadeKgL}
+          onCicloChange={setCicloSelecionado}
           onCicloFechado={() => carregarDados({ silencioso: true })}
         />
+        {ehColeta && contractId && servicoId && (
+          <MapeamentoOperacionalPainel
+            contractId={contractId}
+            servicoId={servicoId}
+            dataInicio={cicloSelecionado?.dataInicio ?? null}
+            dataFim={cicloSelecionado?.dataFim ?? null}
+          />
+        )}
       </div>
     );
   };

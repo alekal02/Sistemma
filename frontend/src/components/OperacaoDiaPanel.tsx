@@ -1,27 +1,16 @@
-import { useMemo, useRef, type ReactNode } from 'react';
+import { useMemo, useRef, type CSSProperties } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-
-import { FiTruck, FiBarChart2 } from 'react-icons/fi';
-
+import { FiTruck } from 'react-icons/fi';
 import type { KpiValor } from '../hooks/useKpiCalculator';
-
-import { analisarOperacaoDia, isKpiMetricaBaseOperacao } from '../utils/operacaoDia';
+import { analisarOperacaoDia } from '../utils/operacaoDia';
 import { fmtNum } from '../utils/relatorioDiario';
 import type { RegistroDiaLinha } from '../utils/dadosPorDia';
 import { formatarIsoParaBr } from '../utils/periodoDados';
 import { ehPlacaReserva, resumirFrotaOperacao } from '../utils/placasReserva';
 import type { CenarioCaixaMediaDia } from '../utils/cenarioCaixaMediaDia';
-import {
-  PCT_IDEAL_MAX,
-  PCT_IDEAL_MIN,
-  PCT_PESSIMO_ALTO,
-  PCT_PESSIMO_BAIXO,
-  pctIdealForaDaMargem,
-  type MapaLimiteCaminhao,
-} from '../utils/limitesCaminhaoContrato';
-import GraficosOperacaoDia from './GraficosOperacaoDia';
-import GraficoViagemPorTipo from './GraficoViagemPorTipo';
-import GraficoRankingViagensTipo from './GraficoRankingViagensTipo';
+import type { MapaLimiteCaminhao } from '../utils/limitesCaminhaoContrato';
+import OperacaoDiaLayoutRelatorio from './OperacaoDiaLayoutRelatorio';
+import MapeamentoOperacionalPainel from './MapeamentoOperacionalPainel';
 
 interface OperacaoDiaPanelProps {
   dataIso: string;
@@ -43,46 +32,27 @@ interface OperacaoDiaPanelProps {
   pagina?: number;
   totalPaginas?: number;
   onPaginaChange?: (pagina: number) => void;
-  /** Caixa média × densidade = peso ideal — comparar coleta do dia. */
   cenarioCaixaMedia?: CenarioCaixaMediaDia | null;
   volumeL?: MapaLimiteCaminhao | null;
   densidadeResiduoKgL?: number | null;
   densidadeKgL?: MapaLimiteCaminhao | null;
+  densidadeKgLPorPlaca?: Record<string, number> | null;
   limitesPesoKg?: MapaLimiteCaminhao | null;
+  contractId?: string;
+  servicoId?: string;
 }
 
-
-
-const CORES = ['#059669', '#22c55e', '#f59e0b', '#a855f7', '#ef4444', '#14b8a6', '#3b82f6', '#ec4899'];
-
-
-
 export default function OperacaoDiaPanel({
-
   dataIso,
-
   registros,
-
   linhas,
-
-  kpisOperacao,
-
-  loadingKpis = false,
-
   carregandoRegistros,
-
   mostrarRegistros,
-
   onToggleRegistros,
-
   incluirTodos,
-
   onIncluirTodos,
-
   onRecarregar,
-
   validacao,
-
   placasReserva = [],
   analiseSql = null,
   totalRegistros,
@@ -93,7 +63,10 @@ export default function OperacaoDiaPanel({
   volumeL = null,
   densidadeResiduoKgL = null,
   densidadeKgL = null,
+  densidadeKgLPorPlaca = null,
   limitesPesoKg = null,
+  contractId,
+  servicoId,
 }: OperacaoDiaPanelProps) {
   const analise = useMemo(() => {
     if (analiseSql) return analiseSql;
@@ -112,456 +85,145 @@ export default function OperacaoDiaPanel({
 
   const temDados = resumo.viagens > 0 || registros.length > 0;
 
-
-
-  const kpisAvancados = useMemo(
-
-    () => kpisOperacao.filter((k) => !isKpiMetricaBaseOperacao(k.nome)),
-
-    [kpisOperacao],
-
-  );
-
-
-
   if (!temDados && !carregandoRegistros) {
-
     return (
-
       <div style={{
-
         textAlign: 'center', padding: '1.5rem', color: '#94a3b8',
-
         background: '#fff', borderRadius: '10px', border: '1px solid #e2e8f0',
-
-      }}>
-
+      }}
+      >
         <FiTruck size={28} style={{ opacity: 0.2, marginBottom: '0.5rem' }} />
-
         <div>Nenhuma viagem em {formatarIsoParaBr(dataIso)}.</div>
-
         <div style={{ fontSize: '0.78rem', marginTop: '0.35rem' }}>
-
           Os dados exibidos aqui são sempre filtrados pela data selecionada no calendário.
-
         </div>
-
       </div>
-
     );
-
   }
 
-
-
   return (
-
     <div>
-
       <div style={{
-
         background: 'linear-gradient(135deg, #eff6ff 0%, #eef2ff 100%)',
-
-        border: '1px solid #c7d2fe', borderRadius: '10px',
-
-        padding: '0.65rem 0.85rem', marginBottom: '0.75rem',
-
-        fontSize: '0.72rem', color: '#4338ca',
-
-      }}>
-
-        <strong>{fmtNum(resumo.viagens, 0)} viagem{resumo.viagens !== 1 ? 's' : ''}</strong>
-
-        {' '}em {formatarIsoParaBr(dataIso)}
-
-        {' · '}{resumo.registros} registro{resumo.registros !== 1 ? 's' : ''} na planilha
-
-        {' · '}{resumo.caminhoes} caminh{resumo.caminhoes !== 1 ? 'ões' : 'ão'} (placas únicas)
+        border: '1px solid #c7d2fe',
+        borderRadius: 10,
+        padding: '0.65rem 0.85rem',
+        marginBottom: '0.75rem',
+        fontSize: '0.72rem',
+        color: '#4338ca',
+      }}
+      >
+        <strong>
+          {fmtNum(resumo.viagens, 0)}
+          {' '}
+          viagem
+          {resumo.viagens !== 1 ? 's' : ''}
+        </strong>
+        {' '}
+        em
+        {' '}
+        {formatarIsoParaBr(dataIso)}
+        {' · '}
+        {resumo.registros}
+        {' '}
+        registro
+        {resumo.registros !== 1 ? 's' : ''}
+        {' · '}
+        {resumo.caminhoes}
+        {' '}
+        caminh
+        {resumo.caminhoes !== 1 ? 'ões' : 'ão'}
         {placasReserva.length > 0 && (
           <>
-            {' · '}{frotaResumo.titulares} titular{frotaResumo.titulares !== 1 ? 'es' : ''}
+            {' · '}
+            {frotaResumo.titulares}
+            {' '}
+            titular
+            {frotaResumo.titulares !== 1 ? 'es' : ''}
             {frotaResumo.reserva > 0 && ` + ${frotaResumo.reserva} reserva`}
           </>
         )}
-
-        {' · '}{resumo.motoristas} motorista{resumo.motoristas !== 1 ? 's' : ''}
-
       </div>
 
-      {cenarioCaixaMedia && cenarioCaixaMedia.pesoIdealKg > 0 && (
-        <div style={{
-          background: cenarioCaixaMedia.cenario === 'PERDA'
-            ? 'linear-gradient(135deg, #fef2f2 0%, #fff7ed 100%)'
-            : cenarioCaixaMedia.cenario === 'SUPERÁVIT'
-              ? 'linear-gradient(135deg, #f0fdf4 0%, #ecfdf5 100%)'
-              : 'linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%)',
-          border: `1px solid ${cenarioCaixaMedia.cenario === 'PERDA' ? '#fecaca' : cenarioCaixaMedia.cenario === 'SUPERÁVIT' ? '#bbf7d0' : '#fde68a'}`,
-          borderRadius: '10px',
-          padding: '0.7rem 0.85rem',
-          marginBottom: '0.75rem',
-        }}>
-          <div style={{
-            fontSize: '0.65rem', fontWeight: 800, color: '#92400e',
-            textTransform: 'uppercase', letterSpacing: '0.03em', marginBottom: '0.4rem',
-          }}>
-            Coleta vs peso ideal da caixa média
-          </div>
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))',
-            gap: '0.45rem',
-          }}>
-            {[
-              { lbl: 'Caixa média', val: `${fmtNum(cenarioCaixaMedia.caixaMediaL, 0)} L` },
-              { lbl: 'Densidade', val: `${fmtNum(cenarioCaixaMedia.densidadeKgL, 2)} kg/L` },
-              { lbl: 'Peso ideal', val: `${fmtNum(cenarioCaixaMedia.pesoIdealKg, 0)} kg` },
-              { lbl: 'Peso médio dia', val: `${fmtNum(cenarioCaixaMedia.pesoMedioDiaKg, 0)} kg` },
-              {
-                lbl: '% do ideal',
-                val: cenarioCaixaMedia.ocupacaoVsIdealPct != null
-                  ? `${fmtNum(cenarioCaixaMedia.ocupacaoVsIdealPct, 0)}%`
-                  : '—',
-              },
-              {
-                lbl: 'Resultado',
-                val: `${cenarioCaixaMedia.resultadoTon < 0 ? '−' : cenarioCaixaMedia.resultadoTon > 0 ? '+' : ''}${fmtNum(Math.abs(cenarioCaixaMedia.resultadoTon), 2)} t · ${cenarioCaixaMedia.cenario}`,
-              },
-            ].map((item) => (
-              <div key={item.lbl} style={{
-                background: 'rgba(255,255,255,0.7)',
-                borderRadius: '7px',
-                padding: '0.35rem 0.45rem',
-              }}>
-                <div style={{ fontSize: '0.58rem', fontWeight: 700, color: '#78716c', textTransform: 'uppercase' }}>
-                  {item.lbl}
-                </div>
-                <div style={{
-                  fontSize: '0.82rem', fontWeight: 800, color: '#1c1917',
-                  fontFamily: 'ui-monospace, monospace', marginTop: '0.1rem',
-                }}>
-                  {item.val}
-                </div>
-              </div>
-            ))}
-          </div>
-          {cenarioCaixaMedia.porTipo.length > 0 && (
-            <div style={{ marginTop: '0.55rem', overflowX: 'auto' }}>
-              <table style={{
-                width: '100%', borderCollapse: 'collapse', fontSize: '0.65rem',
-                background: 'rgba(255,255,255,0.65)', borderRadius: '6px',
-              }}>
-                <thead>
-                  <tr style={{ color: '#78716c', textAlign: 'left' }}>
-                    <th style={{ padding: '0.3rem 0.4rem' }}>Tipo</th>
-                    <th style={{ padding: '0.3rem 0.4rem', textAlign: 'right' }}>Ideal</th>
-                    <th style={{ padding: '0.3rem 0.4rem', textAlign: 'right' }}>Médio</th>
-                    <th style={{ padding: '0.3rem 0.4rem', textAlign: 'right' }}>% ideal</th>
-                    <th style={{ padding: '0.3rem 0.4rem', textAlign: 'center' }}>Cenário</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {cenarioCaixaMedia.porTipo.map((t) => {
-                    const abaixo = pctIdealForaDaMargem(t.ocupacaoVsIdealPct);
-                    return (
-                      <tr key={t.tipo} style={{ borderTop: '1px solid #f5f5f4' }}>
-                        <td style={{ padding: '0.3rem 0.4rem', fontWeight: 700 }}>{t.label}</td>
-                        <td style={{
-                          padding: '0.3rem 0.4rem', textAlign: 'right',
-                          fontFamily: 'ui-monospace, monospace', color: '#5b21b6', fontWeight: 700,
-                        }}>
-                          {fmtNum(t.pesoIdealKg, 0)} kg
-                        </td>
-                        <td style={{
-                          padding: '0.3rem 0.4rem', textAlign: 'right',
-                          fontFamily: 'ui-monospace, monospace', fontWeight: 700,
-                        }}>
-                          {fmtNum(t.pesoMedioKg, 0)} kg
-                        </td>
-                        <td style={{
-                          padding: '0.3rem 0.4rem', textAlign: 'right', fontWeight: 800,
-                          color: abaixo ? '#991b1b' : '#166534',
-                          fontFamily: 'ui-monospace, monospace',
-                        }}>
-                          {t.ocupacaoVsIdealPct != null ? `${fmtNum(t.ocupacaoVsIdealPct, 0)}%` : '—'}
-                        </td>
-                        <td style={{
-                          padding: '0.3rem 0.4rem', textAlign: 'center', fontWeight: 700,
-                          color: t.cenario === 'PERDA' ? '#991b1b' : t.cenario === 'SUPERÁVIT' ? '#166534' : '#78716c',
-                        }}>
-                          {t.cenario}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-          <div style={{ fontSize: '0.62rem', color: '#a16207', marginTop: '0.4rem', lineHeight: 1.35 }}>
-            Ideal por tipo = volume × densidade. Escala: &lt;{PCT_PESSIMO_BAIXO}% péssimo · {PCT_PESSIMO_BAIXO}–{PCT_IDEAL_MIN}% ruim · {PCT_IDEAL_MIN}–{PCT_IDEAL_MAX}% ótimo · {PCT_IDEAL_MAX}–{PCT_PESSIMO_ALTO}% ruim · &gt;{PCT_PESSIMO_ALTO}% péssimo.
-          </div>
-        </div>
-      )}
-
-      <div style={{
-
-        background: 'linear-gradient(135deg, #1e293b 0%, #0f172a 100%)',
-
-        borderRadius: '12px', padding: '1rem 1.25rem', marginBottom: '0.75rem',
-
-        border: '1px solid #334155', display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap',
-
-      }}>
-
-        <div style={{ flex: 1, minWidth: '180px' }}>
-
-          <div style={{ fontSize: '0.6rem', fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase' }}>
-
-            Viagens do dia
-
-          </div>
-
-          <div style={{ fontSize: '1.85rem', fontWeight: 800, color: '#a5b4fc', marginTop: '0.15rem', fontFamily: 'monospace' }}>
-
-            {fmtNum(resumo.viagens, 0)}
-
-          </div>
-
-          <div style={{ fontSize: '0.68rem', color: '#64748b', marginTop: '0.25rem' }}>
-
-            {resumo.caminhoes} caminh{resumo.caminhoes !== 1 ? 'ões' : 'ão'} · {resumo.motoristas} motorista(s) · {resumo.registros} registro(s)
-
-          </div>
-
-        </div>
-
-        <div style={{
-
-          display: 'grid', gridTemplateColumns: 'repeat(2, minmax(90px, 1fr))', gap: '0.4rem',
-
-          minWidth: '200px',
-
-        }}>
-
-          <MiniStat label="Caminhões" valor={fmtNum(resumo.caminhoes, 0)} />
-
-          <MiniStat label="Toneladas" valor={`${fmtNum(resumo.toneladas, 1)} t`} />
-
-          <MiniStat label="KM total" valor={`${fmtNum(resumo.km, 0)} km`} />
-
-          <MiniStat label="Horas" valor={`${fmtNum(resumo.horas, 1)} h`} />
-
-          <MiniStat label="Ton./viagem" valor={`${fmtNum(resumo.tonMediaColeta, 2)} t`} />
-
-        </div>
-
-      </div>
-
-
-
-      <GraficoViagemPorTipo
+      {/* Layout alinhado ao PDF Relatório de Operação do Dia */}
+      <OperacaoDiaLayoutRelatorio
         analise={analise}
+        registros={registros}
+        cenarioCaixaMedia={cenarioCaixaMedia}
+        placasReserva={placasReserva}
         volumeL={volumeL}
         densidadeResiduoKgL={densidadeResiduoKgL}
         densidadeKgL={densidadeKgL}
+        densidadeKgLPorPlaca={densidadeKgLPorPlaca}
+        limitesPesoKg={limitesPesoKg}
       />
 
-      {registros.length > 0 && (
-        <>
-          <SecaoTitulo icone={<FiTruck size={12} />} titulo="Ranking por viagem (Mini / Toco / …)" />
-          <GraficoRankingViagensTipo
-            registros={registros}
-            volumeL={volumeL}
-            densidadeResiduoKgL={densidadeResiduoKgL}
-            densidadeKgL={densidadeKgL}
-            limitesPesoKg={limitesPesoKg}
-          />
-        </>
-      )}
-
-      <GraficosOperacaoDia analise={analise} />
-
-
-
-      {(resumo.caminhoes > 0 || kpisAvancados.length > 0) && (
-
-        <div style={{ marginBottom: '1rem' }}>
-
-          <SecaoTitulo icone={<FiBarChart2 size={12} />} titulo="Indicadores do dia" />
-
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '0.5rem' }}>
-
-            <KpiCard label="Caminhões (placas únicas)" valor={fmtNum(resumo.caminhoes, 0)} cor="#6366f1" />
-
-            {loadingKpis && kpisAvancados.length === 0 ? (
-              <KpiCard label="Indicadores" valor="Carregando..." cor="#94a3b8" />
-            ) : (
-              kpisAvancados.map((kpi, idx) => (
-                <KpiCard
-                  key={kpi.id || kpi.nome}
-                  label={kpi.nome}
-                  valor={kpi.formatado || '—'}
-                  cor={CORES[idx % CORES.length]}
-                />
-              ))
-            )}
-
+      {contractId && servicoId ? (
+        <div style={{ marginTop: '1.25rem' }}>
+          <div style={{
+            fontSize: '0.72rem',
+            fontWeight: 800,
+            color: '#64748b',
+            textTransform: 'uppercase',
+            letterSpacing: '0.04em',
+            marginBottom: '0.45rem',
+          }}
+          >
+            Estudo de hora produtiva
           </div>
-
+          <MapeamentoOperacionalPainel
+            contractId={contractId}
+            servicoId={servicoId}
+            dataInicio={dataIso}
+            dataFim={dataIso}
+          />
         </div>
+      ) : null}
 
-      )}
-
-
-
-      <PainelViagens
-
-        resumo={resumo}
-
-        linhas={linhas}
-
-        registros={registros}
-
-        carregando={carregandoRegistros}
-
-        mostrar={mostrarRegistros}
-
-        onToggle={onToggleRegistros}
-
-        incluirTodos={incluirTodos}
-
-        onIncluirTodos={onIncluirTodos}
-
-        onRecarregar={onRecarregar}
-
-        validacao={validacao}
-
-        placasReserva={placasReserva}
-
-        totalRegistros={totalRegistros ?? resumo.registros}
-
-        pagina={pagina}
-
-        totalPaginas={totalPaginas}
-
-        onPaginaChange={onPaginaChange}
-
-      />
-
+      <div style={{ marginTop: '1.25rem' }}>
+        <PainelViagens
+          resumo={resumo}
+          linhas={linhas}
+          registros={registros}
+          carregando={carregandoRegistros}
+          mostrar={mostrarRegistros}
+          onToggle={onToggleRegistros}
+          incluirTodos={incluirTodos}
+          onIncluirTodos={onIncluirTodos}
+          onRecarregar={onRecarregar}
+          validacao={validacao}
+          placasReserva={placasReserva}
+          totalRegistros={totalRegistros ?? resumo.registros}
+          pagina={pagina}
+          totalPaginas={totalPaginas}
+          onPaginaChange={onPaginaChange}
+        />
+      </div>
     </div>
-
   );
-
 }
-
-
-
-function KpiCard({ label, valor, cor }: { label: string; valor: string; cor: string }) {
-
-  return (
-
-    <div style={{
-
-      background: '#fff', borderRadius: '10px', border: '1px solid #e2e8f0',
-
-      borderTop: `3px solid ${cor}`, padding: '0.6rem 0.75rem',
-
-    }}>
-
-      <div style={{ fontSize: '0.62rem', fontWeight: 600, color: '#64748b' }}>{label}</div>
-
-      <div style={{ fontSize: '1.15rem', fontWeight: 800, color: '#0f172a' }}>{valor}</div>
-
-    </div>
-
-  );
-
-}
-
-
-
-function SecaoTitulo({ icone, titulo }: { icone: ReactNode; titulo: string }) {
-
-  return (
-
-    <div style={{
-
-      fontSize: '0.7rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase',
-
-      marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.3rem',
-
-    }}>
-
-      {icone} {titulo}
-
-    </div>
-
-  );
-
-}
-
-
-
-function MiniStat({ label, valor }: { label: string; valor: string }) {
-
-  return (
-
-    <div style={{ background: 'rgba(255,255,255,0.06)', borderRadius: '6px', padding: '0.35rem 0.5rem' }}>
-
-      <div style={{ fontSize: '0.52rem', color: '#94a3b8', textTransform: 'uppercase' }}>{label}</div>
-
-      <div style={{ fontSize: '0.82rem', fontWeight: 700, color: '#e2e8f0', fontFamily: 'monospace' }}>{valor}</div>
-
-    </div>
-
-  );
-
-}
-
-
 
 function PainelViagens({
-
   resumo, linhas, registros, carregando, mostrar, onToggle,
-
   incluirTodos, onIncluirTodos, onRecarregar, validacao, placasReserva = [],
-
   totalRegistros, pagina = 1, totalPaginas = 1, onPaginaChange,
-
 }: {
-
   resumo: { viagens: number; registros: number };
-
   linhas: RegistroDiaLinha[];
-
   registros: Record<string, unknown>[];
-
   carregando: boolean;
-
   mostrar: boolean;
-
   onToggle: () => void;
-
   incluirTodos: boolean;
-
   onIncluirTodos: (v: boolean) => void;
-
   onRecarregar: () => void;
-
   validacao: { ok: boolean; mensagens: string[] } | null;
-
   placasReserva?: string[];
-
   totalRegistros?: number;
-
   pagina?: number;
-
   totalPaginas?: number;
-
   onPaginaChange?: (pagina: number) => void;
-
 }) {
-
   const scrollRef = useRef<HTMLDivElement>(null);
   const rowVirtualizer = useVirtualizer({
     count: linhas.length,
@@ -573,151 +235,89 @@ function PainelViagens({
   const totalLabel = totalRegistros ?? resumo.registros;
 
   return (
-
-    <div style={{ background: '#fff', borderRadius: '10px', border: '1px solid #e2e8f0', overflow: 'hidden' }}>
-
+    <div style={{ background: '#fff', borderRadius: 10, border: '1px solid #e2e8f0', overflow: 'hidden' }}>
       <button
-
         type="button"
-
         onClick={onToggle}
-
         style={{
-
           display: 'flex', alignItems: 'center', gap: '0.5rem', width: '100%',
-
           padding: '0.65rem 0.85rem', border: 'none', background: '#f8fafc',
-
           cursor: 'pointer', fontSize: '0.78rem', fontWeight: 700, color: '#475569',
-
         }}
-
       >
-
         <FiTruck size={14} />
-
-        Registros da planilha ({totalLabel.toLocaleString('pt-BR')})
-
+        Registros da planilha (
+        {totalLabel.toLocaleString('pt-BR')}
+        )
         <span style={{ marginLeft: 'auto', fontSize: '0.68rem', color: '#94a3b8' }}>
-
           {mostrar ? 'Ocultar' : 'Expandir'}
-
         </span>
-
       </button>
 
-
-
       {mostrar && (
-
         <div style={{ padding: '0.75rem' }}>
-
           <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '0.75rem', flexWrap: 'wrap', alignItems: 'center' }}>
-
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.72rem', color: '#475569' }}>
-
               <input type="checkbox" checked={incluirTodos} onChange={(e) => onIncluirTodos(e.target.checked)} />
-
               Incluir registros com inconsistência
-
             </label>
-
             <button type="button" onClick={onRecarregar} style={btnSec}>Atualizar</button>
-
             {totalPaginas > 1 && onPaginaChange && (
-
               <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.72rem', color: '#64748b' }}>
-
                 <button type="button" disabled={pagina <= 1 || carregando} onClick={() => onPaginaChange(pagina - 1)} style={btnSec}>Anterior</button>
-
-                <span>Página {pagina} de {totalPaginas}</span>
-
+                <span>
+                  Página
+                  {' '}
+                  {pagina}
+                  {' '}
+                  de
+                  {' '}
+                  {totalPaginas}
+                </span>
                 <button type="button" disabled={pagina >= totalPaginas || carregando} onClick={() => onPaginaChange(pagina + 1)} style={btnSec}>Próxima</button>
-
               </div>
-
             )}
-
           </div>
 
-
-
           {validacao && (
-
             <div style={{
-
-              borderRadius: '8px', padding: '0.6rem 0.75rem', marginBottom: '0.75rem',
-
+              borderRadius: 8, padding: '0.6rem 0.75rem', marginBottom: '0.75rem',
               border: `1px solid ${validacao.ok ? '#bbf7d0' : '#fde68a'}`,
-
               background: validacao.ok ? '#f0fdf4' : '#fffbeb', fontSize: '0.68rem', color: '#475569',
-
-            }}>
-
+            }}
+            >
               {validacao.mensagens[0]}
-
             </div>
-
           )}
 
-
-
           {carregando ? (
-
             <p style={{ textAlign: 'center', color: '#94a3b8', fontSize: '0.8rem' }}>Carregando viagens...</p>
-
           ) : linhas.length === 0 ? (
-
             <p style={{ textAlign: 'center', color: '#94a3b8', fontSize: '0.8rem' }}>Nenhum registro para esta data.</p>
-
           ) : (
-
             <div ref={scrollRef} style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'min(480px, 55vh)' }}>
-
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.72rem', minWidth: '900px' }}>
-
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.72rem', minWidth: 900 }}>
                 <thead>
-
                   <tr style={{ background: '#1e293b', color: '#fff' }}>
-
                     <th style={th}>Placa</th>
-
                     <th style={th}>Motorista</th>
-
                     <th style={th}>Turno</th>
-
                     <th style={th}>Regional</th>
-
                     <th style={{ ...th, textAlign: 'center' }}>Viagens</th>
-
                     <th style={{ ...th, textAlign: 'right' }}>Toneladas</th>
-
                     <th style={{ ...th, textAlign: 'right' }}>KM</th>
-
                     <th style={{ ...th, textAlign: 'center' }}>Saída</th>
-
                     <th style={{ ...th, textAlign: 'center' }}>Chegada</th>
-
                     <th style={{ ...th, textAlign: 'center' }}>Status</th>
-
                   </tr>
-
                 </thead>
-
                 <tbody style={{ height: `${rowVirtualizer.getTotalSize()}px`, position: 'relative' }}>
-
                   {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-
                     const idx = virtualRow.index;
-
                     const l = linhas[idx];
-
                     const reg = registros[idx];
-
                     const valido = reg?._validoDashboard !== false;
-
                     return (
-
                       <tr
                         key={String(l.id)}
                         style={{
@@ -732,7 +332,6 @@ function PainelViagens({
                           tableLayout: 'fixed',
                         }}
                       >
-
                         <td style={{ ...td, fontWeight: 700 }}>
                           {l.placa}
                           {ehPlacaReserva(l.placa, placasReserva) && (
@@ -743,86 +342,49 @@ function PainelViagens({
                               color: '#92400e',
                               background: '#fef3c7',
                               padding: '0.1rem 0.3rem',
-                              borderRadius: '4px',
+                              borderRadius: 4,
                               verticalAlign: 'middle',
-                            }}>
+                            }}
+                            >
                               RESERVA
                             </span>
                           )}
                         </td>
-
                         <td style={td}>{l.motorista}</td>
-
                         <td style={td}>{l.turno}</td>
-
                         <td style={td}>{l.regional}</td>
-
                         <td style={{ ...td, textAlign: 'center', fontWeight: 800, color: '#3b82f6' }}>{l.viagens}</td>
-
                         <td style={{ ...td, textAlign: 'right' }}>{fmtNum(l.toneladas, 2)}</td>
-
                         <td style={{ ...td, textAlign: 'right' }}>{fmtNum(l.kmFinal, 0)}</td>
-
                         <td style={{ ...td, textAlign: 'center', fontSize: '0.65rem' }}>{l.horaSaidaFmt}</td>
-
                         <td style={{ ...td, textAlign: 'center', fontSize: '0.65rem' }}>{l.horaChegadaFmt}</td>
-
                         <td style={{ ...td, textAlign: 'center' }}>
-
                           <span style={{
-
                             fontSize: '0.58rem', fontWeight: 700,
-
                             color: valido ? '#166534' : '#b45309',
-
                             background: valido ? '#dcfce7' : '#fef3c7',
-
-                            padding: '0.1rem 0.35rem', borderRadius: '4px',
-
-                          }}>
-
+                            padding: '0.1rem 0.35rem', borderRadius: 4,
+                          }}
+                          >
                             {valido ? 'OK' : 'Atenção'}
-
                           </span>
-
                         </td>
-
                       </tr>
-
                     );
-
                   })}
-
                 </tbody>
-
               </table>
-
             </div>
-
           )}
-
         </div>
-
       )}
-
     </div>
-
   );
-
 }
 
-
-
-const th: React.CSSProperties = { padding: '0.45rem 0.55rem', textAlign: 'left', fontWeight: 600, fontSize: '0.65rem' };
-
-const td: React.CSSProperties = { padding: '0.4rem 0.55rem' };
-
-const btnSec: React.CSSProperties = {
-
-  fontSize: '0.72rem', padding: '0.3rem 0.6rem', borderRadius: '6px',
-
+const th: CSSProperties = { padding: '0.45rem 0.55rem', textAlign: 'left', fontWeight: 600, fontSize: '0.65rem' };
+const td: CSSProperties = { padding: '0.4rem 0.55rem' };
+const btnSec: CSSProperties = {
+  fontSize: '0.72rem', padding: '0.3rem 0.6rem', borderRadius: 6,
   border: '1px solid #e2e8f0', background: '#fff', cursor: 'pointer',
-
 };
-
-

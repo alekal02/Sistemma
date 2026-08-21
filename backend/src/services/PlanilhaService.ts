@@ -16,7 +16,7 @@ import {
   enriquecerCamposColeta,
   validarViagemParaDashboard,
 } from './validacaoViagemService';
-import { sqlSumViagens } from './viagensPorRotaService';
+import { sqlDataIsoDia, sqlJsonNumero, sqlSumPesoEfetivoKg, sqlSumViagens } from './viagensPorRotaService';
 import { deduplicarKpisLista } from './kpiDeduplicacaoService';
 import { invalidarCacheDadosServico } from './servicoDadosCache';
 import { invalidarCacheDashboardServico } from './comparacaoCache';
@@ -34,6 +34,15 @@ interface ResultadoImportacao {
   viagensInconsistentes?: number;
   viagensValidasDashboard?: number;
   linhasDescartadasSemDados?: number;
+}
+
+/** kg da planilha → t (se o dia ainda parecer kg, divide de novo). */
+function toneladasDoPesoKg(pesoTotalKg: number): number {
+  const kg = Number(pesoTotalKg);
+  if (!Number.isFinite(kg) || kg <= 0) return 0;
+  let t = kg / 1000;
+  while (t >= 10_000) t /= 1000;
+  return t;
 }
 
 /**
@@ -413,8 +422,8 @@ export class PlanilhaService {
       if (keyNorm.length > 0 && chNorm.includes(keyNorm)) {
         return ch;
       }
-      // Caso inverso: a chave real contém a esperada
-      if (keyNorm.length > 0 && keyNorm.includes(chNorm)) {
+      // Inverso só com chave real específica — senão "PESO 2" casa com "id"/"O"
+      if (chNorm.length >= 5 && keyNorm.includes(chNorm)) {
         return ch;
       }
     }
@@ -1481,7 +1490,7 @@ export class PlanilhaService {
     const qb = this.coletaRepo.createQueryBuilder('c')
       .select([
         `${sqlSumViagens('c')} as viagens`,
-        'COALESCE(SUM(c.pesoTotal), 0) as peso_total_kg',
+        `${sqlSumPesoEfetivoKg('c')} as peso_total_kg`,
         'COALESCE(SUM(c.kmTotal), 0) as km_total',
         'COALESCE(SUM(CASE WHEN c.horasForaUnidade BETWEEN 0 AND 24 THEN c.horasForaUnidade ELSE 0 END), 0) as horas_produtivas',
         'COUNT(DISTINCT c.placa) as coletores_ativos',
@@ -1490,10 +1499,10 @@ export class PlanilhaService {
     aplicarFiltroViagensValidasDashboard(qb, 'c');
 
     if (filtros?.dataInicio) {
-      qb.andWhere('c.dataSaida >= :dataInicio', { dataInicio: filtros.dataInicio });
+      qb.andWhere(`${sqlDataIsoDia('c')} >= :dataInicio`, { dataInicio: filtros.dataInicio });
     }
     if (filtros?.dataFim) {
-      qb.andWhere('c.dataSaida <= :dataFim', { dataFim: filtros.dataFim });
+      qb.andWhere(`${sqlDataIsoDia('c')} <= :dataFim`, { dataFim: filtros.dataFim });
     }
 
     const result = await qb.getRawOne();
@@ -1507,7 +1516,7 @@ export class PlanilhaService {
     return {
       viagens,
       pesoTotalKg,
-      pesoTotalTon: Math.round((pesoTotalKg / 1000) * 100) / 100,
+      pesoTotalTon: Math.round(toneladasDoPesoKg(pesoTotalKg) * 100) / 100,
       kmTotal: Math.round(kmTotal * 100) / 100,
       horasProdutivas: Math.round(horasProdutivas * 100) / 100,
       coletoresAtivos,
@@ -1528,6 +1537,7 @@ export class PlanilhaService {
     rotas: number;
     viagens: number;
     pesoTotalKg: number;
+    pesoTotalTon: number;
     kmTotal: number;
     areaM2: number;
     metroLinear: number;
@@ -1545,51 +1555,52 @@ export class PlanilhaService {
     // Métricas por unidade ficam no JSONB (roçada/capina/varrição/poda)
     const areaExpr = `
       COALESCE(
-        NULLIF(c.dados->>'Area m²', '')::double precision,
-        NULLIF(c.dados->>'AREA_M2', '')::double precision,
-        NULLIF(c.dados->>'M2', '')::double precision,
-        NULLIF(c.dados->>'AREA_ROCADA', '')::double precision,
+        ${sqlJsonNumero('c', 'Area m²')},
+        ${sqlJsonNumero('c', 'AREA_M2')},
+        ${sqlJsonNumero('c', 'M2')},
+        ${sqlJsonNumero('c', 'AREA_ROCADA')},
         0
       )
     `;
     const metroLinearExpr = `
       COALESCE(
-        NULLIF(c.dados->>'Metro Linear', '')::double precision,
-        NULLIF(c.dados->>'METRO_LINEAR', '')::double precision,
-        NULLIF(c.dados->>'COMPRIMENTO', '')::double precision,
+        ${sqlJsonNumero('c', 'Metro Linear')},
+        ${sqlJsonNumero('c', 'METRO_LINEAR')},
+        ${sqlJsonNumero('c', 'COMPRIMENTO')},
         0
       )
     `;
     const kmLinearExpr = `
       COALESCE(
-        NULLIF(c.dados->>'KM Linear', '')::double precision,
-        NULLIF(c.dados->>'KM_LINEAR', '')::double precision,
-        NULLIF(c.dados->>'QUILOMETROS_VARRIDOS', '')::double precision,
+        ${sqlJsonNumero('c', 'KM Linear')},
+        ${sqlJsonNumero('c', 'KM_LINEAR')},
+        ${sqlJsonNumero('c', 'QUILOMETROS_VARRIDOS')},
         c.kmTotal,
         0
       )
     `;
     const qtdArvoreExpr = `
       COALESCE(
-        NULLIF(c.dados->>'Quantidade de Arvore', '')::double precision,
-        NULLIF(c.dados->>'QTD_ARVORE', '')::double precision,
-        NULLIF(c.dados->>'ARVORES_PODADAS', '')::double precision,
+        ${sqlJsonNumero('c', 'Quantidade de Arvore')},
+        ${sqlJsonNumero('c', 'QTD_ARVORE')},
+        ${sqlJsonNumero('c', 'ARVORES_PODADAS')},
         0
       )
     `;
     const quantitativoExpr = `
       COALESCE(
-        NULLIF(c.dados->>'QUANTITATIVO', '')::double precision,
+        ${sqlJsonNumero('c', 'QUANTITATIVO')},
         0
       )
     `;
 
+    const dataIsoExpr = sqlDataIsoDia('c');
     const qb = this.coletaRepo.createQueryBuilder('c')
       .select([
-        'c.dataSaida as data',
+        `${dataIsoExpr} as data`,
         'COUNT(*)::int as rotas',
         `${sqlSumViagens('c')} as viagens`,
-        'COALESCE(SUM(c.pesoTotal), 0) as peso_total_kg',
+        `${sqlSumPesoEfetivoKg('c')} as peso_total_kg`,
         'COALESCE(SUM(c.kmTotal), 0) as km_total',
         `COALESCE(SUM(${areaExpr}), 0) as area_m2`,
         `COALESCE(SUM(${metroLinearExpr}), 0) as metro_linear`,
@@ -1599,13 +1610,16 @@ export class PlanilhaService {
       ])
       .where('c.planilhaUploadId IN (:...uploadIds)', { uploadIds });
     aplicarFiltroViagensValidasDashboard(qb, 'c');
-    qb.andWhere('c.dataSaida >= :inicio', { inicio: dataInicio })
-      .andWhere('c.dataSaida <= :fim', { fim: dataFim })
-      .groupBy('c.dataSaida')
-      .orderBy('c.dataSaida', 'ASC');
+    qb.andWhere(`${dataIsoExpr} >= :inicio`, { inicio: dataInicio })
+      .andWhere(`${dataIsoExpr} <= :fim`, { fim: dataFim })
+      .groupBy(dataIsoExpr)
+      .orderBy(dataIsoExpr, 'ASC');
 
     const results = await qb.getRawMany();
     const toIso = (v: Date | string) => {
+      if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v.trim())) {
+        return v.trim().slice(0, 10);
+      }
       const d = v instanceof Date ? v : new Date(v);
       if (isNaN(d.getTime())) return '';
       const y = d.getUTCFullYear();
@@ -1613,19 +1627,42 @@ export class PlanilhaService {
       const day = String(d.getUTCDate()).padStart(2, '0');
       return `${y}-${m}-${day}`;
     };
+    const num = (row: Record<string, unknown>, ...keys: string[]): number => {
+      for (const k of keys) {
+        if (row[k] != null && row[k] !== '') {
+          const n = Number(row[k]);
+          if (!Number.isNaN(n)) return n;
+        }
+      }
+      const compacto = new Map(
+        Object.entries(row).map(([k, v]) => [k.toLowerCase().replace(/[^a-z0-9]/g, ''), v]),
+      );
+      for (const k of keys) {
+        const v = compacto.get(k.toLowerCase().replace(/[^a-z0-9]/g, ''));
+        if (v != null && v !== '') {
+          const n = Number(v);
+          if (!Number.isNaN(n)) return n;
+        }
+      }
+      return 0;
+    };
 
-    return results.map(r => ({
-      data: r.data ? toIso(r.data) : '',
-      rotas: Number(r.rotas || 0),
-      viagens: Number(r.viagens || 0),
-      pesoTotalKg: Number(r.peso_total_kg || 0),
-      kmTotal: Number(r.km_total || 0),
-      areaM2: Number(r.area_m2 || 0),
-      metroLinear: Number(r.metro_linear || 0),
-      kmLinear: Number(r.km_linear || 0),
-      qtdArvore: Number(r.qtd_arvore || 0),
-      quantitativo: Number(r.quantitativo || 0),
-    }));
+    return results.map(r => {
+      const pesoTotalKg = num(r, 'peso_total_kg', 'pesoTotalKg');
+      return {
+        data: r.data ? toIso(r.data) : '',
+        rotas: num(r, 'rotas'),
+        viagens: num(r, 'viagens'),
+        pesoTotalKg,
+        pesoTotalTon: toneladasDoPesoKg(pesoTotalKg),
+        kmTotal: num(r, 'km_total', 'kmTotal'),
+        areaM2: num(r, 'area_m2', 'areaM2'),
+        metroLinear: num(r, 'metro_linear', 'metroLinear'),
+        kmLinear: num(r, 'km_linear', 'kmLinear'),
+        qtdArvore: num(r, 'qtd_arvore', 'qtdArvore'),
+        quantitativo: num(r, 'quantitativo'),
+      };
+    });
   }
 
   /**
@@ -1672,6 +1709,44 @@ export class PlanilhaService {
     if (!dataInicio || !dataFim) return null;
 
     return { dataInicio, dataFim };
+  }
+
+  /** Intervalo das viagens válidas pertencentes exclusivamente ao upload informado. */
+  async getPeriodoDadosPorUpload(
+    planilhaUploadId: number,
+    servicoId?: string,
+  ): Promise<{ dataInicio: string; dataFim: string } | null> {
+    if (!(planilhaUploadId > 0)) return null;
+
+    const qb = this.coletaRepo
+      .createQueryBuilder('c')
+      .innerJoin(PlanilhaUpload, 'u', 'u.id = c.planilhaUploadId')
+      .select('MIN(c.dataSaida)', 'minData')
+      .addSelect('MAX(c.dataSaida)', 'maxData')
+      .where('c.planilhaUploadId = :planilhaUploadId', { planilhaUploadId })
+      .andWhere('c.validoDashboard = true')
+      .andWhere('c.dataSaida IS NOT NULL');
+
+    if (servicoId) {
+      qb.andWhere('u.servico_id = :servicoId', { servicoId });
+    }
+
+    const row = await qb.getRawOne();
+    if (!row?.minData || !row?.maxData) return null;
+
+    const toIso = (v: Date | string): string | null => {
+      const d = v instanceof Date ? v : new Date(v);
+      if (isNaN(d.getTime())) return null;
+      return [
+        d.getUTCFullYear(),
+        String(d.getUTCMonth() + 1).padStart(2, '0'),
+        String(d.getUTCDate()).padStart(2, '0'),
+      ].join('-');
+    };
+
+    const dataInicio = toIso(row.minData);
+    const dataFim = toIso(row.maxData);
+    return dataInicio && dataFim ? { dataInicio, dataFim } : null;
   }
 
   /**

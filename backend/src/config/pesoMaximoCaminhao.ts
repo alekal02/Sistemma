@@ -33,7 +33,7 @@ export function normalizarTipoCaminhaoPeso(raw: string | null | undefined): Tipo
 
   if (!t) return null;
   if (t.includes('MINI')) return 'MINI';
-  if (t.includes('TRUCK') || t.includes('TRUQUE')) return 'TRUCK';
+  if (t.includes('TRUCK') || t.includes('TRUQUE') || t.includes('TRUCAD')) return 'TRUCK';
   if (t.includes('BASCULANTE') || t.includes('BASCULANTO')) return 'BASCULANTE';
   if (t.includes('TOCO')) return 'TOCO';
   return null;

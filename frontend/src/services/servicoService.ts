@@ -20,7 +20,90 @@ export function invalidateCachesServico(contractId: string, servicoId: string): 
   invalidateCachePrefix(`dia:${contractId}:${servicoId}`);
   invalidateCachePrefix(`brutos:${contractId}:${servicoId}`);
   invalidateCachePrefix(`coleta-agg:${contractId}:${servicoId}`);
+  invalidateCachePrefix(`mapeamento-op:${contractId}:${servicoId}`);
+  invalidateCachePrefix(`mapeamento-op-v2:${contractId}:${servicoId}`);
+  invalidateCachePrefix(`mapeamento-op-v6:${contractId}:${servicoId}`);
   invalidateCachePrefix(`kpi-valores:${contractId}:${servicoId}`);
+}
+
+export interface LinhaMapeamentoOperacional {
+  rota: string;
+  motorista: string;
+  placa: string;
+  tipoCaminhao: string | null;
+  dias: number;
+  viagens: number;
+  tonelagem: number;
+  kmTotal: number;
+  horasTotais: number;
+  horasProdutivas: number;
+  horasImprodutivas: number;
+  horasPorViagem: number;
+  horasProdutivasPorViagem: number;
+  kmPorViagem: number;
+  tonPorHora: number;
+  percentualProdutivo: number;
+}
+
+export interface TopRotaProdutividadeEncher {
+  rota: string;
+  viagens: number;
+  horasTotais: number;
+  horasProdutivas: number;
+  horasImprodutivas: number;
+  horasPorViagem: number;
+  kmTotal: number;
+  tipoPredominante?: string | null;
+  pesoKg?: number;
+  pesoMedioKg?: number;
+  pesoIdealKg?: number | null;
+  pctIdeal?: number | null;
+  tempoEqEncher?: number | null;
+  atingiuIdeal?: boolean;
+  estimado?: boolean;
+  tonPorHora?: number;
+  faixa?: 'bom' | 'regular' | 'ruim' | null;
+}
+
+export interface ViagemPesoRotaItem {
+  data?: string | null;
+  rota: string;
+  placa: string;
+  motorista: string;
+  tipo: string | null;
+  nViagem: number;
+  pesoKg: number;
+  pesoIdealKg: number | null;
+  pctIdeal: number | null;
+  encheu: boolean;
+  horasProdutivasViagem: number;
+  horasProdutivasRota: number;
+  origemHora: 'trecho' | 'rateio';
+  tempoEqEncher: number | null;
+  estimado: boolean;
+}
+
+export interface MapeamentoOperacionalResponse {
+  resumo: {
+    linhas: number;
+    truncado: boolean;
+    rotas: number;
+    motoristas: number;
+    placas: number;
+    viagens: number;
+    kmTotal: number;
+    horasTotais: number;
+    horasProdutivas: number;
+    horasImprodutivas: number;
+    percentualProdutivo: number;
+    tonelagem: number;
+  };
+  linhas: LinhaMapeamentoOperacional[];
+  topRotasLentas: TopRotaProdutividadeEncher[];
+  viagensPesoRota?: ViagemPesoRotaItem[];
+  dataInicio: string | null;
+  dataFim: string | null;
+  tipoServico?: string;
 }
 
 export interface KpiConsolidadoItem {
@@ -120,6 +203,13 @@ export interface AnalisePesoColeta {
   densidadeOtima: number;
   mediaIdealKg: number;
   perdaTon: number;
+  porDia?: Array<{
+    data: string;
+    viagens: number;
+    rotas: number;
+    pesoTotalKg: number;
+    pesoMedioKg: number;
+  }>;
 }
 
 export interface CompararPorTipoServico {
@@ -144,6 +234,8 @@ export interface FiltrosComparacao {
   anoReferencia?: number;
   dataInicio?: string;
   dataFim?: string;
+  /** Wallboard TV: payload leve no backend */
+  perfil?: 'tv';
 }
 
 export interface CompararInsight {
@@ -176,6 +268,79 @@ export interface CompararPorTipoResponse {
     kpisComVariacao: number;
   };
   mensagem?: string;
+}
+
+export type FaixaDominante3d = 'pessimo' | 'ruim' | 'otimo' | 'excedido';
+
+export interface PontoQualidadeIdeal3d {
+  data: string;
+  rota: string;
+  viagens: number;
+  pctIdealMedio: number;
+  faixaDominante: FaixaDominante3d;
+  faixas: Record<FaixaDominante3d, number>;
+  servicoId: string;
+  servicoNome: string;
+  contratoId: string;
+  contratoNome: string;
+}
+
+export interface QualidadeIdeal3dResponse {
+  tipoServico: string;
+  tipoServicoLabel: string;
+  dataInicio: string;
+  dataFim: string;
+  totalPontos: number;
+  totalViagens: number;
+  rotas: string[];
+  dias: string[];
+  pontos: PontoQualidadeIdeal3d[];
+}
+
+export type MetricaEvolucaoId =
+  | 'peso_ideal'
+  | 'tempo_encher'
+  | 'velocidade'
+  | 'ton_por_km'
+  | 'ton_por_hora';
+
+export interface DefFaixaEvolucao {
+  id: string;
+  label: string;
+  cor: string;
+  regra: string;
+}
+
+export interface PontoEvolucaoOperacional {
+  data: string;
+  rota: string;
+  viagens: number;
+  faixaDominante: string;
+  faixas: Record<string, number>;
+  servicoId: string;
+  servicoNome: string;
+  contratoId: string;
+  contratoNome: string;
+  caixaMediaL?: number;
+}
+
+export interface SerieEvolucaoOperacional {
+  id: MetricaEvolucaoId;
+  label: string;
+  descricao: string;
+  faixas: DefFaixaEvolucao[];
+  totalPontos: number;
+  totalViagens: number;
+  pontos: PontoEvolucaoOperacional[];
+}
+
+export interface EvolucaoOperacionalResponse {
+  tipoServico: string;
+  tipoServicoLabel: string;
+  dataInicio: string;
+  dataFim: string;
+  dias: string[];
+  series: SerieEvolucaoOperacional[];
 }
 
 export interface ServicoPorTipoItem {
@@ -264,13 +429,17 @@ const servicoService = {
     return data;
   },
 
-  /** Compara KPIs entre serviços do mesmo tipo — inclusive entre contratos */
+  /** Compara KPIs entre serviços do mesmo tipo — inclusive entre contratos.
+   * Sem servicoIds (ou lista vazia): compara todos do tipo com dados.
+   * filtros.perfil = 'tv' → resposta leve para wallboard. */
   async compararGlobal(
     tipoServico: string,
-    servicoIds: string[],
+    servicoIds: string[] = [],
     filtros?: FiltrosComparacao,
   ): Promise<CompararPorTipoResponse> {
-    const params = new URLSearchParams({ tipoServico, servicoIds: servicoIds.join(',') });
+    const params = new URLSearchParams({ tipoServico });
+    if (servicoIds.length > 0) params.set('servicoIds', servicoIds.join(','));
+    if (filtros?.perfil) params.set('perfil', filtros.perfil);
     if (filtros?.periodosPorContrato && Object.keys(filtros.periodosPorContrato).length > 0) {
       params.set('periodosPorContrato', JSON.stringify(filtros.periodosPorContrato));
     }
@@ -281,6 +450,46 @@ const servicoService = {
     const { data } = await api.get<CompararPorTipoResponse>(
       `/dashboard/comparar-por-tipo?${params.toString()}`,
       { signal: nextAbortSignal('servico:compararGlobal') },
+    );
+    return data;
+  },
+
+  /** Scatter 3D TV: pontos dia × rota (% vs ideal × viagens). */
+  async getQualidadeIdeal3d(opts: {
+    servicoIds: string[];
+    dataInicio: string;
+    dataFim: string;
+    tipoServico?: string;
+  }): Promise<QualidadeIdeal3dResponse> {
+    const params = new URLSearchParams({
+      tipoServico: opts.tipoServico || 'coleta_caminhao',
+      servicoIds: opts.servicoIds.join(','),
+      dataInicio: opts.dataInicio,
+      dataFim: opts.dataFim,
+    });
+    const { data } = await api.get<QualidadeIdeal3dResponse>(
+      `/dashboard/qualidade-ideal-3d?${params.toString()}`,
+      { signal: nextAbortSignal('servico:qualidadeIdeal3d'), timeout: 60000 },
+    );
+    return data;
+  },
+
+  /** Evolução diária TV: peso ideal + tempo TOCO/TRUCADO/MINI + velocidade + km/t + HR/t. */
+  async getEvolucaoOperacional(opts: {
+    servicoIds: string[];
+    dataInicio: string;
+    dataFim: string;
+    tipoServico?: string;
+  }): Promise<EvolucaoOperacionalResponse> {
+    const params = new URLSearchParams({
+      tipoServico: opts.tipoServico || 'coleta_caminhao',
+      servicoIds: opts.servicoIds.join(','),
+      dataInicio: opts.dataInicio,
+      dataFim: opts.dataFim,
+    });
+    const { data } = await api.get<EvolucaoOperacionalResponse>(
+      `/dashboard/evolucao-operacional?${params.toString()}`,
+      { signal: nextAbortSignal('servico:evolucaoOperacional'), timeout: 90000 },
     );
     return data;
   },
@@ -423,6 +632,24 @@ const servicoService = {
       tipoServico?: string;
       modo?: string;
     }>;
+  },
+
+  /**
+   * Mapeamento operacional do ciclo: rota × motorista × placa (tempo e km).
+   */
+  async getMapeamentoOperacional(
+    contractId: string,
+    servicoId: string,
+    opts?: { data?: string; dataInicio?: string; dataFim?: string },
+  ) {
+    const chave = `mapeamento-op-v6:${contractId}:${servicoId}:${opts?.data || ''}:${opts?.dataInicio || ''}:${opts?.dataFim || ''}`;
+    return cachedFetch(chave, async () => {
+      const { data } = await api.get(
+        `/contracts/${contractId}/servicos/${servicoId}/mapeamento-operacional`,
+        { params: opts, signal: nextAbortSignal('servico:getMapeamentoOperacional') },
+      );
+      return data;
+    }, { ttlMs: 120_000 }) as Promise<MapeamentoOperacionalResponse>;
   },
 
   /** KPIs calculados no backend — cache + deduplicação. */
@@ -600,10 +827,13 @@ const servicoService = {
     contractId: string,
     servicoId: string,
     params: { dataInicio: string; dataFim: string },
+    opts?: { abortKey?: string },
   ) {
+    const abortKey = opts?.abortKey
+      || `servico:getResumoCicloPorDia:${params.dataInicio}:${params.dataFim}`;
     const { data } = await api.get(
       `/contracts/${contractId}/servicos/${servicoId}/resumo-ciclo-por-dia`,
-      { params, signal: nextAbortSignal('servico:getResumoCicloPorDia') },
+      { params, signal: nextAbortSignal(abortKey) },
     );
     return data as {
       dias: Array<{
@@ -611,6 +841,7 @@ const servicoService = {
         rotas: number;
         viagens: number;
         pesoTotalKg: number;
+        pesoTotalTon?: number;
         kmTotal: number;
         areaM2?: number;
         metroLinear?: number;
@@ -622,6 +853,7 @@ const servicoService = {
         rotas: number;
         viagens: number;
         pesoTotalKg: number;
+        pesoTotalTon?: number;
         kmTotal: number;
         areaM2?: number;
         metroLinear?: number;
@@ -686,6 +918,22 @@ const servicoService = {
         erro?: string;
         ignorado?: boolean;
       };
+    };
+  },
+
+  async reabrirCiclo(
+    contractId: string,
+    servicoId: string,
+    body: { mesReferencia: number; anoReferencia: number },
+  ) {
+    const { data } = await api.post(
+      `/contracts/${contractId}/servicos/${servicoId}/ciclos/reabrir`,
+      body,
+    );
+    return data as {
+      message: string;
+      ciclo: { label: string; dataInicio: string; dataFim: string };
+      uploadIds: number[];
     };
   },
 

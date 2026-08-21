@@ -5,10 +5,10 @@ import { ehPlacaReserva } from '../../utils/placasReserva';
 import { normalizarTipoCaminhaoPeso, type TipoCaminhaoPeso } from '../../config/pesoMaximoCaminhao';
 import {
   LABEL_TIPO_CAMINHAO,
+  calcularPesoIdealViagem,
   classificarPctIdeal,
   densidadeOptsToInput,
   notaDaFaixaIdeal,
-  resolverPesosIdeaisKg,
   statusPctVsMargemIdeal,
   type NotaIdealViagem,
 } from './escalaIdealPeso';
@@ -77,6 +77,7 @@ export type OptsEficienciaContrato = {
   volumeL?: Partial<Record<TipoCaminhaoPeso, number>> | null;
   densidadeResiduoKgL?: number | null;
   densidadeKgL?: Partial<Record<TipoCaminhaoPeso, number>> | null;
+  densidadeKgLPorPlaca?: Record<string, number> | null;
   /** Fallback placa → tipo a partir das viagens PESO 1–4. */
   tipoPorPlaca?: Map<string, TipoCaminhaoPeso> | null;
 };
@@ -343,8 +344,15 @@ export function classificarGrupoVsIdealTipo(
 } {
   const avgDia = 0; // não usar média do dia como referência principal
   const tipo = resolverTipoGrupo(grupo, opts);
-  const ideais = resolverPesosIdeaisKg(opts?.volumeL, densidadeOptsToInput(opts));
-  const pesoIdealKg = tipo && ideais[tipo] > 0 ? ideais[tipo] : null;
+  const pesoIdealKg = tipo
+    ? calcularPesoIdealViagem({
+      placa: grupo.chave,
+      tipo,
+      volumeOverrides: opts?.volumeL,
+      densidade: densidadeOptsToInput(opts),
+      porPlaca: opts?.densidadeKgLPorPlaca,
+    }) || null
+    : null;
   const pesoKg = grupo.tonMediaViagem * 1000;
 
   if (pesoIdealKg != null && pesoIdealKg > 0 && pesoKg > 0) {

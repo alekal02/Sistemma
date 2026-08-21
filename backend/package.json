@@ -5,15 +5,19 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
+    "predev": "npm run build --prefix ../packages/shared",
+    "prebuild": "npm run build --prefix ../packages/shared",
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "node --require ts-node/register/transpile-only --test src/services/formulaEngine.test.ts src/services/analisePesoColetaService.test.ts",
+    "pretest": "npm run build --prefix ../packages/shared",
+    "test": "node --require ts-node/register/transpile-only --test src/services/formulaEngine.test.ts src/services/analisePesoColetaService.test.ts src/utils/periodoCicloContrato.test.ts src/services/viagensPorRotaService.test.ts src/services/validacaoViagemService.test.ts",
     "diagnostico:dashboards": "ts-node --transpile-only scripts/diagnostico-dashboards.ts"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@sistemma/shared": "file:../packages/shared",
     "@types/express": "^5.0.6",
     "@types/node": "^25.6.0",
     "axios": "^1.15.2",

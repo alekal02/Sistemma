@@ -15,7 +15,7 @@
 #   "path backend not found" — remova docker-compose.dev.yml da pasta destino
 #   "no matching manifest linux/amd64" — republique: .\publicar.ps1 -Tag X
 #
-# DEV (build local — requer backend/ e frontend/):
+# DEV (build local — requer packages/shared, backend/ e frontend/):
 #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 #   .\build-and-push.ps1 -BuildOnly -Up
 # =============================================================================

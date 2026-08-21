@@ -23,10 +23,28 @@ import { dashboardCache } from '../services/DashboardCacheManager';
 import { agendarWarmupPosUpload } from '../services/executivoCacheWarmupService';
 import { gerarConfigGraficosPadrao, reResolverGraficos } from '../services/graficosPadrao';
 import { invalidarCacheSaudeContratos } from './ContractController';
+import { mergePlacasAtivasPorUpload } from '../services/mergePlacasAtivasContratoService';
 
 // Extensão para request com file do multer
 interface RequestWithFile extends Request {
   file?: Express.Multer.File;
+}
+
+async function tentarMergePlacasContrato(
+  servicoId: string | undefined,
+  planilhaUploadId?: number | null,
+): Promise<void> {
+  if (!servicoId) return;
+  try {
+    const r = await mergePlacasAtivasPorUpload(servicoId, planilhaUploadId);
+    if (r.adicionadas > 0) {
+      console.log(
+        `[ColetaController] Frota do contrato: +${r.adicionadas} placa(s) (total ${r.total})`,
+      );
+    }
+  } catch (err: any) {
+    console.warn('[ColetaController] Merge placas ativas:', err?.message || err);
+  }
 }
 
 /**
@@ -104,6 +122,14 @@ export class ColetaController {
         if (resultado.tiposSemServico.length) {
           mensagem += ` (${resultado.tiposSemServico.map((t) => `${t.registros} ${t.tipoSistema} sem serviço`).join(', ')})`;
         }
+        const avisoCiclo = (resultado.avisos || []).find((a) => a.includes('ciclo já fechado') || a.includes('ciclo anterior'));
+        if (avisoCiclo) mensagem += ` ${avisoCiclo}`;
+
+        for (const s of resultado.splitPorServico || []) {
+          if (s.importados > 0) {
+            await tentarMergePlacasContrato(s.servicoId, s.planilhaUploadId);
+          }
+        }
 
         invalidarCacheSaudeContratos(contractId);
         res.json({
@@ -141,7 +167,12 @@ export class ColetaController {
           );
 
         const qtd = Number((resultado as any).importados ?? (resultado as any).importadas ?? 0);
+        await tentarMergePlacasContrato(alvo.id, (resultado as any).planilhaUploadId);
         invalidarCacheSaudeContratos(contractId);
+        const avisos = Array.isArray((resultado as { avisos?: string[] }).avisos)
+          ? (resultado as { avisos: string[] }).avisos
+          : [];
+        const avisoCiclo = avisos.find((a) => a.includes('ciclo'));
         res.json({
           sucesso: true,
           tipoDetectado: classificacao.tipo,
@@ -150,7 +181,9 @@ export class ColetaController {
           servicoNome: alvo.nome,
           ...resultado,
           importadas: qtd,
-          mensagem: `Coleta importada em “${alvo.nome}”: ${qtd} registro(s).`,
+          mensagem: avisoCiclo
+            ? `Coleta importada em “${alvo.nome}”: ${qtd} registro(s). ${avisoCiclo}`
+            : `Coleta importada em “${alvo.nome}”: ${qtd} registro(s).`,
         });
         return;
       }
@@ -261,6 +294,12 @@ export class ColetaController {
           }
           if (resultadoUnif.consolidacao?.uploadsRemovidos) {
             mensagem += ` ${resultadoUnif.consolidacao.uploadsRemovidos} planilha(s) antiga(s) removida(s).`;
+          }
+
+          for (const s of resultadoUnif.splitPorServico || []) {
+            if (s.importados > 0) {
+              await tentarMergePlacasContrato(s.servicoId, s.planilhaUploadId);
+            }
           }
 
           res.json({
@@ -406,6 +445,7 @@ export class ColetaController {
         invalidarCacheDashboardServico(servico_id);
         dashboardCache.invalidar(servico_id);
         agendarWarmupPosUpload(servico_id);
+        await tentarMergePlacasContrato(servico_id, resultado?.planilhaUploadId);
       }
 
       let mensagem: string;
@@ -417,8 +457,14 @@ export class ColetaController {
         if (resultado.datasApagadas?.length) {
           partes.push(`${resultado.datasApagadas.length} dia(s) atualizado(s)`);
         }
-        if (cons?.registrosPreservados > 0) {
-          partes.push(`${cons.registrosPreservados} registro(s) de dias só no sistema preservados`);
+        if (cons?.registrosRemovidosAusentes > 0) {
+          partes.push(`${cons.registrosRemovidosAusentes} registro(s) de dias só no sistema removidos`);
+        } else if ((resultado as any).diasRemovidosAusentes?.length > 0) {
+          const n = (resultado as any).diasRemovidosAusentes.reduce(
+            (s: number, d: { registrosRemovidos: number }) => s + d.registrosRemovidos,
+            0,
+          );
+          partes.push(`${n} registro(s) de dias só no sistema removidos`);
         }
         if (cons?.uploadsRemovidos > 0) {
           partes.push(`${cons.uploadsRemovidos} planilha(s) antiga(s) removida(s)`);

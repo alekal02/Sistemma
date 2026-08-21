@@ -98,7 +98,7 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
           ?? (data.importados - inconsistentes);
         const importados = data.importados ?? data.importadas ?? 0;
         const uploadsRemovidos = data.consolidacao?.uploadsRemovidos ?? 0;
-        const registrosPreservados = data.consolidacao?.registrosPreservados ?? 0;
+        const registrosRemovidosAusentes = data.consolidacao?.registrosRemovidosAusentes ?? 0;
         const modeloRocada = (data as { modelo?: string }).modelo || optsRocada?.modelo || null;
         const modeloRocadaLabel = optsRocada?.modeloLabel
           || (modeloRocada ? labelModeloRocada(modeloRocada) : null);
@@ -121,7 +121,7 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
           validasDashboard,
           inconsistentes,
           uploadsRemovidos,
-          registrosPreservados,
+          registrosRemovidosAusentes,
           modeloRocada: modoUnificado ? 'servicos_unificados' : modeloRocada,
           modeloRocadaLabel: modoUnificado ? 'Serviços unificados' : modeloRocadaLabel,
           areaTotalM2,
@@ -134,7 +134,7 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
 
         const extras: string[] = [];
         if (uploadsRemovidos > 0) extras.push(`${uploadsRemovidos} planilha(s) antiga(s) removida(s)`);
-        if (registrosPreservados > 0) extras.push(`${registrosPreservados} registro(s) de dias só no sistema preservados`);
+        if (registrosRemovidosAusentes > 0) extras.push(`${registrosRemovidosAusentes} registro(s) de dias só no sistema removidos`);
         const sufixo = extras.length ? ` ${extras.join('; ')}.` : '';
 
         if (modoUnificado) {
@@ -163,6 +163,9 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
             'success'
           );
         }
+        const avisos = (data as { avisos?: string[] }).avisos || [];
+        const avisoCiclo = avisos.find((a) => a.includes('ciclo já fechado') || a.includes('ciclo anterior'));
+        if (avisoCiclo) adicionarToast(avisoCiclo, 'warning');
       }
       return true;
     } catch (err) {
@@ -474,6 +477,14 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
     const inconsistentes = (relatorio.viagensInconsistentesTotal ?? relatorio.viagensIncompletas) || 0;
     const validas = relatorio.viagensValidasDashboard ?? relatorio.viagensCompletas ?? 0;
     const descartadas = relatorio.linhasDescartadasSemDados ?? 0;
+    const tDash = (Number(relatorio.pesoKgDashboard || 0) / 1000);
+    const tFora = (Number(relatorio.pesoKgForaDashboard || 0) / 1000);
+    const fmtPesoTon = (kg: unknown) => {
+      if (kg == null || kg === '') return '—';
+      const n = Number(kg);
+      if (Number.isNaN(n)) return '—';
+      return (n / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 2, minimumFractionDigits: 1 });
+    };
     const dataRelatorio = formatarDataArquivoPdf();
     const tipoLabel = labelTipoServicoArquivo(tipoServico, TIPOS_SERVICO_LABELS as Record<string, string>);
 
@@ -497,7 +508,7 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
         <td>${v.motorista || '—'}</td>
         <td style="text-align:center;font-weight:700;color:${fora ? '#dc2626' : '#16a34a'}">${v.contadorViagens ?? '—'}</td>
         <td>${v.kmTotal != null ? v.kmTotal.toLocaleString('pt-BR', { maximumFractionDigits: 1 }) : (v.kmTotalCalculado != null ? v.kmTotalCalculado.toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + '*' : '—')}</td>
-        <td>${v.pesoTotal != null ? Number(v.pesoTotal).toLocaleString('pt-BR', { maximumFractionDigits: 1 }) : '—'}</td>
+        <td>${v.pesoTotal != null ? fmtPesoTon(v.pesoTotal) : '—'}</td>
         <td style="color:${fora ? '#dc2626' : '#b45309'}; font-size:9px">${status}</td>
       </tr>
     `;
@@ -568,6 +579,10 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
     Entram no dashboard: <strong>${relatorio.somaContadorNoDashboard ?? validas}</strong>.
     Ficam fora: <strong>${relatorio.somaContadorForaDashboard ?? 0}</strong>
     (${inconsistentes} linha(s) inconsistente(s)${descartadas > 0 ? ` + ${descartadas} ignorada(s)` : ''}).
+    ${tFora > 0
+      ? `A coluna Toneladas do ciclo soma só as viagens válidas: <strong>${tDash.toLocaleString('pt-BR', { maximumFractionDigits: 1 })} t</strong>. `
+        + `<strong>${tFora.toLocaleString('pt-BR', { maximumFractionDigits: 1 })} t</strong> ficaram FORA DO DASH e não entram no total. Planilha ≈ ciclo + toneladas fora. `
+      : ''}
     ${descartadas > 0 ? `${descartadas} linha(s) sem placa, KM Total e Peso Total foram ignoradas. ` : ''}
     Regras: KM máx. 300, peso &gt; 0, sem negativos, horas com ":" (não ";").
   </div>
@@ -599,7 +614,7 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
       ${linhasTabela}
     </tbody>
   </table>
-  <div class="obs">* Contador = CONTADOR DE VIAGENS. Linhas FORA DO DASH não entram nos KPIs.</div>
+  <div class="obs">* Contador = CONTADOR DE VIAGENS. Peso em toneladas (kg ÷ 1000). Linhas FORA DO DASH não entram na coluna Toneladas do ciclo.</div>
   ` : ''}
 
   <div class="footer">
@@ -1240,7 +1255,7 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
                                     : (v.pesoTotal == null || Number(v.pesoTotal) <= 0 ? '#dc2626' : '#16a34a'),
                                   fontWeight: v.alertaPesagemAlta ? 700 : undefined,
                                 }}>
-                                  {v.pesoTotal != null ? Number(v.pesoTotal).toFixed(1) : '—'}
+                                  {v.pesoTotal != null ? `${(Number(v.pesoTotal) / 1000).toFixed(1)} t` : '—'}
                                 </td>
                                 <td style={{
                                   padding: '3px 5px',
@@ -1327,8 +1342,8 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
                   <div style={{ fontSize: '0.58rem', color: '#64748b' }}>Diferem</div>
                 </div>
                 {(conferenciaDiaria.diasSomenteSistema ?? 0) > 0 && (
-                  <div style={{ background: '#fff', borderRadius: '6px', padding: '0.35rem', textAlign: 'center', border: '1px solid #c7d2fe' }}>
-                    <div style={{ fontSize: '1rem', fontWeight: 800, color: '#4f46e5' }}>{conferenciaDiaria.diasSomenteSistema}</div>
+                  <div style={{ background: '#fff', borderRadius: '6px', padding: '0.35rem', textAlign: 'center', border: '1px solid #fed7aa' }}>
+                    <div style={{ fontSize: '1rem', fontWeight: 800, color: '#c2410c' }}>{conferenciaDiaria.diasSomenteSistema}</div>
                     <div style={{ fontSize: '0.58rem', color: '#64748b' }}>Só no sistema</div>
                   </div>
                 )}
@@ -1356,11 +1371,11 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
                         .map((d) => {
                           const cor = d.status === 'novo' ? '#16a34a'
                             : d.status === 'divergente' ? '#d97706'
-                            : d.status === 'somente_sistema' ? '#4f46e5'
+                            : d.status === 'somente_sistema' ? '#c2410c'
                             : '#dc2626';
                           const lbl = d.status === 'novo' ? 'Novo'
                             : d.status === 'divergente' ? 'Diverge'
-                            : d.status === 'somente_sistema' ? 'Preservar'
+                            : d.status === 'somente_sistema' ? 'Remover'
                             : 'Bloqueado';
                           return (
                             <tr key={d.data} style={{ borderBottom: '1px solid #f1f5f9' }}>
@@ -1370,7 +1385,7 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
                                 {d.status === 'novo' && d.planilha ? (
                                   `${d.planilha.rotas} rotas · ${d.planilha.viagens} viagens`
                                 ) : d.status === 'somente_sistema' && d.sistema ? (
-                                  `${d.sistema.rotas} rotas · ${d.sistema.viagens} viagens (mantidos)`
+                                  `${d.sistema.rotas} rotas · ${d.sistema.viagens} viagens (serão removidos)`
                                 ) : d.sistema && d.planilha ? (
                                   <>
                                     {d.diferencas.join(' · ') || `${d.planilha.viagens} vs ${d.sistema.viagens} viagens`}

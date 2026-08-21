@@ -12,6 +12,9 @@ function resolveJwtSecret(): string {
 
 const JWT_SECRET = resolveJwtSecret();
 const JWT_EXPIRES_IN = (process.env.JWT_EXPIRES_IN || '8h') as jwt.SignOptions['expiresIn'];
+const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || `${JWT_SECRET}-refresh`;
+const JWT_REFRESH_EXPIRES_IN = (process.env.JWT_REFRESH_EXPIRY || '30d') as jwt.SignOptions['expiresIn'];
+const REFRESH_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 
 export interface TokenPayload {
   id: string;
@@ -36,6 +39,50 @@ export function gerarToken(payload: TokenPayload): string {
   return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
 }
 
+export function gerarRefreshToken(payload: TokenPayload): string {
+  return jwt.sign({ ...payload, typ: 'refresh' }, JWT_REFRESH_SECRET, {
+    expiresIn: JWT_REFRESH_EXPIRES_IN,
+  });
+}
+
+type JwtComExp = TokenPayload & { exp?: number; typ?: string };
+
+/** Lê Bearer do header Authorization. */
+export function extrairBearer(req: Request): string | null {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) return null;
+  const parts = authHeader.split(' ');
+  if (parts.length !== 2 || !/^Bearer$/i.test(parts[0])) return null;
+  return parts[1];
+}
+
+/**
+ * Renova a sessão a partir do refresh token (ou do access token expirado há pouco).
+ * Enquanto a TV/aba estiver ligada e renovando, a sessão não cai.
+ */
+export function verificarTokenRenovacao(token: string): TokenPayload | null {
+  try {
+    const decoded = jwt.verify(token, JWT_REFRESH_SECRET) as JwtComExp;
+    if (decoded?.id && decoded.typ === 'refresh') {
+      return { id: decoded.id, email: decoded.email, nome: decoded.nome, role: decoded.role };
+    }
+  } catch {
+    /* tenta access token abaixo */
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET, { ignoreExpiration: true }) as JwtComExp;
+    if (!decoded?.id || decoded.typ === 'refresh') return null;
+    if (decoded.exp) {
+      const expiradoHa = Date.now() - decoded.exp * 1000;
+      if (expiradoHa > REFRESH_GRACE_MS) return null;
+    }
+    return { id: decoded.id, email: decoded.email, nome: decoded.nome, role: decoded.role };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Middleware que verifica se o usuário está autenticado
  */
@@ -45,18 +92,7 @@ export function authenticate(
   next: NextFunction
 ): void {
   // Suporta token via header Authorization ou query string ?token=
-  let token: string | null = null;
-
-  const authHeader = req.headers.authorization;
-  if (authHeader) {
-    const parts = authHeader.split(' ');
-    if (parts.length === 2) {
-      const [scheme, t] = parts;
-      if (/^Bearer$/i.test(scheme)) {
-        token = t;
-      }
-    }
-  }
+  let token: string | null = extrairBearer(req);
 
   // Fallback: token na query string (para download direto via window.open)
   if (!token && req.query.token) {

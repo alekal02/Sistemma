@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { montarRecomendacaoConferencia } from './conferenciaDiariaPlanilhaService';
 
 describe('montarRecomendacaoConferencia', () => {
-  it('menciona preservação de dias só no sistema e remoção da planilha antiga', () => {
+  it('menciona remoção de dias só no sistema e substituição da planilha antiga', () => {
     const msg = montarRecomendacaoConferencia({
       diasNovos: 2,
       diasDivergentes: 1,
@@ -13,7 +13,7 @@ describe('montarRecomendacaoConferencia', () => {
     });
     assert.match(msg, /2 dia\(s\) novo/);
     assert.match(msg, /1 dia\(s\) serão atualizados/);
-    assert.match(msg, /3 dia\(s\) só no sistema serão preservados/);
+    assert.match(msg, /3 dia\(s\) só no sistema serão removidos/);
     assert.match(msg, /planilha antiga será substituída/);
   });
 });

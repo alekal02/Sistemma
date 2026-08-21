@@ -6,6 +6,11 @@
     "module": "esnext",
     "types": ["vite/client"],
     "skipLibCheck": true,
+    "ignoreDeprecations": "6.0",
+    "baseUrl": ".",
+    "paths": {
+      "@sistemma/shared": ["../packages/shared/src/index.ts"]
+    },
 
     /* Bundler mode */
     "moduleResolution": "bundler",
@@ -22,5 +27,5 @@
     "noFallthroughCasesInSwitch": true,
     "strictNullChecks": false
   },
-  "include": ["src"]
+  "include": ["src", "../packages/shared/src"]
 }

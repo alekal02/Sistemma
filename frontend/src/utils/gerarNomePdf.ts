@@ -133,6 +133,32 @@ export function gerarNomePdfAnalisePesoComparativo(opts?: {
   ].filter(Boolean).join('_');
 }
 
+/** Nome do PDF de melhoria do ciclo de operação (anterior × atual). */
+export function gerarNomePdfRelatorioMelhoriaCicloOperacao(opts: {
+  servicoNome: string;
+  dataInicio: string;
+  dataFim: string;
+  dataInicioAnterior?: string;
+  dataFimAnterior?: string;
+}): string {
+  const atual = sufixoPeriodoPdf({ dataInicio: opts.dataInicio, dataFim: opts.dataFim });
+  const anterior = opts.dataInicioAnterior
+    ? sufixoPeriodoPdf({ dataInicio: opts.dataInicioAnterior, dataFim: opts.dataFimAnterior })
+    : undefined;
+  const limpar = (p?: string) => (p ? sanitizarParteNome(p.replace(/^Ciclo_/, '')) : null);
+  return [
+    sanitizarParteNome(opts.servicoNome || 'Servico'),
+    'Melhoria_Ciclo',
+    anterior ? limpar(anterior) : null,
+    anterior && atual ? 'x' : null,
+    limpar(atual),
+  ].filter(Boolean).join('_');
+}
+
+export function gerarNomePdfRelatorioMelhoriaCicloTodosContratos(): string {
+  return ['Melhoria_Ciclo_Todos_Contratos', formatarDataArquivoPdf()].join('_');
+}
+
 /** Nome do PDF de melhoria ciclo a ciclo (resultado ÷ ideal → viagens aterro). */
 export function gerarNomePdfMelhoriaCicloPeso(opts?: { tipoServico?: string }): string {
   return [

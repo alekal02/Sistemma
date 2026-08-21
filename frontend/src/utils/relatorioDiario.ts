@@ -6,6 +6,9 @@
 import { detectarColunasCardViagem, extrairMetricasCardViagem } from './viagemCardDados';
 import { contarViagensPorRotaRegistro } from './viagensPorRota';
 import { normalizarDataParaIso } from './normalizarDataIso';
+import { toneladasDoPesoKg } from '@sistemma/shared';
+
+export { toneladasDoPesoKg } from '@sistemma/shared';
 
 export interface DadoDiario {
   /** Data no formato yyyy-MM-dd */
@@ -279,6 +282,64 @@ export function agruparCicloPorDia(
   };
 }
 
+function consolidarDiasApi(
+  diasApi: Array<{
+    data: string;
+    rotas: number;
+    viagens: number;
+    pesoTotalKg: number;
+    kmTotal: number;
+    areaM2?: number;
+    metroLinear?: number;
+    kmLinear?: number;
+    qtdArvore?: number;
+    quantitativo?: number;
+  }>,
+) {
+  const mapa = new Map<string, {
+    data: string;
+    rotas: number;
+    viagens: number;
+    pesoTotalKg: number;
+    kmTotal: number;
+    areaM2: number;
+    metroLinear: number;
+    kmLinear: number;
+    qtdArvore: number;
+    quantitativo: number;
+  }>();
+  for (const d of diasApi) {
+    const data = String(d.data || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) continue;
+    const prev = mapa.get(data);
+    if (!prev) {
+      mapa.set(data, {
+        data,
+        rotas: Number(d.rotas || 0),
+        viagens: Number(d.viagens || 0),
+        pesoTotalKg: Number(d.pesoTotalKg || 0),
+        kmTotal: Number(d.kmTotal || 0),
+        areaM2: Number(d.areaM2 || 0),
+        metroLinear: Number(d.metroLinear || 0),
+        kmLinear: Number(d.kmLinear || 0),
+        qtdArvore: Number(d.qtdArvore || 0),
+        quantitativo: Number(d.quantitativo || 0),
+      });
+      continue;
+    }
+    prev.rotas += Number(d.rotas || 0);
+    prev.viagens += Number(d.viagens || 0);
+    prev.pesoTotalKg += Number(d.pesoTotalKg || 0);
+    prev.kmTotal += Number(d.kmTotal || 0);
+    prev.areaM2 += Number(d.areaM2 || 0);
+    prev.metroLinear += Number(d.metroLinear || 0);
+    prev.kmLinear += Number(d.kmLinear || 0);
+    prev.qtdArvore += Number(d.qtdArvore || 0);
+    prev.quantitativo += Number(d.quantitativo || 0);
+  }
+  return mapa;
+}
+
 /** Monta relatório do ciclo a partir da agregação SQL do backend (sem limite de registros). */
 export function agruparCicloPorDiaFromApi(
   diasApi: Array<{
@@ -286,6 +347,7 @@ export function agruparCicloPorDiaFromApi(
     rotas: number;
     viagens: number;
     pesoTotalKg: number;
+    pesoTotalTon?: number;
     kmTotal: number;
     areaM2?: number;
     metroLinear?: number;
@@ -316,7 +378,7 @@ export function agruparCicloPorDiaFromApi(
   void valorToco;
   void valorBasculante;
 
-  const mapa = new Map(diasApi.map((d) => [d.data, d]));
+  const mapa = consolidarDiasApi(diasApi);
   const todasDatas = listarDatasIntervalo(dataInicio, dataFim);
   if (!todasDatas.length) {
     return {
@@ -397,9 +459,12 @@ export function agruparCicloPorDiaFromApi(
       };
     }
 
-    if (!(raw.viagens > 0)) return criarDiaVazio(data);
+    if (!(raw.viagens > 0) && !(raw.pesoTotalKg > 0) && !(raw.rotas > 0)) {
+      return criarDiaVazio(data);
+    }
 
-    const toneladas = raw.pesoTotalKg / 1000;
+    // Total do dia: kg da API ÷ 1000. Se ainda parecer kg (ex. 25.673 t), divide de novo.
+    const toneladas = toneladasDoPesoKg(raw.pesoTotalKg);
     const faturamento = toneladas * tarifa;
     return {
       data,
@@ -427,7 +492,7 @@ export function agruparCicloPorDiaFromApi(
   const diaAtivo = (d: DadoDiario) => (
     modoUnidade
       ? (d.rotas > 0 || (d.metricaUnidade || 0) > 0 || (d.areaM2 || 0) > 0)
-      : d.viagens > 0
+      : d.viagens > 0 || d.toneladas > 0 || d.rotas > 0
   );
 
   const diasComDados = dias.filter(diaAtivo).length;

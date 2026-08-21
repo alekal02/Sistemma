@@ -4,8 +4,8 @@ services:
   backend:
     platform: linux/amd64
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
       platforms:
         - linux/amd64
       args:
@@ -15,8 +15,8 @@ services:
   frontend:
     platform: linux/amd64
     build:
-      context: ./frontend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: frontend/Dockerfile
       platforms:
         - linux/amd64
       args:

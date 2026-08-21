@@ -46,6 +46,8 @@ import {
   inferirMesReferenciaAtual,
   deslocarMesReferencia,
   normalizarDiaInicioCiclo,
+  recortarPeriodoAteReferencia,
+  primeirosNDiasPeriodo,
 } from '../utils/periodoCicloContrato';
 import { diagnosticarDashboards } from '../services/diagnosticoDashboardService';
 import { TIPOS_SERVICO_META } from '../enums/TipoServico';
@@ -352,13 +354,21 @@ function calcularPeriodoCiclo(
   const cicloAtual = calcularCicloMensalContrato(ano, mes, dia);
   const { mes: mesAnt, ano: anoAnt } = deslocarMesReferencia(mes, ano, -1);
   const cicloAnterior = calcularCicloMensalContrato(anoAnt, mesAnt, dia);
+  const recorte = recortarPeriodoAteReferencia(cicloAtual.dataInicio, cicloAtual.dataFim);
+  const janelaAnt = primeirosNDiasPeriodo(
+    cicloAnterior.dataInicio,
+    cicloAnterior.dataFim,
+    recorte.diasDecorridos,
+  );
 
   return {
-    inicio: startOfDay(parseIsoDate(cicloAtual.dataInicio)),
-    fim: endOfDay(parseIsoDate(cicloAtual.dataFim)),
-    inicioAnterior: startOfDay(parseIsoDate(cicloAnterior.dataInicio)),
-    fimAnterior: endOfDay(parseIsoDate(cicloAnterior.dataFim)),
-    label: `Ciclo: ${cicloAtual.label}`,
+    inicio: startOfDay(parseIsoDate(recorte.dataInicio)),
+    fim: endOfDay(parseIsoDate(recorte.dataFim)),
+    inicioAnterior: startOfDay(parseIsoDate(janelaAnt.dataInicio)),
+    fimAnterior: endOfDay(parseIsoDate(janelaAnt.dataFim)),
+    label: recorte.emAndamento
+      ? `Ciclo: ${cicloAtual.label} (${recorte.diasDecorridos} dias decorridos)`
+      : `Ciclo: ${cicloAtual.label}`,
   };
 }
 

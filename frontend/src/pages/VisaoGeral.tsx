@@ -1,9 +1,9 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   FiSettings, FiRefreshCw, FiBarChart2, FiAlertCircle,
   FiTrendingUp, FiDollarSign, FiActivity, FiTruck,
-  FiClock, FiMapPin, FiArrowRight, FiDatabase, FiGrid, FiColumns,
+  FiClock, FiMapPin, FiArrowRight, FiDatabase, FiGrid, FiColumns, FiDownload,
 } from 'react-icons/fi';
 import { useToast } from '../contexts/ToastContext';
 import { useBreadcrumbs } from '../contexts/BreadcrumbContext';
@@ -11,7 +11,11 @@ import servicoService from '../services/servicoService';
 import { isRequestAborted } from '../services/abortableRequest';
 import api from '../services/api';
 import type { ServicoConsolidado, KpiConsolidadoItem } from '../services/servicoService';
-import CompararPorTipo from '../components/CompararPorTipo';
+import CompararPorTipoTv from '../components/CompararPorTipoTv';
+import pdfService from '../services/pdfService';
+import { gerarHtmlRelatorioMelhoriaCicloTodosContratos } from '../utils/gerarHtmlRelatorioMelhoriaCicloOperacao';
+import { montarItensMelhoriaCicloTodos } from '../utils/exportarMelhoriaCicloTodos';
+import { gerarNomePdfRelatorioMelhoriaCicloTodosContratos } from '../utils/gerarNomePdf';
 import '../styles/Dashboard.css';
 
 type AbaDashboard = 'visao' | 'comparar';
@@ -183,10 +187,17 @@ export default function VisaoGeral() {
   const [servicosSelecionados, setServicosSelecionados] = useState<Set<string>>(new Set());
   const [selecaoComparar, setSelecaoComparar] = useState<string[] | undefined>(undefined);
   const [metaContratos, setMetaContratos] = useState<Record<string, number>>({});
+  const [gerandoMelhorias, setGerandoMelhorias] = useState(false);
+  const [progressoMelhorias, setProgressoMelhorias] = useState('');
+  const gerandoMelhoriasRef = useRef(false);
 
   useEffect(() => {
     setBreadcrumbs([{ label: 'Dashboard' }]);
   }, [setBreadcrumbs]);
+
+  useEffect(() => () => {
+    gerandoMelhoriasRef.current = false;
+  }, []);
 
   useEffect(() => {
     api.get<{ contratos: Array<{ id: string; diaInicioCiclo?: number }> }>('/contracts/saude')
@@ -295,6 +306,74 @@ export default function VisaoGeral() {
     setAbaAtiva('comparar');
   };
 
+  const exportarMelhoriaTodosContratos = useCallback(async () => {
+    if (gerandoMelhoriasRef.current || servicos.length === 0) return;
+    const nContratos = new Set(servicos.map((s) => s.contratoId)).size;
+    const ok = window.confirm(
+      `Gerar o PDF de melhoria operacional de ${servicos.length} serviço(s) em ${nContratos} contrato(s)?\n\n`
+      + 'Compara o ciclo anterior com o ciclo de cada serviço (viagens, toneladas, KM).',
+    );
+    if (!ok) return;
+
+    gerandoMelhoriasRef.current = true;
+    setGerandoMelhorias(true);
+    setProgressoMelhorias('Preparando…');
+    try {
+      let diaInicioPorContrato = metaContratos;
+      if (Object.keys(diaInicioPorContrato).length === 0) {
+        try {
+          const { data } = await api.get<{ contratos: Array<{ id: string; diaInicioCiclo?: number }> }>('/contracts/saude');
+          const map: Record<string, number> = {};
+          for (const c of data.contratos || []) {
+            map[c.id] = c.diaInicioCiclo ?? 1;
+          }
+          diaInicioPorContrato = map;
+        } catch { /* usa dia 1 */ }
+      }
+
+      const { itens, omitidos } = await montarItensMelhoriaCicloTodos({
+        servicos,
+        diaInicioPorContrato,
+        onProgresso: (feito, total, nome) => {
+          if (!gerandoMelhoriasRef.current) return;
+          setProgressoMelhorias(`${feito}/${total} · ${nome}`);
+        },
+      });
+      if (!gerandoMelhoriasRef.current) return;
+      if (itens.length === 0) {
+        adicionarToast(
+          omitidos.length > 0
+            ? 'Nenhum serviço tem operação no ciclo para montar o comparativo'
+            : 'Não há dados para gerar o PDF de melhoria',
+          'warning',
+        );
+        return;
+      }
+      setProgressoMelhorias('Gerando PDF…');
+      const html = gerarHtmlRelatorioMelhoriaCicloTodosContratos({ itens, omitidos });
+      await pdfService.gerarEBaixar(
+        html,
+        gerarNomePdfRelatorioMelhoriaCicloTodosContratos(),
+        'default',
+        false,
+      );
+      if (!gerandoMelhoriasRef.current) return;
+      const extra = omitidos.length > 0 ? ` · ${omitidos.length} sem dados no ciclo` : '';
+      adicionarToast(
+        `PDF de melhoria gerado: ${itens.length} serviço(s) em ${new Set(itens.map((i) => i.contratoNome)).size} contrato(s)${extra}`,
+        'success',
+      );
+    } catch (err) {
+      if (isRequestAborted(err)) return;
+      console.error('Erro PDF melhoria todos contratos:', err);
+      adicionarToast('Erro ao gerar o PDF de melhoria de todos os contratos', 'error');
+    } finally {
+      gerandoMelhoriasRef.current = false;
+      setGerandoMelhorias(false);
+      setProgressoMelhorias('');
+    }
+  }, [servicos, metaContratos, adicionarToast]);
+
   if (carregando) {
     return (
       <div className="vg-container">
@@ -364,6 +443,18 @@ export default function VisaoGeral() {
               </button>
             )}
             <button
+              type="button"
+              className="btn btn-sm btn-primary vg-btn-melhoria-todos"
+              onClick={exportarMelhoriaTodosContratos}
+              disabled={gerandoMelhorias}
+              title="PDF operacional: ciclo anterior × atual de todos os contratos"
+            >
+              <FiDownload size={14} />
+              {gerandoMelhorias
+                ? (progressoMelhorias || 'Gerando…')
+                : 'Melhoria de todos os contratos'}
+            </button>
+            <button
               className="btn-refresh"
               onClick={carregarDados}
               title="Atualizar"
@@ -392,7 +483,7 @@ export default function VisaoGeral() {
       </div>
 
       {abaAtiva === 'comparar' && (
-        <CompararPorTipo
+        <CompararPorTipoTv
           contratos={contratosOpcoes}
           servicosCatalogo={servicosCatalogo}
           selecaoInicial={selecaoComparar}

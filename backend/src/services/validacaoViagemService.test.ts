@@ -231,6 +231,23 @@ describe('validarViagemParaDashboard — integração com alerta de hodômetro',
     assert.ok((resultado.correcoes || []).some(c => /hodômetro|hodometro|KM zerado/i.test(c)));
   });
 
+  it('KM/peso negativo em coluna ociosa da planilha não exclui toneladas válidas do dashboard', () => {
+    const c = coleta({
+      kmTotal: 42,
+      pesoTotal: 12500,
+      dados: {
+        'KM TOTAL': 42,
+        'PESO TOTAL': 12500,
+        'KM ROTA 04': -1,
+        'PESO 5': -999,
+      },
+    });
+    const resultado = prepararViagemParaImportacao(c);
+    assert.equal(resultado.validoDashboard, true, `motivos: ${resultado.motivos.join('; ')}`);
+    assert.equal(c.pesoTotal, 12500);
+    assert.equal(c.validoDashboard, true);
+  });
+
   it('fluxo completo: hodômetro quebrado em todas as rotas não derruba a viagem do dashboard', () => {
     const c = coleta({
       kmTotal: null,
@@ -243,5 +260,35 @@ describe('validarViagemParaDashboard — integração com alerta de hodômetro',
     assert.equal(resultado.validoDashboard, true);
     assert.equal(c.kmTotal, 0);
     assert.equal(c.validoDashboard, true);
+  });
+
+  it('revalidação com id persistido não copia o id para PESO 2–5 nem infla o total', () => {
+    const c = coleta({
+      id: 2535,
+      peso1: 8300,
+      peso2: 2535,
+      peso3: 2535,
+      peso4: 2535,
+      peso5: 2535,
+      pesoTotal: 18440,
+      kmTotal: 80,
+      numeroViagens: 4,
+      dados: {
+        'PESO 1': 8300,
+        'PESO TOTAL': 18440,
+        'KM TOTAL': 80,
+        'CONTADOR DE VIAGENS': 1,
+        'PLACA': 'SDG1J76',
+        'MOTORISTA': 'João',
+      },
+    });
+    const resultado = prepararViagemParaImportacao(c);
+    assert.equal(resultado.validoDashboard, true, `motivos: ${resultado.motivos.join('; ')}`);
+    assert.equal(c.peso1, 8300);
+    assert.equal(c.peso2, null);
+    assert.equal(c.peso3, null);
+    assert.equal(c.peso4, null);
+    assert.equal(c.peso5, null);
+    assert.equal(c.pesoTotal, 8300);
   });
 });

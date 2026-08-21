@@ -42,3 +42,4 @@ Thumbs.db
 
 # Docker volumes locais (se mapeados)
 postgres_data/
+planilhas-ciclo/

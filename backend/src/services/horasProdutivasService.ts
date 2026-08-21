@@ -1,5 +1,8 @@
-import { encontrarValorColuna } from './FormulaEngine';
+import { encontrarValorColuna, parseNumeroBr } from './FormulaEngine';
+import { COLUNAS_HORAS_ROTAS, COLUNAS_HODOMETRO } from '../config/modeloColetaCaminhao';
 
+/** Distância operacional plausível por trecho de rota (não hodômetro bruto). */
+const MAX_KM_TRECHO_ROTA = 300;
 /** Fórmula canônica de Receita por Hora (faturamento ÷ horas produtivas totais) */
 export const FORMULA_RECEITA_POR_HORA =
   'ROUND(DIVIDE(FATURAMENTO_EST(PESO TOTAL, TIPO DE CAMINHÃO), HORAS_PRODUTIVAS(HORA SAIDA BASE, HORA CHEGADA BASE)), 2)';
@@ -27,7 +30,237 @@ function detectarColuna(dados: Record<string, any>[], candidatos: string[]): str
   return '';
 }
 
-/** Horas produtivas de um único registro (viagem) */
+/** Diff entre saída e chegada (horas), com virada de dia — mesma regra de HORAS_PRODUTIVAS(). */
+export function diffHorasSaidaChegada(saida: number, chegada: number): number {
+  if (saida <= 0 || chegada <= 0) return 0;
+  let diff = 0;
+  if (saida < 1 && chegada < 1) {
+    diff = chegada < saida ? (chegada + 1 - saida) * 24 : (chegada - saida) * 24;
+  } else {
+    diff = chegada < saida ? chegada + 24 - saida : chegada - saida;
+  }
+  return diff > 0 && diff < 100 ? Math.round(diff * 100) / 100 : 0;
+}
+
+function lerHoraCampo(obj: Record<string, any>, ...candidatos: string[]): number {
+  for (const nome of candidatos) {
+    const raw = encontrarValorColuna(obj, nome);
+    if (raw === undefined || raw === null || raw === '') continue;
+    const n = typeof raw === 'number' ? raw : parseNumeroBr(raw);
+    if (!isNaN(n) && n > 0) return n;
+  }
+  return 0;
+}
+
+/** Leitura estrita (sem fuzzy contains) — evita confundir HORA SAÍDA ROTA com horaSaida da base. */
+function lerHoraCampoEstrito(obj: Record<string, any>, ...candidatos: string[]): number {
+  if (!obj) return 0;
+  const fontes: Record<string, any>[] = [];
+  if (obj.dados && typeof obj.dados === 'object' && !Array.isArray(obj.dados)) {
+    fontes.push(obj.dados);
+  }
+  fontes.push(obj);
+
+  for (const fonte of fontes) {
+    for (const nome of candidatos) {
+      if (!nome) continue;
+      if (fonte[nome] !== undefined && fonte[nome] !== null && fonte[nome] !== '') {
+        const n = typeof fonte[nome] === 'number' ? fonte[nome] : parseNumeroBr(fonte[nome]);
+        if (!isNaN(n) && n > 0) return n;
+      }
+      const alvo = normalizarChave(nome);
+      for (const [k, v] of Object.entries(fonte)) {
+        if (k === 'dados' || v === undefined || v === null || v === '') continue;
+        if (normalizarChave(k) !== alvo) continue;
+        const n = typeof v === 'number' ? v : parseNumeroBr(v);
+        if (!isNaN(n) && n > 0) return n;
+      }
+    }
+  }
+  return 0;
+}
+
+/**
+ * Horas produtivas de cada trecho (ROTA 01–04): saída − chegada.
+ */
+export function calcularHorasPorTrechoRota(obj: Record<string, any>): number[] {
+  if (!obj) return COLUNAS_HORAS_ROTAS.map(() => 0);
+  return COLUNAS_HORAS_ROTAS.map((par) => {
+    const chegadaCands =
+      par.nome === 'Rota 03'
+        ? [par.horaChegada, 'HORA CHEGA ROTA 03']
+        : [par.horaChegada];
+    const chegadaNaRota = lerHoraCampoEstrito(obj, ...chegadaCands);
+    const saidaDaRota = lerHoraCampoEstrito(obj, par.horaSaida);
+    return diffHorasSaidaChegada(chegadaNaRota, saidaDaRota);
+  });
+}
+
+/**
+ * Horas DENTRO das rotas (produtivas):
+ * Σ (HORA SAÍDA ROTA − HORA CHEGADA ROTA) para todas as rotas preenchidas.
+ */
+export function calcularHorasNasRotasRegistro(obj: Record<string, any>): number {
+  const total = calcularHorasPorTrechoRota(obj).reduce((s, h) => s + h, 0);
+  return Math.round(total * 100) / 100;
+}
+
+function lerKmCampoEstrito(obj: Record<string, any>, ...candidatos: string[]): number {
+  if (!obj) return 0;
+  const fontes: Record<string, any>[] = [];
+  if (obj.dados && typeof obj.dados === 'object' && !Array.isArray(obj.dados)) {
+    fontes.push(obj.dados);
+  }
+  fontes.push(obj);
+
+  for (const fonte of fontes) {
+    for (const nome of candidatos) {
+      if (!nome) continue;
+      if (fonte[nome] !== undefined && fonte[nome] !== null && fonte[nome] !== '') {
+        const n = typeof fonte[nome] === 'number' ? fonte[nome] : parseNumeroBr(fonte[nome]);
+        if (!isNaN(n) && n > 0) return n;
+      }
+      const alvo = normalizarChave(nome);
+      for (const [k, v] of Object.entries(fonte)) {
+        if (k === 'dados' || v === undefined || v === null || v === '') continue;
+        if (normalizarChave(k) !== alvo) continue;
+        const n = typeof v === 'number' ? v : parseNumeroBr(v);
+        if (!isNaN(n) && n > 0) return n;
+      }
+    }
+  }
+  return 0;
+}
+
+function kmTrechoPlausivel(km: number): boolean {
+  return Number.isFinite(km) && km > 0 && km <= MAX_KM_TRECHO_ROTA;
+}
+
+/**
+ * KM produtivo DENTRO das rotas (por viagem):
+ * Σ (KM SAÍDA ROTA − KM CHEGADA ROTA) em cada rota preenchida.
+ * Fallback: kmRota1–4 / "KM ROTA 0N" quando a diferença do hodômetro não é distância.
+ */
+export function calcularKmNasRotasRegistro(obj: Record<string, any>): number {
+  if (!obj) return 0;
+  let total = 0;
+
+  for (let i = 0; i < COLUNAS_HODOMETRO.rotas.length; i++) {
+    const par = COLUNAS_HODOMETRO.rotas[i];
+    const n = i + 1;
+    const chegada = lerKmCampoEstrito(
+      obj,
+      par.kmChegada,
+      par.kmChegada.trim(),
+      `KM CHEGADA ROTA 0${n}`,
+      `KM CHEGADA ROTA ${n}`,
+    );
+    const saida = lerKmCampoEstrito(
+      obj,
+      par.kmSaida,
+      par.kmSaida.trim(),
+      `KM SAIDA ROTA 0${n}`,
+      `KM SAÍDA ROTA 0${n}`,
+      `KM SAIDA ROTA ${n}`,
+      `KM SAÍDA ROTA ${n}`,
+    );
+
+    if (chegada > 0 && saida > 0 && saida >= chegada) {
+      const diff = saida - chegada;
+      if (kmTrechoPlausivel(diff)) {
+        total += diff;
+        continue;
+      }
+      // Hodômetro parado no ponto (diff 0) ou salto absurdo → tenta distância tipada
+    }
+
+    const tipado = Number(obj[`kmRota${n}`]);
+    if (kmTrechoPlausivel(tipado)) {
+      total += tipado;
+      continue;
+    }
+
+    const kmCol = lerKmCampoEstrito(obj, `KM ROTA 0${n}`, `KM ROTA ${n}`, `KMROTA0${n}`, `KMROTA${n}`);
+    if (kmTrechoPlausivel(kmCol)) total += kmCol;
+  }
+
+  return Math.round(total * 100) / 100;
+}
+
+/**
+ * Velocidade de coleta (km/h) = KM produtivo nas rotas ÷ horas produtivas nas rotas.
+ */
+export function calcularVelocidadeColetaRegistro(obj: Record<string, any>): number | null {
+  const km = calcularKmNasRotasRegistro(obj);
+  const horas = calcularHorasNasRotasRegistro(obj);
+  if (!(km > 0) || !(horas > 0)) return null;
+  return Math.round((km / horas) * 100) / 100;
+}
+
+/**
+ * Total da jornada: HORA CHEGADA BASE − HORA SAÍDA BASE.
+ * Lê primeiro as colunas canônicas em `dados` (estrito), porque os campos
+ * tipados horaSaida/horaChegada às vezes recebem HORA CHEGADA ROTA no import.
+ */
+export function calcularHorasTotaisForaUnidadeRegistro(obj: Record<string, any>): number {
+  if (!obj) return 0;
+
+  const saidaBase = lerHoraCampoEstrito(
+    obj,
+    'HORA SÁIDA BASE',
+    'HORA SAIDA BASE',
+    'HORA SÁIDA  BASE',
+    'HORA SAIDA  BASE',
+  );
+  const chegadaBase = lerHoraCampoEstrito(
+    obj,
+    'HORA CHEGADA BASE',
+    'HORA CHEGA BASE',
+  );
+  if (saidaBase > 0 && chegadaBase > 0) {
+    return diffHorasSaidaChegada(saidaBase, chegadaBase);
+  }
+
+  // Fallback tipado — só se não parecer igual à chegada da rota 01
+  const saidaEnt = Number(obj.horaSaida) || 0;
+  const chegadaEnt = Number(obj.horaChegada) || 0;
+  const chegadaRota01 = lerHoraCampoEstrito(obj, 'HORA CHEGADA ROTA 01');
+  const tipadoSuspeito =
+    chegadaRota01 > 0
+    && chegadaEnt > 0
+    && Math.abs(chegadaEnt - chegadaRota01) < 1e-9;
+
+  if (saidaEnt > 0 && chegadaEnt > 0 && !tipadoSuspeito) {
+    return diffHorasSaidaChegada(saidaEnt, chegadaEnt);
+  }
+
+  return extrairHorasProdutivasRegistro(obj);
+}
+
+/**
+ * Produtiva = Σ (saída rota − chegada rota)
+ * Total = chegada base − saída base
+ * Improdutiva = total − produtiva
+ */
+export function calcularHorasProdutivaImprodutivaRegistro(obj: Record<string, any>): {
+  horasTotais: number;
+  horasProdutivas: number;
+  horasImprodutivas: number;
+} {
+  const horasTotais = calcularHorasTotaisForaUnidadeRegistro(obj);
+  const horasProdutivasRaw = calcularHorasNasRotasRegistro(obj);
+  const horasProdutivas = horasTotais > 0
+    ? Math.min(horasProdutivasRaw, horasTotais)
+    : horasProdutivasRaw;
+  const horasImprodutivas = Math.round(Math.max(0, horasTotais - horasProdutivas) * 100) / 100;
+  return {
+    horasTotais: Math.round(horasTotais * 100) / 100,
+    horasProdutivas: Math.round(horasProdutivas * 100) / 100,
+    horasImprodutivas,
+  };
+}
+
+/** Horas de um único registro — jornada base→base (legado "horas produtivas" SQL). */
 export function extrairHorasProdutivasRegistro(obj: Record<string, any>): number {
   const horasEntidade = Number(obj.horasForaUnidade) || Number(obj.tempoForaUnidade) || 0;
   if (horasEntidade > 0 && horasEntidade <= 24) {
@@ -61,20 +294,8 @@ export function extrairHorasProdutivasRegistro(obj: Record<string, any>): number
   return 0;
 }
 
-function diffHorasSaidaChegada(saida: number, chegada: number): number {
-  if (saida <= 0 || chegada <= 0) return 0;
-  let diff = 0;
-  if (saida < 1 && chegada < 1) {
-    diff = chegada < saida ? (chegada + 1 - saida) * 24 : (chegada - saida) * 24;
-  } else {
-    diff = chegada < saida ? chegada + 24 - saida : chegada - saida;
-  }
-  return diff > 0 && diff < 100 ? Math.round(diff * 100) / 100 : 0;
-}
-
 /**
- * Soma horas produtivas — mesmo critério de HORAS_PRODUTIVAS() na FormulaEngine:
- * diferença HORA CHEGADA BASE − HORA SAÍDA BASE por viagem (com virada de dia).
+ * Soma horas fora da unidade — critério de HORAS_PRODUTIVAS(BASE, BASE).
  */
 export function calcularHorasProdutivasTotal(dados: Record<string, any>[]): number {
   if (!dados?.length) return 0;

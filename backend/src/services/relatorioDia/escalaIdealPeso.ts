@@ -11,6 +11,7 @@ import {
   DENSIDADE_OTIMA_PADRAO,
   normalizarDensidadeResiduoKgL,
 } from '../analisePesoColetaService';
+import { normalizarPlaca } from '../../utils/normalizarPlaca';
 
 export const PCT_PESSIMO_BAIXO = 50;
 export const PCT_IDEAL_MIN = 90;
@@ -138,6 +139,44 @@ export function densidadeOptsToInput(opts?: {
     global: opts?.densidadeResiduoKgL ?? null,
     porTipo: opts?.densidadeKgL ?? null,
   };
+}
+
+/**
+ * Densidade efetiva da viagem/placa:
+ * densidadeKgLPorPlaca[placa] → densidade do tipo → global → 0,55.
+ */
+export function resolverDensidadeParaViagem(opts: {
+  placa?: string | null;
+  tipo?: TipoCaminhaoPeso | null;
+  densidade?: DensidadeResiduoInput;
+  porPlaca?: Record<string, number> | null;
+}): number {
+  const placa = normalizarPlaca(opts.placa);
+  if (placa && opts.porPlaca) {
+    const densPlaca =
+      normalizarDensidadeResiduoKgL(opts.porPlaca[placa])
+      ?? normalizarDensidadeResiduoKgL(
+        Object.entries(opts.porPlaca).find(([k]) => normalizarPlaca(k) === placa)?.[1],
+      );
+    if (densPlaca != null) return densPlaca;
+  }
+  if (opts.tipo) return resolverDensidadePorTipo(opts.tipo, opts.densidade);
+  const { global } = extrairDensidadeInput(opts.densidade);
+  return normalizarDensidadeResiduoKgL(global) ?? DENSIDADE_OTIMA_PADRAO;
+}
+
+/** Peso ideal (kg) da viagem: volume do tipo × densidade efetiva (placa/tipo/global). */
+export function calcularPesoIdealViagem(opts: {
+  placa?: string | null;
+  tipo?: TipoCaminhaoPeso | null;
+  volumeOverrides?: Partial<LimitesVolumeL> | null;
+  densidade?: DensidadeResiduoInput;
+  porPlaca?: Record<string, number> | null;
+}): number {
+  if (!opts.tipo) return 0;
+  const volumes = resolverLimitesVolumeL(opts.volumeOverrides);
+  const dens = resolverDensidadeParaViagem(opts);
+  return calcularPesoIdealKg(volumes[opts.tipo], dens);
 }
 
 export function resolverPesosIdeaisKg(

@@ -1,5 +1,6 @@
 /** Chaves de persistência local — branding Sistemma */
 export const STORAGE_TOKEN = '@sistemma:token'
+export const STORAGE_REFRESH = '@sistemma:refresh'
 export const STORAGE_USER = '@sistemma:user'
 export const STORAGE_EMAIL = '@sistemma:email'
 

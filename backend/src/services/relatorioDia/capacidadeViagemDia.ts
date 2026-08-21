@@ -20,23 +20,29 @@ import {
   LABEL_TIPO_CAMINHAO,
   PCT_IDEAL_MAX,
   PCT_IDEAL_MIN,
+  calcularPesoIdealViagem,
   classificarPesoVsIdeal,
   densidadeOptsToInput,
+  resolverDensidadeParaViagem,
   resolverPesosIdeaisKg,
   textoEscalaIdealCurto,
   type FaixaIdealViagem,
   type NotaIdealViagem,
 } from './escalaIdealPeso';
+import { normalizarPlaca } from '../../utils/normalizarPlaca';
 import { esc, fmtNum } from './fmt';
 
 export interface ViagemCapacidadeItem {
   placa: string;
+  motorista: string;
   rota: string;
   tipo: TipoCaminhaoPeso | null;
   tipoLabel: string;
   pesoKg: number;
   limiteKg: number | null;
   pesoIdealKg: number | null;
+  /** Densidade efetiva (kg/L) usada no ideal desta viagem. */
+  densidadeKgL: number | null;
   mediaTipoKg: number | null;
   ocupacaoPct: number | null;
   pctMediaTipo: number | null;
@@ -71,6 +77,8 @@ export interface RankingViagemItem {
   tipoLabel: string;
   rota: string;
   toneladas: number;
+  pesoIdealKg: number | null;
+  densidadeKgL: number | null;
   pctIdeal: number | null;
   pctMediaTipo: number | null;
   status: NotaIdealViagem;
@@ -95,6 +103,23 @@ export async function carregarViagensCapacidadeDia(
     pesoMaximoKg?: Partial<LimitesPesoKg> | null;
     densidadeResiduoKgL?: number | null;
     densidadeKgL?: Partial<Record<TipoCaminhaoPeso, number>> | null;
+    densidadeKgLPorPlaca?: Record<string, number> | null;
+  },
+): Promise<ResumoCapacidadeDia> {
+  return carregarViagensCapacidadePeriodo(servicoId, dataIso, dataIso, opts);
+}
+
+/** Capacidade PESO 1–4 no intervalo (ciclo / quinzena / semana). */
+export async function carregarViagensCapacidadePeriodo(
+  servicoId: string,
+  dataInicio: string,
+  dataFim: string,
+  opts?: {
+    volumeL?: Partial<LimitesVolumeL> | null;
+    pesoMaximoKg?: Partial<LimitesPesoKg> | null;
+    densidadeResiduoKgL?: number | null;
+    densidadeKgL?: Partial<Record<TipoCaminhaoPeso, number>> | null;
+    densidadeKgLPorPlaca?: Record<string, number> | null;
   },
 ): Promise<ResumoCapacidadeDia> {
   const densInput = densidadeOptsToInput(opts);
@@ -108,7 +133,7 @@ export async function carregarViagensCapacidadeDia(
     porTipo: [],
   };
 
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(dataIso)) return vazio;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dataInicio) || !/^\d{4}-\d{2}-\d{2}$/.test(dataFim)) return vazio;
   const uploadIds = await getUploadIds(servicoId);
   if (!uploadIds.length) return vazio;
 
@@ -116,6 +141,7 @@ export async function carregarViagensCapacidadeDia(
     .createQueryBuilder('c')
     .select([
       'c.placa',
+      'c.motorista',
       'c.distrito',
       'c.regional',
       'c.tipoCaminhao',
@@ -125,8 +151,8 @@ export async function carregarViagensCapacidadeDia(
       'c.peso4',
     ])
     .where('c.planilhaUploadId IN (:...uploadIds)', { uploadIds })
-    .andWhere('c.dataSaida >= :inicio', { inicio: `${dataIso}T00:00:00.000Z` })
-    .andWhere('c.dataSaida <= :fim', { fim: `${dataIso}T23:59:59.999Z` });
+    .andWhere('c.dataSaida >= :inicio', { inicio: `${dataInicio}T00:00:00.000Z` })
+    .andWhere('c.dataSaida <= :fim', { fim: `${dataFim}T23:59:59.999Z` });
   aplicarFiltroViagensValidasDashboard(qb, 'c');
 
   const rows = await qb.getMany();
@@ -141,8 +167,22 @@ export async function carregarViagensCapacidadeDia(
   for (const row of rows) {
     const tipo = normalizarTipoCaminhaoPeso(row.tipoCaminhao);
     const limiteKg = tipo ? limites.peso[tipo] : null;
-    const pesoIdealKg = tipo && ideais[tipo] > 0 ? ideais[tipo] : null;
-    const placa = String(row.placa || '').trim().toUpperCase() || '—';
+    const placaNorm = normalizarPlaca(row.placa) || '—';
+    const densOpts = {
+      placa: placaNorm !== '—' ? placaNorm : null,
+      tipo,
+      densidade: densInput,
+      porPlaca: opts?.densidadeKgLPorPlaca,
+    };
+    const densidadeKgL = tipo ? resolverDensidadeParaViagem(densOpts) : null;
+    const pesoIdealCalc = tipo
+      ? calcularPesoIdealViagem({
+        ...densOpts,
+        volumeOverrides: opts?.volumeL,
+      })
+      : 0;
+    const pesoIdealKg = pesoIdealCalc > 0 ? pesoIdealCalc : null;
+    const placa = placaNorm;
     const rota = String(row.distrito || row.regional || '').trim() || '—';
     const pesos = [row.peso1, row.peso2, row.peso3, row.peso4]
       .map((p) => Number(p))
@@ -171,12 +211,14 @@ export async function carregarViagensCapacidadeDia(
 
       brutos.push({
         placa,
+        motorista: String(row.motorista || '').trim() || '—',
         rota,
         tipo,
         tipoLabel: tipo ? LABEL_TIPO_CAMINHAO[tipo] : (row.tipoCaminhao || 'Não informado'),
         pesoKg: Math.round(pesoKg * 100) / 100,
         limiteKg,
         pesoIdealKg,
+        densidadeKgL,
         ocupacaoPct,
         faixaIdeal,
         notaIdeal,
@@ -251,6 +293,8 @@ export function montarRankingViagensPorTipo(
         tipoLabel: v.tipoLabel,
         rota: v.rota,
         toneladas: Math.round((v.pesoKg / 1000) * 100) / 100,
+        pesoIdealKg: v.pesoIdealKg,
+        densidadeKgL: v.densidadeKgL ?? null,
         pctIdeal: v.ocupacaoPct,
         pctMediaTipo: v.pctMediaTipo,
         status,
@@ -322,11 +366,10 @@ export function blocoRankingViagensHtml(capacidade: ResumoCapacidadeDia | null |
     <p style="font-size:6.5px;color:#94a3b8">Sem pesos individuais (PESO 1–4) no dia para rankear viagem a viagem.</p>`;
   }
 
-  const LIMITE = 50;
   const tipos = TIPOS_CAMINHAO_ORDEM.filter((t) => ranking.some((r) => r.tipo === t));
 
   const blocos = tipos.map((tipo) => {
-    const vs = ranking.filter((v) => v.tipo === tipo).slice(0, LIMITE);
+    const vs = ranking.filter((v) => v.tipo === tipo);
     if (!vs.length) return '';
     const ideal = capacidade?.pesosIdeaisAplicados[tipo];
     const maxTon = Math.max(...vs.map((v) => v.toneladas), 0.01);
@@ -341,7 +384,9 @@ export function blocoRankingViagensHtml(capacidade: ResumoCapacidadeDia | null |
       const detalhe = [
         '1 viag.',
         `${fmtNum(v.toneladas, 2)} t/viag`,
-        v.pctIdeal != null ? `${fmtNum(v.pctIdeal, 0)}% do ideal ${esc(v.tipoLabel)}` : null,
+        v.densidadeKgL != null && v.densidadeKgL > 0 ? `dens. ${fmtNum(v.densidadeKgL, 2)} kg/L` : null,
+        v.pesoIdealKg != null && v.pesoIdealKg > 0 ? `ideal ${fmtNum(v.pesoIdealKg, 0)} kg` : null,
+        v.pctIdeal != null ? `${fmtNum(v.pctIdeal, 0)}% do ideal` : null,
         esc(v.faixaLabel),
         v.rota && v.rota !== '—' ? esc(v.rota.length > 18 ? `${v.rota.slice(0, 18)}…` : v.rota) : null,
       ].filter(Boolean).join(' · ');
@@ -359,18 +404,52 @@ export function blocoRankingViagensHtml(capacidade: ResumoCapacidadeDia | null |
       <div class="bloco-hd">${esc(LABEL_TIPO_CAMINHAO[tipo])}
         — ${fmtNum(vs.length, 0)} viagem(ns)
         · Péssimo ${fmtNum(nP, 0)} · Ruim ${fmtNum(nR, 0)} · Ótimo ${fmtNum(nO, 0)}
-        ${ideal != null && ideal > 0 ? ` · ideal ${fmtNum(ideal, 0)} kg` : ''}
+        ${ideal != null && ideal > 0 ? ` · ideal tipo ${fmtNum(ideal, 0)} kg` : ''}
       </div>
       ${rows}
     </div>`;
   }).join('');
 
+  const densLinhas = (() => {
+    if (!capacidade?.viagens?.length) return '';
+    const porPlaca = new Map<string, { dens: number; tipoLabel: string; ideal: number | null; n: number }>();
+    for (const v of capacidade.viagens) {
+      if (!(v.densidadeKgL != null && v.densidadeKgL > 0) || !v.placa || v.placa === '—') continue;
+      const atual = porPlaca.get(v.placa);
+      if (atual) { atual.n += 1; continue; }
+      porPlaca.set(v.placa, {
+        dens: v.densidadeKgL,
+        tipoLabel: v.tipoLabel,
+        ideal: v.pesoIdealKg,
+        n: 1,
+      });
+    }
+    if (!porPlaca.size) return '';
+    const body = [...porPlaca.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([placa, info]) => `
+      <tr>
+        <td style="font-weight:700">${esc(placa)}</td>
+        <td>${esc(info.tipoLabel)}</td>
+        <td class="c" style="font-weight:700;color:#0f766e">${fmtNum(info.dens, 2)} kg/L</td>
+        <td class="c">${info.ideal != null ? `${fmtNum(info.ideal, 0)} kg` : '—'}</td>
+        <td class="c">${fmtNum(info.n, 0)}</td>
+      </tr>`).join('');
+    return `
+    <div class="bloco" style="margin-bottom:7px">
+      <div class="bloco-hd">Densidade por caminhão no dia</div>
+      <table class="data">
+        <thead><tr><th>Placa</th><th>Tipo</th><th class="c">Densidade</th><th class="c">Peso ideal</th><th class="c">Viag.</th></tr></thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>`;
+  })();
+
   return `
   <div class="sec">Ranking de produção por viagem</div>
   <p style="font-size:6.5px;color:#64748b;margin-bottom:5px">
-    Cada barra = <strong>1 viagem</strong> (PESO 1–4) vs ideal do próprio tipo (Mini ≠ Toco).
+    Cada barra = <strong>1 viagem</strong> (PESO 1–4) vs <strong>ideal da placa</strong> (volume × densidade; fallback = tipo).
     ${esc(textoEscalaIdealCurto())}.
   </p>
+  ${densLinhas}
   <table class="kpi-grid" style="margin-bottom:6px"><tr>
     <td class="kpi-card"><div class="kpi-lbl">Péssimo</div><div class="kpi-val" style="color:#b91c1c">${fmtNum(capacidade?.pessimo ?? 0, 0)}</div></td>
     <td class="kpi-card"><div class="kpi-lbl">Ruim</div><div class="kpi-val" style="color:#ea580c">${fmtNum(capacidade?.ruim ?? 0, 0)}</div></td>

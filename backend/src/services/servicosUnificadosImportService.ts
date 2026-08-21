@@ -8,7 +8,8 @@ import { ColetaData } from '../entities/ColetaData';
 import { PlanilhaUpload } from '../entities/PlanilhaUpload';
 import { Servico } from '../entities/Servico';
 import { TipoServico } from '../enums/TipoServico';
-import { obterUploadIdsModificaveis } from './cicloPlanilhaService';
+import { obterUploadIdsModificaveis, aplicarReferenciaCicloNoUpload, apagarDatasDeUploadsAbertos, prepararDatasImportacaoCiclo } from './cicloPlanilhaService';
+import { normalizarDiaInicioCiclo } from '../utils/periodoCicloContrato';
 import { invalidarCacheDadosServico } from './servicoDadosCache';
 import { invalidarCacheDashboardServico } from '../controllers/ServicoController';
 import { invalidarCacheSaudeContratos } from '../controllers/ContractController';
@@ -54,6 +55,7 @@ export interface ResultadoImportServicosUnificados {
   splitPorServico: ResultadoImportUnificadoServico[];
   tiposSemServico: Array<{ tipoSistema: string; registros: number }>;
   datasApagadas: { data: string; registrosRemovidos: number }[];
+  datasIgnoradasCicloFechado?: string[];
   consolidacao?: { uploadsRemovidos: number; uploadsRemovidosIds: number[] };
   viagensValidasDashboard: number;
   viagensInconsistentes: number;
@@ -139,8 +141,41 @@ class ServicosUnificadosImportService {
   }): Promise<ResultadoImportUnificadoServico & {
     datasApagadas: { data: string; registrosRemovidos: number }[];
     uploadsRemovidosIds: number[];
+    avisosCiclo: string[];
+    datasIgnoradasCicloFechado: string[];
   }> {
-    const { servico, linhas, nomeArquivo, usuarioId, substituirPorData, totalLinhasBrutas, abasUsadas } = opts;
+    const { servico, linhas: linhasBrutas, nomeArquivo, usuarioId, substituirPorData, totalLinhasBrutas, abasUsadas } = opts;
+    const datasTodas = [...new Set(
+      linhasBrutas
+        .map((l) => (l.dataSaida ? l.dataSaida.toISOString().slice(0, 10) : null))
+        .filter((d): d is string => !!d),
+    )];
+    const prep = await prepararDatasImportacaoCiclo(servico.id, datasTodas);
+    const permitidasSet = new Set(prep.datas);
+    const linhas = linhasBrutas.filter((l) => {
+      const d = l.dataSaida ? l.dataSaida.toISOString().slice(0, 10) : null;
+      return Boolean(d && permitidasSet.has(d));
+    });
+    if (linhas.length === 0) {
+      return {
+        servicoId: servico.id,
+        servicoNome: servico.nome,
+        tipoSistema: linhasBrutas[0].tipoSistema,
+        planilhaUploadId: 0,
+        importados: 0,
+        quantitativoTotal: 0,
+        dias: 0,
+        bairros: 0,
+        datasApagadas: [],
+        uploadsRemovidosIds: [],
+        avisosCiclo: prep.avisos.length > 0
+          ? prep.avisos
+          : ['Nenhuma data do ciclo atual nesta planilha — o ciclo anterior não foi alterado.'],
+        datasIgnoradasCicloFechado: prep.bloqueadasFechado,
+      };
+    }
+    const avisosCiclo = prep.avisos;
+
     const tipoSistema = linhas[0].tipoSistema;
     const quantitativoTotal = Math.round(linhas.reduce((s, l) => s + l.quantitativo, 0) * 1000) / 1000;
     const dias = new Set(linhas.map((l) => (l.dataSaida ? l.dataSaida.toISOString().slice(0, 10) : null)).filter(Boolean)).size;
@@ -164,30 +199,13 @@ class ServicosUnificadosImportService {
     const datasApagadas: { data: string; registrosRemovidos: number }[] = [];
     const uploadIds = await obterUploadIdsModificaveis(servico.id);
 
-    if (substituirPorData && uploadIds.length > 0) {
+    if (substituirPorData) {
       const datas = [...new Set(
         linhas
           .map((l) => (l.dataSaida ? l.dataSaida.toISOString().slice(0, 10) : null))
           .filter((d): d is string => !!d),
       )];
-
-      for (const dataStr of datas) {
-        const dataInicio = new Date(`${dataStr}T00:00:00`);
-        const dataFim = new Date(`${dataStr}T23:59:59`);
-        const count = await this.coletaRepo.createQueryBuilder('c')
-          .where('c.planilhaUploadId IN (:...uploadIds)', { uploadIds })
-          .andWhere('c.dataSaida BETWEEN :inicio AND :fim', { inicio: dataInicio, fim: dataFim })
-          .getCount();
-        if (count > 0) {
-          await this.coletaRepo.createQueryBuilder()
-            .delete()
-            .from('coleta_dados')
-            .where('planilhaUploadId IN (:...uploadIds)', { uploadIds })
-            .andWhere('dataSaida BETWEEN :inicio AND :fim', { inicio: dataInicio, fim: dataFim })
-            .execute();
-          datasApagadas.push({ data: dataStr, registrosRemovidos: count });
-        }
-      }
+      datasApagadas.push(...await apagarDatasDeUploadsAbertos(servico.id, datas));
     }
 
     const batch: ColetaData[] = [];
@@ -224,12 +242,27 @@ class ServicosUnificadosImportService {
       viagensValidasDashboard: importados,
       modelo: 'servicos_unificados',
       consolidacao: {
-        registrosPreservados: 0,
+        registrosRemovidosAusentes: 0,
         uploadsRemovidos: uploadsRemovidosIds.length,
-        diasPreservados: [],
+        diasRemovidosAusentes: [],
       },
     };
     await this.uploadRepo.save(uploadSalvo);
+
+    const datasImportadas = [...new Set(
+      linhas
+        .map((l) => (l.dataSaida ? l.dataSaida.toISOString().slice(0, 10) : null))
+        .filter((d): d is string => !!d),
+    )];
+    const servicoContrato = await this.servicoRepo.findOne({
+      where: { id: servico.id },
+      relations: ['contract'],
+    });
+    await aplicarReferenciaCicloNoUpload(
+      uploadSalvo.id,
+      datasImportadas,
+      normalizarDiaInicioCiclo(servicoContrato?.contract?.diaInicioCiclo),
+    );
 
     const colunas = this.colunasPadrao(tipoSistema);
     servico.padraoPlanilha = {
@@ -298,6 +331,8 @@ class ServicosUnificadosImportService {
       bairros,
       datasApagadas,
       uploadsRemovidosIds,
+      avisosCiclo,
+      datasIgnoradasCicloFechado: prep.bloqueadasFechado,
     };
   }
 
@@ -372,6 +407,7 @@ class ServicosUnificadosImportService {
     const avisos = [...parsed.avisos];
     const allDatasApagadas: { data: string; registrosRemovidos: number }[] = [];
     const allUploadsRemovidos: number[] = [];
+    const allDatasCicloFechado: string[] = [];
     let importados = 0;
     let primeiroUploadId = 0;
 
@@ -431,7 +467,9 @@ class ServicosUnificadosImportService {
       importados += r.importados;
       allDatasApagadas.push(...r.datasApagadas);
       allUploadsRemovidos.push(...r.uploadsRemovidosIds);
-      if (!primeiroUploadId) primeiroUploadId = r.planilhaUploadId;
+      avisos.push(...r.avisosCiclo);
+      allDatasCicloFechado.push(...r.datasIgnoradasCicloFechado);
+      if (!primeiroUploadId && r.planilhaUploadId) primeiroUploadId = r.planilhaUploadId;
     }
 
     if (importados === 0) {
@@ -458,6 +496,7 @@ class ServicosUnificadosImportService {
       splitPorServico,
       tiposSemServico,
       datasApagadas: allDatasApagadas,
+      datasIgnoradasCicloFechado: [...new Set(allDatasCicloFechado)],
       consolidacao: {
         uploadsRemovidos: allUploadsRemovidos.length,
         uploadsRemovidosIds: allUploadsRemovidos,

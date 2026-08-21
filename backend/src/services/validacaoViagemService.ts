@@ -55,6 +55,62 @@ function lerKmColunaExata(raw: Record<string, unknown>, ...nomes: string[]): num
   return NaN;
 }
 
+/** Normaliza rótulo da célula da planilha para comparação exata (sem fuzzy). */
+function rotuloCelulaPlanilha(chave: string): string {
+  return chave.replace(/[\r\n]+/g, ' ').trim().toUpperCase().replace(/\s+/g, ' ');
+}
+
+/** Lê peso só da coluna da planilha em `dados` — nunca do id da linha nem de campo tipado. */
+function lerPesoCelulaExata(dados: unknown, ...nomes: string[]): number | null {
+  if (!dados || typeof dados !== 'object' || Array.isArray(dados)) return null;
+  const raw = dados as Record<string, unknown>;
+  const alvos = nomes.map((n) => rotuloCelulaPlanilha(n));
+  for (const [key, val] of Object.entries(raw)) {
+    if (val === null || val === undefined || val === '') continue;
+    if (!alvos.includes(rotuloCelulaPlanilha(key))) continue;
+    const n = parseNumeroBr(val);
+    if (!isNaN(n) && n > 0) return n;
+  }
+  return null;
+}
+
+/**
+ * Recoloca PESO 1–5 e PESO TOTAL a partir das células da planilha.
+ * Revalidação com id persistido copiava o id para PESO 2–5 e somava no total.
+ */
+function restaurarPesosCelulasPlanilha(coleta: ColetaData): void {
+  const dados = coleta.dados;
+  const p1 = lerPesoCelulaExata(dados, 'PESO 1', 'PESO1');
+  const p2 = lerPesoCelulaExata(dados, 'PESO 2', 'PESO2');
+  const p3 = lerPesoCelulaExata(dados, 'PESO 3', 'PESO3');
+  const p4 = lerPesoCelulaExata(dados, 'PESO 4', 'PESO4');
+  const p5 = lerPesoCelulaExata(dados, 'PESO 5', 'PESO5');
+  const totalCelula = lerPesoCelulaExata(dados, 'PESO TOTAL', 'PESOTOTAL');
+  const somaParciais = (p1 || 0) + (p2 || 0) + (p3 || 0) + (p4 || 0) + (p5 || 0);
+  const temCelulaParcial = p1 !== null || p2 !== null || p3 !== null || p4 !== null || p5 !== null;
+
+  if (temCelulaParcial) {
+    coleta.peso1 = p1;
+    coleta.peso2 = p2;
+    coleta.peso3 = p3;
+    coleta.peso4 = p4;
+    coleta.peso5 = p5;
+  } else if (coleta.id != null) {
+    for (const campo of ['peso1', 'peso2', 'peso3', 'peso4', 'peso5'] as const) {
+      if (coleta[campo] === coleta.id) (coleta as unknown as Record<string, unknown>)[campo] = null;
+    }
+  }
+
+  if (somaParciais > 0 && totalCelula !== null && totalCelula > somaParciais * 1.02 + 1) {
+    coleta.pesoTotal = Math.round(somaParciais * 100) / 100;
+    sincronizarAliasesNumericos(coleta, ['PESO TOTAL', 'PESOTOTAL'], coleta.pesoTotal);
+  } else if (totalCelula !== null) {
+    coleta.pesoTotal = totalCelula;
+  } else if (somaParciais > 0 && (coleta.pesoTotal == null || coleta.pesoTotal <= 0)) {
+    coleta.pesoTotal = Math.round(somaParciais * 100) / 100;
+  }
+}
+
 export type ProblemaHodometro = {
   trecho: string;
   saida: number;
@@ -76,7 +132,7 @@ export const REGRAS_VIAGEM_DASHBOARD = [
   'KM Total preenchido (coluna KM TOTAL > 0), ou KM zerado por hodômetro inconsistente com peso válido',
   'Peso Total > 0, ou retorno à base sem pesagem (placa + motorista + KM ok, peso zerado)',
   `KM Total até ${MAX_KM_DASHBOARD} km (hodômetro igual/parado, salto absurdo ou chegada < saída → KM zerado; peso/viagens entram)`,
-  'Sem valores negativos em KM ou peso',
+  'Sem valores negativos efetivos em KM ou peso (fórmulas Excel com -1 em coluna ociosa são limpas e não derrubam a viagem)',
   'Horas no formato HH:MM (use ":", não ";")',
 ] as const;
 
@@ -123,17 +179,11 @@ export function enriquecerCamposColeta(coleta: ColetaData): void {
     if (kmDistanciaPlausivel(km)) coleta.kmTotal = km;
   }
 
-  if (coleta.pesoTotal === null || coleta.pesoTotal === undefined || coleta.pesoTotal <= 0) {
-    const peso = parseNumeroBr(encontrarValorColuna(raw, 'PESO TOTAL'));
-    if (!isNaN(peso) && peso > 0) coleta.pesoTotal = peso;
-  }
+  restaurarPesosCelulasPlanilha(coleta);
 
-  for (let i = 1; i <= 5; i++) {
-    const field = `peso${i}` as keyof ColetaData;
-    if (coleta[field] === null || coleta[field] === undefined) {
-      const p = parseNumeroBr(encontrarValorColuna(raw, `PESO ${i}`));
-      if (!isNaN(p) && p > 0) (coleta as any)[field] = p;
-    }
+  if (coleta.pesoTotal === null || coleta.pesoTotal === undefined || coleta.pesoTotal <= 0) {
+    const peso = lerPesoCelulaExata(coleta.dados, 'PESO TOTAL', 'PESOTOTAL');
+    if (peso !== null) coleta.pesoTotal = peso;
   }
 
   if (!coleta.regional?.trim()) {
@@ -225,11 +275,38 @@ function somaPositiva(valores: (number | null | undefined)[]): number {
   return total;
 }
 
+function ehChaveKmOuPeso(chave: string): boolean {
+  const norm = normalizarChave(chave);
+  return norm.includes('KM') || norm.includes('PESO');
+}
+
+/**
+ * Zera negativos também em `dados` (colunas cruas da planilha).
+ * Sem isso, um KM ROTA 04 = -1 (fórmula Excel) derrubava a linha inteira
+ * mesmo com PESO TOTAL válido — e as toneladas sumiam do ciclo.
+ */
+function sanitizarNegativosEmDados(coleta: ColetaData): boolean {
+  if (!coleta.dados || typeof coleta.dados !== 'object' || Array.isArray(coleta.dados)) {
+    return false;
+  }
+  let limpou = false;
+  const dados = coleta.dados as Record<string, unknown>;
+  for (const [chave, valor] of Object.entries(dados)) {
+    if (!ehChaveKmOuPeso(chave)) continue;
+    const n = parseNumeroBr(valor);
+    if (!isNaN(n) && n < 0) {
+      dados[chave] = null;
+      limpou = true;
+    }
+  }
+  return limpou;
+}
+
 /**
  * Remove valores negativos que distorcem KPIs (fórmulas Excel com erro).
  */
 export function sanitizarViagem(coleta: ColetaData): boolean {
-  let limpou = false;
+  let limpou = sanitizarNegativosEmDados(coleta);
 
   for (const campo of CAMPOS_KM) {
     const valor = coleta[campo];
@@ -721,12 +798,19 @@ function analisarHodometroColeta(coleta: Partial<ColetaData>): {
 
   for (let i = 1; i <= 4; i++) {
     const cfg = COLUNAS_HODOMETRO.rotas[i - 1];
-    const kmChegadaRota = lerKmColunaExata(raw, cfg.kmChegada.trim(), `KM CHEGADA ROTA 0${i}`);
+    const kmChegadaRota = lerKmColunaExata(
+      raw,
+      cfg.kmChegada.trim(),
+      `KM CHEGADA ROTA 0${i}`,
+      `KM CHEGADA ROTA ${i}`,
+    );
     const kmSaidaRota = lerKmColunaExata(
       raw,
       cfg.kmSaida.trim(),
       `KM SAIDA ROTA 0${i}`,
       `KM SAÍDA ROTA 0${i}`,
+      `KM SAIDA ROTA ${i}`,
+      `KM SAÍDA ROTA ${i}`,
     );
     if (!isNaN(kmChegadaRota) && kmChegadaRota > 0) {
       pontos.push({ label: `Chegada Rota 0${i}`, km: kmChegadaRota });
@@ -996,21 +1080,16 @@ export function corrigirViagemAutomatica(coleta: ColetaData): ResultadoCorrecaoV
     }
   }
 
+  restaurarPesosCelulasPlanilha(coleta);
   const pesoAtual = obterPesoTotalPrincipal(coleta);
   const pesoDerivado = calcularPesoDerivadoImportacao(coleta);
-  if (pesoDerivado !== null && pesoDerivado > 0) {
-    const deveUsarPesoDerivado = pesoAtual === null || pesoAtual === undefined || isNaN(pesoAtual)
-      || pesoAtual <= 0
-      || pesoDerivado > pesoAtual + 0.01;
-    if (deveUsarPesoDerivado) {
-      coleta.pesoTotal = Math.round(pesoDerivado * 100) / 100;
-      sincronizarAliasesNumericos(coleta, ALIAS_PESO_TOTAL, coleta.pesoTotal);
-      ajustes.push(
-        pesoAtual && pesoAtual > 0
-          ? 'Peso Total atualizado a partir dos pesos parciais da rota'
-          : 'Peso Total preenchido a partir dos pesos parciais da rota',
-      );
-    }
+  // Só preenche PESO TOTAL vazio. Nunca substitui o valor da planilha pela soma
+  // de PESO 1–5 (isso inflava o ciclo: PESO 2–5 vazios viravam o id da linha).
+  if ((pesoAtual === null || pesoAtual === undefined || isNaN(pesoAtual) || pesoAtual <= 0)
+    && pesoDerivado !== null && pesoDerivado > 0) {
+    coleta.pesoTotal = Math.round(pesoDerivado * 100) / 100;
+    sincronizarAliasesNumericos(coleta, ALIAS_PESO_TOTAL, coleta.pesoTotal);
+    ajustes.push('Peso Total preenchido a partir dos pesos parciais da rota');
   }
 
   return { corrigido: ajustes.length > 0, ajustes };

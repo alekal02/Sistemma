@@ -8,6 +8,7 @@ import {
   inferirCicloReferenciaDeDatas,
   inferirMesReferenciaAtual,
   normalizarDiaInicioCiclo,
+  restringirDatasAoCicloDaDataMaisRecente,
   type PeriodoCicloContrato,
 } from '../utils/periodoCicloContrato';
 import { invalidarCacheDadosServico } from './servicoDadosCache';
@@ -16,6 +17,7 @@ import { agendarWarmupPosUpload } from './executivoCacheWarmupService';
 import FileStorageService from './FileStorageService';
 import PlanilhaService from './PlanilhaService';
 import fs from 'fs/promises';
+import { existsSync } from 'fs';
 import path from 'path';
 
 export interface CicloFechadoInfo {
@@ -81,6 +83,62 @@ export async function obterUploadIdsPorServico(
 /** Uploads que novas importações podem substituir/apagar */
 export async function obterUploadIdsModificaveis(servicoId: string): Promise<number[]> {
   return obterUploadIdsPorServico(servicoId, { apenasAbertos: true });
+}
+
+/**
+ * Apaga registros das datas informadas somente em uploads ABERTOS.
+ * Datas que caem em ciclo já fechado são ignoradas (o histórico permanece).
+ * Compara `date` do Postgres com yyyy-MM-dd — evita fuso (UTC−3) excluir o 1º dia.
+ */
+export async function apagarDatasDeUploadsAbertos(
+  servicoId: string,
+  datasIso: string[],
+): Promise<{ data: string; registrosRemovidos: number }[]> {
+  const datasValidas = [...new Set(datasIso.filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)))];
+  if (datasValidas.length === 0) return [];
+
+  const { bloqueadas } = await verificarDatasEmCicloFechado(servicoId, datasValidas);
+  const bloqueadasSet = new Set(bloqueadas);
+  let datas = datasValidas.filter((d) => !bloqueadasSet.has(d));
+  datas = restringirDatasAoCicloDaDataMaisRecente(
+    datas,
+    await obterDiaInicioCiclo(servicoId),
+  ).datas;
+  if (datas.length === 0) return [];
+
+  const uploadIds = await obterUploadIdsModificaveis(servicoId);
+  if (uploadIds.length === 0) return [];
+
+  const coletaRepo = AppDataSource.getRepository(ColetaData);
+  const resultado: { data: string; registrosRemovidos: number }[] = [];
+
+  for (const dataStr of datas) {
+    const count = await coletaRepo.createQueryBuilder('c')
+      .where('c.planilhaUploadId IN (:...uploadIds)', { uploadIds })
+      .andWhere('c.dataSaida = :data', { data: dataStr })
+      .getCount();
+    if (count <= 0) continue;
+
+    await coletaRepo.createQueryBuilder()
+      .delete()
+      .from('coleta_dados')
+      .where('planilhaUploadId IN (:...uploadIds)', { uploadIds })
+      .andWhere('"dataSaida" = :data', { data: dataStr })
+      .execute();
+
+    resultado.push({ data: dataStr, registrosRemovidos: count });
+  }
+
+  return resultado;
+}
+
+export function montarAvisoDatasCicloFechado(
+  bloqueadas: string[],
+  ciclos: { mes: number; ano: number; label: string }[],
+): string {
+  const labels = ciclos.map((c) => c.label).join(', ');
+  return `${bloqueadas.length} data(s) de ciclo já fechado (${labels}) foram ignoradas. `
+    + 'O ciclo anterior permanece intacto.';
 }
 
 export async function cicloEstaFechado(
@@ -178,6 +236,60 @@ export async function verificarDatasEmCicloFechado(
   };
 }
 
+export function filtrarDatasAoPeriodo(datas: string[], inicio: string, fim: string): string[] {
+  return [...new Set(
+    datas.filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d) && d >= inicio && d <= fim),
+  )].sort();
+}
+
+/**
+ * Ciclo da planilha nova = o da data mais recente. Datas de outro ciclo
+ * (ex.: mês anterior ainda no Excel) não entram na importação e não são apagadas.
+ */
+export async function resolverCicloAlvoDaPlanilha(
+  servicoId: string,
+  datasIso: string[],
+): Promise<PeriodoCicloContrato | null> {
+  const diaInicio = await obterDiaInicioCiclo(servicoId);
+  return restringirDatasAoCicloDaDataMaisRecente(datasIso, diaInicio).ciclo;
+}
+
+export async function prepararDatasImportacaoCiclo(
+  servicoId: string,
+  datasIso: string[],
+): Promise<{
+  datas: string[];
+  cicloAlvo: PeriodoCicloContrato | null;
+  avisos: string[];
+  bloqueadasFechado: string[];
+  ignoradasOutroCiclo: string[];
+}> {
+  const avisos: string[] = [];
+  let datas = [...new Set(datasIso.filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)))].sort();
+
+  const { bloqueadas, ciclos } = await verificarDatasEmCicloFechado(servicoId, datas);
+  if (bloqueadas.length > 0) {
+    const bloqueadasSet = new Set(bloqueadas);
+    datas = datas.filter((d) => !bloqueadasSet.has(d));
+    avisos.push(montarAvisoDatasCicloFechado(bloqueadas, ciclos));
+  }
+
+  const diaInicio = await obterDiaInicioCiclo(servicoId);
+  const restrito = restringirDatasAoCicloDaDataMaisRecente(datas, diaInicio);
+  const ignoradasOutroCiclo = restrito.ignoradas;
+  datas = restrito.datas;
+  const cicloAlvo = restrito.ciclo;
+  if (ignoradasOutroCiclo.length > 0 && cicloAlvo) {
+    avisos.push(
+      `${ignoradasOutroCiclo.length} data(s) de outro ciclo foram ignoradas `
+      + `(${ignoradasOutroCiclo[0]} a ${ignoradasOutroCiclo[ignoradasOutroCiclo.length - 1]}). `
+      + `Só o ciclo ${cicloAlvo.label} (${cicloAlvo.dataInicio} a ${cicloAlvo.dataFim}) é substituído.`,
+    );
+  }
+
+  return { datas, cicloAlvo, avisos, bloqueadasFechado: bloqueadas, ignoradasOutroCiclo };
+}
+
 export async function aplicarReferenciaCicloNoUpload(
   uploadId: number,
   datasIso: string[],
@@ -221,13 +333,13 @@ export async function fecharCicloServico(opts: {
   const coletaRepo = AppDataSource.getRepository(ColetaData);
   const agora = new Date();
 
-  // Uploads com dados neste período
+  // Uploads com dados neste período (compara date ISO, sem fuso)
   const uploadIdsComDados = await coletaRepo.createQueryBuilder('c')
     .innerJoin(PlanilhaUpload, 'u', 'u.id = c.planilhaUploadId AND u.servico_id = :servicoId', { servicoId })
     .select('DISTINCT c.planilhaUploadId', 'uploadId')
     .where('c.dataSaida BETWEEN :inicio AND :fim', {
-      inicio: new Date(`${periodo.dataInicio}T00:00:00`),
-      fim: new Date(`${periodo.dataFim}T23:59:59`),
+      inicio: periodo.dataInicio,
+      fim: periodo.dataFim,
     })
     .getRawMany<{ uploadId: number }>();
 
@@ -251,6 +363,12 @@ export async function fecharCicloServico(opts: {
     throw new Error(`Nenhuma planilha com dados no ciclo ${periodo.label} para fechar.`);
   }
 
+  // Se a mesma planilha tem dias do ciclo seguinte, separa antes de travar.
+  // Sem isso o upload inteiro fecha e o próximo arquivo apaga/esconde o histórico.
+  for (const uploadId of uploadIds) {
+    await separarRegistrosForaDoCiclo(uploadId, servicoId, periodo.dataInicio, periodo.dataFim, diaInicio);
+  }
+
   await uploadRepo.createQueryBuilder()
     .update(PlanilhaUpload)
     .set({
@@ -265,14 +383,23 @@ export async function fecharCicloServico(opts: {
   const totalRegistros = await coletaRepo.createQueryBuilder('c')
     .where('c.planilhaUploadId IN (:...uploadIds)', { uploadIds })
     .andWhere('c.dataSaida BETWEEN :inicio AND :fim', {
-      inicio: new Date(`${periodo.dataInicio}T00:00:00`),
-      fim: new Date(`${periodo.dataFim}T23:59:59`),
+      inicio: periodo.dataInicio,
+      fim: periodo.dataFim,
     })
     .getCount();
 
   invalidarCacheDadosServico(servicoId);
   dashboardCache.invalidar(servicoId);
   agendarWarmupPosUpload(servicoId);
+
+  if (!String(contract.configOperacional?.pastaBackupPlanilhas || '').trim()) {
+    const pasta = pastaBackupPadrao(contract);
+    contract.configOperacional = {
+      ...(contract.configOperacional || {}),
+      pastaBackupPlanilhas: pasta,
+    };
+    await contractRepo.save(contract);
+  }
 
   const backupPlanilha = await salvarUltimaPlanilhaNaPastaBackup({
     contract,
@@ -283,6 +410,132 @@ export async function fecharCicloServico(opts: {
   });
 
   return { ciclo: periodo, uploadIds, totalRegistros, backupPlanilha };
+}
+
+export async function reabrirCicloServico(opts: {
+  servicoId: string;
+  contractId: string;
+  mesReferencia: number;
+  anoReferencia: number;
+}): Promise<{ ciclo: PeriodoCicloContrato; uploadIds: number[] }> {
+  const { servicoId, contractId, mesReferencia, anoReferencia } = opts;
+  const contractRepo = AppDataSource.getRepository(Contract);
+  const contract = await contractRepo.findOne({ where: { id: contractId } });
+  if (!contract) throw new Error('Contrato não encontrado');
+
+  const diaInicio = normalizarDiaInicioCiclo(contract.diaInicioCiclo);
+  const periodo = calcularCicloMensalContrato(anoReferencia, mesReferencia, diaInicio);
+
+  const jaFechado = await cicloEstaFechado(servicoId, mesReferencia, anoReferencia);
+  if (!jaFechado) {
+    throw new Error(`O ciclo ${periodo.label} não está fechado.`);
+  }
+
+  const uploadRepo = AppDataSource.getRepository(PlanilhaUpload);
+  const uploads = await uploadRepo.find({
+    where: {
+      servico_id: servicoId,
+      cicloMesReferencia: mesReferencia,
+      cicloAnoReferencia: anoReferencia,
+    },
+    select: ['id'],
+  });
+  const uploadIds = uploads.map((u) => u.id);
+  if (uploadIds.length === 0) {
+    throw new Error(`Nenhuma planilha encontrada para reabrir o ciclo ${periodo.label}.`);
+  }
+
+  await uploadRepo.createQueryBuilder()
+    .update(PlanilhaUpload)
+    .set({ cicloFechadoEm: null })
+    .where('id IN (:...uploadIds)', { uploadIds })
+    .andWhere('servico_id = :servicoId', { servicoId })
+    .execute();
+
+  invalidarCacheDadosServico(servicoId);
+  dashboardCache.invalidar(servicoId);
+  agendarWarmupPosUpload(servicoId);
+
+  return { ciclo: periodo, uploadIds };
+}
+
+async function separarRegistrosForaDoCiclo(
+  uploadId: number,
+  servicoId: string,
+  dataInicio: string,
+  dataFim: string,
+  diaInicioCiclo: number,
+): Promise<void> {
+  const coletaRepo = AppDataSource.getRepository(ColetaData);
+  const uploadRepo = AppDataSource.getRepository(PlanilhaUpload);
+
+  const qtdFora = await coletaRepo.createQueryBuilder('c')
+    .where('c.planilhaUploadId = :uploadId', { uploadId })
+    .andWhere('(c.dataSaida < :inicio OR c.dataSaida > :fim)', { inicio: dataInicio, fim: dataFim })
+    .getCount();
+  if (qtdFora === 0) return;
+
+  const origem = await uploadRepo.findOne({ where: { id: uploadId } });
+  if (!origem) return;
+
+  const continuacao = await uploadRepo.save(uploadRepo.create({
+    nomeArquivo: origem.nomeArquivo,
+    totalLinhas: qtdFora,
+    linhasImportadas: qtdFora,
+    linhasComErro: 0,
+    linhasIgnoradas: 0,
+    linhasSubstituidas: 0,
+    linhasConflitantes: 0,
+    estrategia: origem.estrategia || 'atualizar_data',
+    usuarioId: origem.usuarioId,
+    servico_id: servicoId,
+    urlDownload: origem.urlDownload,
+    cicloFechadoEm: null,
+    resumo: {
+      novos: qtdFora,
+      duplicadosIgnorados: 0,
+      conflitantes: 0,
+      substituidos: 0,
+      modelo: 'continuacao-ciclo-aberto',
+    },
+  }));
+
+  await coletaRepo.createQueryBuilder()
+    .update(ColetaData)
+    .set({ planilhaUploadId: continuacao.id })
+    .where('planilhaUploadId = :uploadId', { uploadId })
+    .andWhere('("dataSaida" < :inicio OR "dataSaida" > :fim)', { inicio: dataInicio, fim: dataFim })
+    .execute();
+
+  const datasFora = await coletaRepo.createQueryBuilder('c')
+    .select("DISTINCT to_char(c.dataSaida, 'YYYY-MM-DD')", 'data')
+    .where('c.planilhaUploadId = :id', { id: continuacao.id })
+    .andWhere('c.dataSaida IS NOT NULL')
+    .getRawMany<{ data: string }>();
+
+  await aplicarReferenciaCicloNoUpload(
+    continuacao.id,
+    datasFora.map((r) => r.data).filter(Boolean),
+    diaInicioCiclo,
+  );
+
+  const restantes = await coletaRepo.count({ where: { planilhaUploadId: uploadId } });
+  origem.linhasImportadas = restantes;
+  if (origem.resumo) {
+    origem.resumo = { ...origem.resumo, viagensValidasDashboard: restantes };
+  }
+  await uploadRepo.save(origem);
+}
+
+function pastaBackupPadrao(contract: Contract): string {
+  const nome = sanitizarParteNome(contract.numeroContrato || 'contrato');
+  const volumeDocker = '/data/planilhas-ciclo';
+  if (existsSync(volumeDocker)) {
+    return path.join(volumeDocker, nome);
+  }
+  const cwd = process.cwd();
+  const raiz = path.basename(cwd) === 'backend' ? path.resolve(cwd, '..') : cwd;
+  return path.join(raiz, 'planilhas-ciclo', nome);
 }
 
 function sanitizarNomeArquivo(nome: string): string {
@@ -308,10 +561,8 @@ async function salvarUltimaPlanilhaNaPastaBackup(opts: {
   mesReferencia: number;
   anoReferencia: number;
 }): Promise<BackupPlanilhaCicloResultado> {
-  const pastaRaw = String(opts.contract.configOperacional?.pastaBackupPlanilhas || '').trim();
-  if (!pastaRaw) {
-    return { ok: false, ignorado: true, erro: 'Pasta de backup não configurada no contrato' };
-  }
+  const pastaRaw = String(opts.contract.configOperacional?.pastaBackupPlanilhas || '').trim()
+    || pastaBackupPadrao(opts.contract);
 
   try {
     const uploadRepo = AppDataSource.getRepository(PlanilhaUpload);

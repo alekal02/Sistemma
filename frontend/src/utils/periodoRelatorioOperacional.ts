@@ -1,7 +1,7 @@
 /**
  * Cálculo de períodos semanal e quinzenal para relatório operacional.
  */
-import { listarDatasIntervalo } from './periodoCicloContrato';
+import { listarDatasIntervalo, recortarPeriodoAteReferencia } from './periodoCicloContrato';
 import { formatarIsoParaBr } from './periodoDados';
 import { detectarColunasCardViagem, extrairMetricasCardViagem } from './viagemCardDados';
 import { normalizarDataParaIso } from './normalizarDataIso';
@@ -14,6 +14,7 @@ export interface PeriodoOperacional {
   dataInicio: string;
   dataFim: string;
   diasNoPeriodo: number;
+  emAndamento?: boolean;
 }
 
 export function hojeISO(): string {
@@ -63,15 +64,19 @@ export function calcularPeriodoOperacional(
   referenciaIso?: string,
 ): PeriodoOperacional {
   if (tipo === 'ciclo') {
-    const diasNoPeriodo = listarDatasIntervalo(ciclo.dataInicio, ciclo.dataFim).length;
-    const label = ciclo.label
-      || `Ciclo ${formatarIsoParaBr(ciclo.dataInicio)} a ${formatarIsoParaBr(ciclo.dataFim)}`;
+    const recorte = recortarPeriodoAteReferencia(ciclo.dataInicio, ciclo.dataFim, referenciaIso);
+    const labelBase = ciclo.label
+      || `Ciclo ${formatarIsoParaBr(recorte.dataInicio)} a ${formatarIsoParaBr(recorte.dataFim)}`;
+    const label = recorte.emAndamento
+      ? `${labelBase} — ${recorte.diasDecorridos} dia${recorte.diasDecorridos === 1 ? '' : 's'} decorrido${recorte.diasDecorridos === 1 ? '' : 's'} até ${formatarIsoParaBr(recorte.dataFim)}`
+      : labelBase;
     return {
       tipo: 'ciclo',
       label,
-      dataInicio: ciclo.dataInicio,
-      dataFim: ciclo.dataFim,
-      diasNoPeriodo,
+      dataInicio: recorte.dataInicio,
+      dataFim: recorte.dataFim,
+      diasNoPeriodo: recorte.diasDecorridos,
+      emAndamento: recorte.emAndamento,
     };
   }
 

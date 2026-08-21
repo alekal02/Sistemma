@@ -12,24 +12,25 @@ ENV VITE_APP_NAME=${VITE_APP_NAME}
 ENV VITE_APP_VERSION=${VITE_APP_VERSION}
 ENV VITE_ENV=${VITE_ENV}
 
-WORKDIR /app
+WORKDIR /workspace
 
-# Copia arquivos de dependências
-COPY package.json package-lock.json ./
+COPY packages/shared/package.json packages/shared/tsconfig.json ./packages/shared/
+COPY packages/shared/src ./packages/shared/src
 
-# Instala dependências
+WORKDIR /workspace/frontend
+COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 
 # Copia configurações e código fonte
-COPY tsconfig.json tsconfig.app.json tsconfig.node.json ./
-COPY vite.config.ts ./
-COPY index.html ./
-COPY public/ ./public/
-COPY scripts/ ./scripts/
-COPY src/ ./src/
-COPY eslint.config.js ./
+COPY frontend/tsconfig.json frontend/tsconfig.app.json frontend/tsconfig.node.json ./
+COPY frontend/vite.config.ts ./
+COPY frontend/index.html ./
+COPY frontend/public/ ./public/
+COPY frontend/scripts/ ./scripts/
+COPY frontend/src ./src
+COPY frontend/eslint.config.js ./
 
-# Build do frontend (tsc -b && vite build)
+# Build do frontend (vite resolve @sistemma/shared via alias para packages/shared/src)
 RUN npm run build
 
 # ============== SERVE STAGE (Nginx) ==============
@@ -39,10 +40,10 @@ FROM nginx:1.27-alpine AS runner
 RUN rm -rf /etc/nginx/conf.d/default.conf
 
 # Copia config customizada
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
 
 # Copia os arquivos buildados do frontend
-COPY --from=builder /app/dist /usr/share/nginx/html
+COPY --from=builder /workspace/frontend/dist /usr/share/nginx/html
 
 # Expõe porta 80
 EXPOSE 80

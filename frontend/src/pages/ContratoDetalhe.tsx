@@ -97,10 +97,12 @@ import {
   formLimitesParaMapa,
   mapaDensidadesParaForm,
   mapaLimitesParaForm,
+  normalizarMapaDensidadesPorPlacaForm,
   resolverDensidadePorTipo,
   resolverDensidadeResiduoKgL,
   type TipoLimiteCaminhao,
 } from '../utils/limitesCaminhaoContrato';
+import { normalizarPlaca } from '../utils/normalizarPlaca';
 import '../styles/FluxoUnificado.css';
 import '../styles/ContratoDetalhe.css';
 
@@ -135,6 +137,7 @@ interface Contrato {
     volumeL?: { MINI?: number; TOCO?: number; BASCULANTE?: number; TRUCK?: number };
     densidadeResiduoKgL?: number | null;
     densidadeKgL?: { MINI?: number; TOCO?: number; BASCULANTE?: number; TRUCK?: number };
+    densidadeKgLPorPlaca?: Record<string, number>;
     pastaBackupPlanilhas?: string | null;
   } | null;
 }
@@ -301,8 +304,10 @@ export default function ContratoDetalhe() {
   const [densidadePorTipoForm, setDensidadePorTipoForm] = useState<Record<TipoLimiteCaminhao, string>>(
     () => mapaDensidadesParaForm(null, DENSIDADE_RESIDUO_PADRAO),
   );
+  const [densidadePorPlacaForm, setDensidadePorPlacaForm] = useState<Record<string, string>>({});
   const [salvandoLimites, setSalvandoLimites] = useState(false);
   const [salvandoDensidade, setSalvandoDensidade] = useState(false);
+  const [salvandoDensidadePlaca, setSalvandoDensidadePlaca] = useState(false);
 
   // ─── Valores (modal de criação) ───
   const [tipoValor, setTipoValor] = useState<TipoValor>('caminhao');
@@ -377,6 +382,12 @@ export default function ContratoDetalhe() {
         setDensidadePorTipoForm(
           mapaDensidadesParaForm(contratoData.configOperacional?.densidadeKgL, dens),
         );
+        const densPlaca = contratoData.configOperacional?.densidadeKgLPorPlaca || {};
+        const formPlaca: Record<string, string> = {};
+        for (const [placa, v] of Object.entries(densPlaca)) {
+          if (v != null && Number(v) > 0) formPlaca[placa] = String(v).replace('.', ',');
+        }
+        setDensidadePorPlacaForm(formPlaca);
       }
 
       const resultados = await Promise.allSettled(
@@ -604,6 +615,47 @@ export default function ContratoDetalhe() {
       adicionarToast('Erro ao salvar cadastro operacional', 'error');
     } finally {
       setSalvandoCadastro(false);
+    }
+  };
+
+  const placasFrotaLista = useMemo(() => {
+    const doTexto = parseListaPlacasTexto(textoPlacasAtivas);
+    const doForm = Object.keys(densidadePorPlacaForm).map(normalizarPlaca).filter(Boolean);
+    return [...new Set([...doTexto, ...doForm])].sort();
+  }, [textoPlacasAtivas, densidadePorPlacaForm]);
+
+  const salvarDensidadesPorPlaca = async () => {
+    if (!id || !contrato) return;
+    setSalvandoDensidadePlaca(true);
+    try {
+      const mapa = normalizarMapaDensidadesPorPlacaForm(densidadePorPlacaForm);
+      const atualizado = await contractService.atualizar(id, {
+        configOperacional: {
+          ...(contrato.configOperacional || {}),
+          densidadeKgLPorPlaca: mapa,
+          // Garante que placas com densidade fiquem na frota
+          placasAtivas: [
+            ...new Set([
+              ...parseListaPlacasTexto(textoPlacasAtivas),
+              ...Object.keys(mapa),
+            ]),
+          ].sort(),
+        },
+      });
+      setContrato(atualizado);
+      const cadastro = extrairCadastroOperacionalContrato(atualizado);
+      setTextoPlacasAtivas(listaParaTexto(cadastro.placasAtivas));
+      const densPlaca = atualizado.configOperacional?.densidadeKgLPorPlaca || {};
+      const formPlaca: Record<string, string> = {};
+      for (const [placa, v] of Object.entries(densPlaca)) {
+        if (v != null && Number(v) > 0) formPlaca[placa] = String(v).replace('.', ',');
+      }
+      setDensidadePorPlacaForm(formPlaca);
+      adicionarToast('Densidades por caminhão salvas', 'success');
+    } catch {
+      adicionarToast('Erro ao salvar densidades por caminhão', 'error');
+    } finally {
+      setSalvandoDensidadePlaca(false);
     }
   };
 
@@ -935,13 +987,13 @@ export default function ContratoDetalhe() {
             value={pastaBackupPlanilhas}
             disabled={salvandoPastaBackup}
             onChange={(e) => setPastaBackupPlanilhas(e.target.value)}
-            placeholder="/data/planilhas-ciclo/NomeDoContrato"
-            title="Caminho absoluto visto pelo backend. Em Docker use o path do volume."
+            placeholder="vazio = planilhas-ciclo no repositório"
+            title="Deixe em branco para gravar em planilhas-ciclo na pasta do sistema. Caminho absoluto visto pelo backend."
           />
           <small className="contrato-config-hint">
-            Ao fechar o ciclo, a última planilha do serviço é salva nesta pasta.
-            Em Docker: monte a pasta do Windows em <code>/data/planilhas-ciclo</code> e cole
-            <code>/data/planilhas-ciclo/NomeDoContrato</code>.
+            Ao fechar o ciclo, a planilha é salva aqui. Se ficar vazio, usa
+            {' '}<code>planilhas-ciclo/NumeroDoContrato</code> no repositório (na sua máquina).
+            Em Docker o volume já aponta essa pasta para <code>/data/planilhas-ciclo</code>.
           </small>
           <button
             type="button"
@@ -1155,6 +1207,114 @@ export default function ContratoDetalhe() {
             }}
           >
             {salvandoLimites ? 'Salvando…' : 'Salvar limites'}
+          </button>
+        </div>
+      </div>
+
+      {/* Densidade por caminhão (placa) */}
+      <div style={{
+        marginBottom: '0.75rem', background: '#fff', borderRadius: '8px',
+        padding: '0.65rem 0.75rem', border: '1px solid #e2e8f0',
+        borderTop: '3px solid #0d9488', boxShadow: '0 1px 3px rgba(0,0,0,0.03)',
+      }}>
+        <div style={{ fontSize: '0.72rem', fontWeight: 700, color: '#334155', marginBottom: '0.35rem' }}>
+          <FiTruck size={12} style={{ marginRight: '0.25rem', verticalAlign: '-2px' }} />
+          Densidade por caminhão
+        </div>
+        <div style={{ fontSize: '0.62rem', color: '#64748b', marginBottom: '0.55rem', lineHeight: 1.4 }}>
+          As placas aparecem aqui ao subir a planilha (e no cadastro operacional abaixo).
+          Deixe vazio para usar a densidade do tipo / padrão (0,55). Preencha só o caminhão especial (ex.: 0,43).
+        </div>
+        {placasFrotaLista.length === 0 ? (
+          <div style={{
+            fontSize: '0.68rem', color: '#94a3b8', padding: '0.55rem',
+            background: '#f8fafc', borderRadius: '6px', border: '1px dashed #e2e8f0',
+          }}>
+            Nenhuma placa na frota ainda. Faça upload de uma planilha de coleta ou informe placas em “Placas ativas”.
+          </div>
+        ) : (
+          <div style={{ overflowX: 'auto', maxHeight: 280, overflowY: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.72rem' }}>
+              <thead>
+                <tr style={{ background: '#f8fafc', color: '#64748b', textAlign: 'left' }}>
+                  <th style={{ padding: '0.35rem 0.4rem', fontWeight: 700 }}>Placa</th>
+                  <th style={{ padding: '0.35rem 0.4rem', fontWeight: 700, color: '#0f766e' }}>
+                    Densidade (kg/L)
+                  </th>
+                  <th style={{ padding: '0.35rem 0.4rem', fontWeight: 600, color: '#94a3b8' }}>
+                    Efetiva
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {placasFrotaLista.map((placa) => {
+                  const override = densidadePorPlacaForm[placa];
+                  const efetiva = (() => {
+                    const n = Number(String(override || '').replace(',', '.'));
+                    if (Number.isFinite(n) && n > 0) return n;
+                    return densFormNum;
+                  })();
+                  return (
+                    <tr key={placa} style={{ borderTop: '1px solid #f1f5f9' }}>
+                      <td style={{
+                        padding: '0.35rem 0.4rem', fontWeight: 700,
+                        fontFamily: 'ui-monospace, monospace', color: '#0f172a',
+                      }}>
+                        {placa}
+                      </td>
+                      <td style={{ padding: '0.3rem 0.4rem' }}>
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          disabled={salvandoDensidadePlaca}
+                          value={override ?? ''}
+                          placeholder="padrão"
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setDensidadePorPlacaForm((prev) => {
+                              const next = { ...prev };
+                              if (!val.trim()) delete next[placa];
+                              else next[placa] = val;
+                              return next;
+                            });
+                          }}
+                          style={{
+                            width: 90, fontSize: '0.72rem', fontWeight: 700,
+                            fontFamily: 'ui-monospace, monospace',
+                            border: '1px solid #99f6e4', borderRadius: '6px',
+                            padding: '0.28rem 0.4rem', background: '#fff', color: '#0f766e',
+                            textAlign: 'center',
+                          }}
+                        />
+                      </td>
+                      <td style={{
+                        padding: '0.35rem 0.4rem', fontFamily: 'ui-monospace, monospace',
+                        color: override?.trim() ? '#0f766e' : '#94a3b8', fontWeight: 600,
+                      }}>
+                        {String(efetiva).replace('.', ',')} kg/L
+                        {!override?.trim() ? ' (padrão)' : ''}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.5rem' }}>
+          <button
+            type="button"
+            onClick={() => { void salvarDensidadesPorPlaca(); }}
+            disabled={salvandoDensidadePlaca || placasFrotaLista.length === 0}
+            style={{
+              fontSize: '0.68rem', fontWeight: 700, padding: '0.3rem 0.65rem',
+              border: 'none', borderRadius: '5px',
+              cursor: salvandoDensidadePlaca || placasFrotaLista.length === 0 ? 'not-allowed' : 'pointer',
+              background: '#0d9488', color: '#fff',
+              opacity: placasFrotaLista.length === 0 ? 0.5 : 1,
+            }}
+          >
+            {salvandoDensidadePlaca ? 'Salvando…' : 'Salvar densidades por caminhão'}
           </button>
         </div>
       </div>

@@ -4,19 +4,19 @@ FROM node:22-alpine AS builder
 ARG BUILD_SHA=unknown
 ENV BUILD_SHA=${BUILD_SHA}
 
-WORKDIR /app
+WORKDIR /workspace
 
-# Copia arquivos de dependências
-COPY package.json package-lock.json ./
+COPY packages/shared/package.json packages/shared/tsconfig.json ./packages/shared/
+COPY packages/shared/src ./packages/shared/src
+WORKDIR /workspace/packages/shared
+RUN npm install && npm run build
 
-# Instala dependências
+WORKDIR /workspace/backend
+COPY backend/package.json backend/package-lock.json ./
 RUN npm ci
 
-# Copia código fonte (inclui config/*.json, database migrations, seeds)
-COPY tsconfig.json ./
-COPY src/ ./src/
-
-# Build do TypeScript (inclui seed.ts)
+COPY backend/tsconfig.json ./
+COPY backend/src ./src
 RUN npm run build
 
 # ============== IMAGEM FINAL ==============
@@ -50,12 +50,13 @@ WORKDIR /app
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
 # Copia artefatos do build (inclui dist/database/seed.js)
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/package.json ./
+COPY --from=builder /workspace/backend/dist ./dist
+COPY --from=builder /workspace/backend/node_modules ./node_modules
+COPY --from=builder /workspace/backend/package.json ./
+COPY --from=builder /workspace/packages/shared /packages/shared
 
 # Copia entrypoint
-COPY entrypoint.sh /entrypoint.sh
+COPY backend/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # Expõe a porta

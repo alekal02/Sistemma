@@ -82,6 +82,7 @@ export default function ServicoDiaDetalhe() {
   const [volumeL, setVolumeL] = useState<MapaLimiteCaminhao | null>(null);
   const [densidadeResiduoKgL, setDensidadeResiduoKgL] = useState<number | null>(null);
   const [densidadeKgL, setDensidadeKgL] = useState<MapaLimiteCaminhao | null>(null);
+  const [densidadeKgLPorPlaca, setDensidadeKgLPorPlaca] = useState<Record<string, number> | null>(null);
   const [registros, setRegistros] = useState<Record<string, unknown>[]>([]);
   const [analiseRocada, setAnaliseRocada] = useState<AnaliseRocadaDia | null>(null);
   const [blocoManualRocada, setBlocoManualRocada] = useState<BlocoTipoRocadaUi | null>(null);
@@ -179,6 +180,7 @@ export default function ServicoDiaDetalhe() {
             volumeL?: MapaLimiteCaminhao;
             densidadeResiduoKgL?: number | null;
             densidadeKgL?: MapaLimiteCaminhao | null;
+            densidadeKgLPorPlaca?: Record<string, number> | null;
           };
         })?.configOperacional;
         setLimitesPesoKg(cfg?.pesoMaximoKg || null);
@@ -189,6 +191,7 @@ export default function ServicoDiaDetalhe() {
             : null,
         );
         setDensidadeKgL(cfg?.densidadeKgL || null);
+        setDensidadeKgLPorPlaca(cfg?.densidadeKgLPorPlaca || null);
       }
 
       if (tipo === 'rocadeira') {
@@ -470,6 +473,7 @@ export default function ServicoDiaDetalhe() {
           volumeL,
           densidadeResiduoKgL,
           densidadeKgL,
+          densidadeKgLPorPlaca,
         })
         : null;
 
@@ -479,6 +483,24 @@ export default function ServicoDiaDetalhe() {
         densidadeResiduoKgL,
         densidadeKgL,
       }) || cenarioCaixaMedia;
+
+      let viagensPesoRota: Awaited<ReturnType<typeof servicoService.getMapeamentoOperacional>>['viagensPesoRota'] = [];
+      let mapeamentoResumo: Awaited<ReturnType<typeof servicoService.getMapeamentoOperacional>>['resumo'] | null = null;
+      let mapeamentoLinhas: Awaited<ReturnType<typeof servicoService.getMapeamentoOperacional>>['linhas'] = [];
+      if (contractId && servicoId) {
+        try {
+          const mapeamento = await servicoService.getMapeamentoOperacional(contractId, servicoId, {
+            data: dataIso,
+          });
+          viagensPesoRota = mapeamento.viagensPesoRota || [];
+          mapeamentoResumo = mapeamento.resumo || null;
+          mapeamentoLinhas = (mapeamento.linhas || [])
+            .slice()
+            .sort((a, b) => (b.horasProdutivas || 0) - (a.horasProdutivas || 0));
+        } catch {
+          // PDF segue sem o bloco se o mapeamento falhar
+        }
+      }
 
       const html = gerarHtmlRelatorioDia({
         aba: 'operacao',
@@ -496,6 +518,10 @@ export default function ServicoDiaDetalhe() {
         volumeL,
         densidadeResiduoKgL,
         densidadeKgL,
+        densidadeKgLPorPlaca,
+        viagensPesoRota,
+        mapeamentoResumo,
+        mapeamentoLinhas,
       });
       const nomeArquivo = gerarNomePdfRelatorioDia({
         servicoNome,
@@ -513,7 +539,7 @@ export default function ServicoDiaDetalhe() {
     registrosDia, linhas, adicionarToast, ehRocada, ehUnidadeNaoRocada, analiseRocada, analiseColeta,
     servicoNome, contratoNome, dataIso, diaSemana, kpisOperacao, kpisOperacaoAvancados, placasReserva,
     porTipoRocada, blocoManualRocada, blocoMecanizadaRocada, configFaturamento, limitesPesoKg,
-    volumeL, densidadeResiduoKgL, densidadeKgL, cenarioCaixaMedia, agregacaoUnidadeDia, totalRegistrosDia, tipoServico,
+    volumeL, densidadeResiduoKgL, densidadeKgL, densidadeKgLPorPlaca, cenarioCaixaMedia, agregacaoUnidadeDia, totalRegistrosDia, tipoServico,
     contractId, servicoId,
   ]);
 
@@ -553,6 +579,12 @@ export default function ServicoDiaDetalhe() {
       }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap' }}>
           <div>
+            <div style={{
+              fontSize: '0.65rem', fontWeight: 800, color: '#a5b4fc',
+              textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.35rem',
+            }}>
+              Relatório de operação do dia
+            </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
               <FiCalendar size={18} color="#a5b4fc" />
               <h1 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 800 }}>
@@ -561,7 +593,10 @@ export default function ServicoDiaDetalhe() {
               <span style={{ fontSize: '0.8rem', color: '#94a3b8' }}>{diaSemana}</span>
             </div>
             <div style={{ fontSize: '0.75rem', color: '#94a3b8' }}>
-              {servicoNome} · {ehRocada ? 'roçada do dia' : ehUnidadeNaoRocada ? `${unidade.labelMetrica.toLowerCase()} do dia` : 'operação do dia'}
+              {servicoNome}
+              {contratoNome ? ` · ${contratoNome}` : ''}
+              {' · '}
+              {ehRocada ? 'roçada do dia' : ehUnidadeNaoRocada ? `${unidade.labelMetrica.toLowerCase()} do dia` : 'coleta · operação do dia'}
             </div>
           </div>
           {(() => {
@@ -688,7 +723,10 @@ export default function ServicoDiaDetalhe() {
             volumeL={volumeL}
             densidadeResiduoKgL={densidadeResiduoKgL}
             densidadeKgL={densidadeKgL}
+            densidadeKgLPorPlaca={densidadeKgLPorPlaca}
             limitesPesoKg={limitesPesoKg}
+            contractId={contractId}
+            servicoId={servicoId}
           />
         </>
       )}

@@ -17,6 +17,7 @@ export interface UserData {
 /** Payload retornado pelo login/register */
 export interface AuthResponse {
   token: string
+  refreshToken?: string
   user: UserData
 }
 

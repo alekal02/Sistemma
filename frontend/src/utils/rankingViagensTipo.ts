@@ -29,6 +29,8 @@ export interface RankingViagemTipoItem {
   pesoKg: number;
   toneladas: number;
   pesoIdealKg: number | null;
+  /** Densidade efetiva (kg/L) usada no ideal desta viagem. */
+  densidadeKgL: number | null;
   mediaTipoKg: number | null;
   pctIdeal: number | null;
   pctMediaTipo: number | null;
@@ -87,6 +89,11 @@ function pctRefViagem(v: ViagemCapacidadeItem): { pctRef: number; refLabel: stri
   return { pctRef: 100, refLabel: v.tipoLabel, pctIdeal: null };
 }
 
+export function statusPorPctIdeal(pct: number | null | undefined): StatusRankingViagem | null {
+  if (pct == null || !Number.isFinite(pct)) return null;
+  return notaDaFaixaIdeal(classificarPctIdeal(pct));
+}
+
 export function montarRankingViagensPorTipo(
   capacidade: ResumoCapacidadeDia | null | undefined,
 ): RankingViagemTipoItem[] {
@@ -108,6 +115,7 @@ export function montarRankingViagensPorTipo(
         pesoKg: v.pesoKg,
         toneladas: Math.round((v.pesoKg / 1000) * 100) / 100,
         pesoIdealKg: v.pesoIdealKg,
+        densidadeKgL: v.densidadeKgL ?? null,
         mediaTipoKg: v.mediaTipoKg,
         pctIdeal,
         pctMediaTipo: v.pctMediaTipo,

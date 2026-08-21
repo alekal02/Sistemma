@@ -69,6 +69,7 @@ import { seedGraficosPadrao } from './database/seedGraficosPadrao';
 import { migrateHorasProdutivas } from './database/migrate_horas_produtivas';
 import { migrateColetoresEquipeKpi } from './database/migrate_coletores_equipe_kpi';
 import { migrateMediaHorasViagemKpi } from './database/migrate_media_horas_viagem_kpi';
+import { migratePesoCelulasPlanilha } from './database/migrate_peso_celulas_planilha';
 import { sincronizarKpisUniversaisBiblioteca } from './database/sincronizarKpisUniversaisBiblioteca';
 import { DashboardExecutivoController } from './controllers/DashboardExecutivoController';
 import { ModeloExecutivoController } from './controllers/ModeloExecutivoController';
@@ -301,6 +302,8 @@ app.get('/api/dashboard/diagnostico-servicos', authenticate, (req, res) => servi
 app.get('/api/dashboard/kpis-consolidado', authenticate, (req, res) => servicoCtrl.getKpisConsolidado(req, res));
 app.get('/api/dashboard/servicos-por-tipo', authenticate, (req, res) => servicoCtrl.listarServicosPorTipoGlobal(req, res));
 app.get('/api/dashboard/comparar-por-tipo', authenticate, (req, res) => servicoCtrl.getCompararKpisGlobal(req, res));
+app.get('/api/dashboard/qualidade-ideal-3d', authenticate, (req, res) => servicoCtrl.getQualidadeIdeal3d(req, res));
+app.get('/api/dashboard/evolucao-operacional', authenticate, (req, res) => servicoCtrl.getEvolucaoOperacional(req, res));
 
 // Rota de geração de PDF (legado) — delega ao endpoint unificado
 app.post('/api/generate-pdf', authenticate, (req, res) => {
@@ -368,6 +371,11 @@ AppDataSource.initialize()
         await migrateMediaHorasViagemKpi();
       } catch (err) {
         console.error('⚠️ Erro na migration de média horas/viagem:', err);
+      }
+      try {
+        await migratePesoCelulasPlanilha();
+      } catch (err) {
+        console.error('⚠️ Erro na migration de peso das células da planilha:', err);
       }
     } else {
       console.log('⏭️ SKIP_STARTUP_MIGRATIONS=true — migrations automáticas ignoradas');

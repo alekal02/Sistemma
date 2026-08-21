@@ -6,10 +6,22 @@ import { resumirFrotaOperacao } from '../../utils/placasReserva';
 import { esc, fmtNum, formatarIsoParaBr } from './fmt';
 import {
   blocoDesempenhoPorTipoHtml,
-  blocoRankingViagensHtml,
   type ResumoCapacidadeDia,
 } from './capacidadeViagemDia';
-import { PCT_IDEAL_MAX, PCT_IDEAL_MIN, textoEscalaIdealCurto } from './escalaIdealPeso';
+import {
+  COR_NOTA_IDEAL,
+  LABEL_NOTA_IDEAL,
+  PCT_IDEAL_MAX,
+  PCT_IDEAL_MIN,
+  classificarPctIdeal,
+  notaDaFaixaIdeal,
+  textoEscalaIdealCurto,
+  type NotaIdealViagem,
+} from './escalaIdealPeso';
+import {
+  agruparViagensPesoPorLinha,
+  type ViagemPesoRotaItem,
+} from '../viagemPesoRotaService';
 import {
   gerarInsightsOperacao,
   montarEficienciaGrupos,
@@ -107,6 +119,13 @@ const ESTILOS = `
   .bar-fill.bom { background: #22c55e; }
   .bar-fill.medio { background: #f59e0b; }
   .bar-fill.ruim { background: #ef4444; }
+  .vg-item { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 5px 6px; margin-bottom: 4px; }
+  .vg-hd-tbl { width: 100%; border-collapse: collapse; margin-bottom: 3px; }
+  .vg-hd-tbl td { font-size: 7px; color: #0f172a; vertical-align: middle; padding: 0; }
+  .vg-hora { display: inline-block; font-size: 7px; font-weight: 800; color: #0f766e; background: #ccfbf1; padding: 1px 6px; border-radius: 4px; font-family: monospace; margin-right: 4px; }
+  .vg-pill { display: inline-block; font-size: 6.5px; font-weight: 800; padding: 1px 5px; border-radius: 4px; }
+  .vg-pill.ok { color: #065f46; background: #d1fae5; }
+  .vg-pill.no { color: #9a3412; background: #ffedd5; }
   .bar-val.op { color: #1d4ed8; }
   table.data th.op-h { background: #4338ca; color: #c7d2fe; }
   .layout2-tbl { width: 100%; border-collapse: separate; border-spacing: 8px; margin-bottom: 4px; }
@@ -130,6 +149,137 @@ function barraHorizontalHtml(
       <div class="bar-track"><span class="bar-fill" style="width:${pct}%;background:${cor}"></span></div>
       <div class="bar-val">${formato(valor)}</div>
     </div>`;
+}
+
+function statusPorPctIdeal(pct: number | null | undefined): NotaIdealViagem | null {
+  if (pct == null || !Number.isFinite(pct)) return null;
+  return notaDaFaixaIdeal(classificarPctIdeal(pct));
+}
+
+function corBarraViagemPeso(v: ViagemPesoRotaItem): string {
+  const st = statusPorPctIdeal(v.pctIdeal);
+  if (st) return COR_NOTA_IDEAL[st];
+  if (v.encheu) return '#0f766e';
+  if ((v.pctIdeal ?? 0) >= 80) return '#d97706';
+  return '#dc2626';
+}
+
+function badgeStatusViagemHtml(pct: number | null): string {
+  const st = statusPorPctIdeal(pct);
+  if (!st) return '';
+  const cls = st === 'pessimo' ? 'st-ruim' : st === 'ruim' ? 'st-medio' : 'st-bom';
+  return `<span class="${cls}">${LABEL_NOTA_IDEAL[st]}</span>`;
+}
+
+/** Qualidade vs ideal + hora produtiva, agrupado por rota (unifica ranking e viagens da rota). */
+function blocoViagensPesoRotaHtml(itens?: ViagemPesoRotaItem[] | null): string {
+  if (!itens?.length) return '';
+  const gruposAll = agruparViagensPesoPorLinha(itens);
+  const nEncheu = itens.filter((v) => v.encheu).length;
+  const nFaltou = itens.length - nEncheu;
+  const nP = itens.filter((v) => statusPorPctIdeal(v.pctIdeal) === 'pessimo').length;
+  const nR = itens.filter((v) => statusPorPctIdeal(v.pctIdeal) === 'ruim').length;
+  const nO = itens.filter((v) => statusPorPctIdeal(v.pctIdeal) === 'otimo').length;
+
+  const ordemSt: Record<NotaIdealViagem, number> = { pessimo: 0, ruim: 1, otimo: 2 };
+  const piores = [...itens]
+    .map((v) => ({
+      v,
+      st: statusPorPctIdeal(v.pctIdeal),
+      desvio: Math.abs((v.pctIdeal ?? 100) - 100),
+    }))
+    .filter((x): x is typeof x & { st: NotaIdealViagem } => x.st != null)
+    .sort((a, b) => (ordemSt[a.st] - ordemSt[b.st]) || b.desvio - a.desvio)
+    .slice(0, 5);
+
+  const pioresHtml = piores.length ? `
+  <div class="bloco" style="margin-bottom:6px">
+    <div class="bloco-hd">Piores do dia — maior desvio do peso ideal</div>
+    ${piores.map(({ v, st }, i) => `
+      <div class="bar-row">
+        <div class="bar-lbl">${i + 1}. ${esc(v.placa)}
+          <div>${badgeStatusViagemHtml(v.pctIdeal)}</div>
+        </div>
+        <div class="bar-track" style="height:8px">
+          <span class="bar-fill" style="width:${Math.min(100, Math.max(4, Math.round(v.pctIdeal ?? 0)))}%;background:${COR_NOTA_IDEAL[st]};height:8px"></span>
+        </div>
+        <div class="bar-val">${v.pctIdeal != null ? `${fmtNum(v.pctIdeal, 0)}%` : '—'}</div>
+      </div>
+      <div class="bar-detail">${esc(v.rota)} · ${fmtNum(v.pesoKg, 0)} kg
+        ${v.pesoIdealKg != null ? ` / ${fmtNum(v.pesoIdealKg, 0)} kg ideal` : ''}
+        · ${fmtNum(v.horasProdutivasViagem, 1)} h
+      </div>`).join('')}
+  </div>` : '';
+
+  const blocos = gruposAll.map((g) => {
+    const tipo = g.tipo ? ` · ${esc(g.tipo)}` : '';
+    const mix = g.viagens.map((v) => statusPorPctIdeal(v.pctIdeal)).filter(Boolean);
+    const nPg = mix.filter((s) => s === 'pessimo').length;
+    const nRg = mix.filter((s) => s === 'ruim').length;
+    const nOg = mix.filter((s) => s === 'otimo').length;
+    const mixTxt = [
+      nPg ? `Péssimo ${nPg}` : '',
+      nRg ? `Ruim ${nRg}` : '',
+      nOg ? `Ótimo ${nOg}` : '',
+    ].filter(Boolean).join(' · ');
+    const rows = g.viagens.map((v) => {
+      const pct = v.pctIdeal != null ? Math.min(100, Math.max(4, Math.round(v.pctIdeal))) : 4;
+      const cor = corBarraViagemPeso(v);
+      const pill = v.pesoIdealKg
+        ? (v.encheu
+          ? '<span class="vg-pill ok">Já encheu</span>'
+          : '<span class="vg-pill no">Não encheu</span>')
+        : '';
+      const pesoIdealTxt = v.pesoIdealKg != null ? ` / ${fmtNum(v.pesoIdealKg, 0)} kg ideal` : '';
+      const falta = !v.encheu && v.pesoIdealKg != null
+        ? ` · falta ${fmtNum(Math.max(0, v.pesoIdealKg - v.pesoKg), 0)} kg`
+        : '';
+      const estim = v.tempoEqEncher != null
+        ? ` · estimativa para encher: <strong>${fmtNum(v.tempoEqEncher, 2)} h</strong>`
+        : '';
+      return `
+      <div class="vg-item">
+        <table class="vg-hd-tbl"><tr>
+          <td><strong>Viagem ${v.nViagem}</strong> ${badgeStatusViagemHtml(v.pctIdeal)}</td>
+          <td class="r"><span class="vg-hora">${fmtNum(v.horasProdutivasViagem, 1)} h produtivas</span>${pill}</td>
+        </tr></table>
+        <div class="bar-row">
+          <div class="bar-track" style="height:10px"><span class="bar-fill" style="width:${pct}%;background:${cor};height:10px"></span></div>
+          <div class="bar-val">${v.pctIdeal != null ? `${fmtNum(v.pctIdeal, 0)}%` : '—'}</div>
+        </div>
+        <div class="bar-detail" style="margin-left:0">
+          ${fmtNum(v.pesoKg, 0)} kg${pesoIdealTxt}${falta}${estim}
+        </div>
+      </div>`;
+    }).join('');
+    return `
+    <div class="bloco" style="margin-bottom:6px">
+      <div class="bloco-hd">${esc(g.rota)} · ${esc(g.placa)}${tipo}
+        · ${fmtNum(g.horasProdutivasRota, 1)} h produtivas
+        · ${g.viagens.length} viagem(ns)${mixTxt ? ` · ${mixTxt}` : ''}
+      </div>
+      ${rows}
+    </div>`;
+  }).join('');
+
+  return `
+  <div class="sec">Viagens do dia — qualidade, peso e hora produtiva</div>
+  <p style="font-size:6.5px;color:#64748b;margin:0 0 5px">
+    Uma linha = uma descarga (PESO 1–4). Qualidade vs peso ideal da caixa
+    (${esc(textoEscalaIdealCurto())}).
+    Hora produtiva = tempo na rota nessa viagem (trecho ou rateio da jornada).
+    Estimativa de enchimento só aparece abaixo do ideal.
+    ${fmtNum(gruposAll.length, 0)} rota(s) · ${fmtNum(itens.length, 0)} viagem(ns).
+  </p>
+  <table class="kpi-grid" style="margin-bottom:6px"><tr>
+    <td class="kpi-card"><div class="kpi-lbl">Péssimo</div><div class="kpi-val" style="color:#b91c1c">${fmtNum(nP, 0)}</div></td>
+    <td class="kpi-card"><div class="kpi-lbl">Ruim</div><div class="kpi-val" style="color:#ea580c">${fmtNum(nR, 0)}</div></td>
+    <td class="kpi-card"><div class="kpi-lbl">Ótimo</div><div class="kpi-val" style="color:#16a34a">${fmtNum(nO, 0)}</div></td>
+    <td class="kpi-card"><div class="kpi-lbl">Já encheu</div><div class="kpi-val" style="color:#0f766e">${fmtNum(nEncheu, 0)}</div></td>
+    <td class="kpi-card"><div class="kpi-lbl">Não encheu</div><div class="kpi-val" style="color:#c2410c">${fmtNum(nFaltou, 0)}</div></td>
+  </tr></table>
+  ${pioresHtml}
+  ${blocos}`;
 }
 
 function heroOperacaoHtml(op: OperacaoDiaAnalise['resumo']) {
@@ -257,13 +407,14 @@ function tabelaEficienciaPlacaHtml(linhas: LinhaEficienciaPlaca[]): string {
       <div class="bloco-hd">Placas a monitorar — vs ideal do tipo</div>
       <table class="data">
         <thead><tr>
-          <th>Placa</th><th>Tipo</th><th class="c">Viag.</th><th class="r">Ton</th>
+          <th>Placa</th><th>Tipo</th><th class="c">Ideal</th><th class="c">Viag.</th><th class="r">Ton</th>
           <th class="r op-h">t/viag</th><th class="c">% ideal</th><th class="c">Status</th>
         </tr></thead>
         <tbody>${piores.map((l, i) => `
           <tr style="background:${i % 2 === 0 ? '#f8fafc' : '#fff'}">
             <td style="font-weight:700">${placaComReservaHtml(l.chave, l.ehReserva)}</td>
             <td style="font-size:6px;color:#64748b">${esc(l.mediaRefLabel || '—')}</td>
+            <td class="c" style="font-size:6px;color:#0f766e">${l.pesoIdealKg != null ? `${fmtNum(l.pesoIdealKg, 0)} kg` : '—'}</td>
             <td class="c">${fmtNum(l.viagens, 0)}</td>
             <td class="r nowrap">${fmtNum(l.toneladas, 1)} t</td>
             <td class="r nowrap" style="font-weight:700">${fmtNum(l.tonMediaViagem, 2)}</td>
@@ -336,6 +487,7 @@ function blocoOperacao(opts: {
   placasReserva?: string[];
   capacidade?: ResumoCapacidadeDia | null;
   eficienciaOpts?: OptsEficienciaContrato;
+  viagensPesoRota?: ViagemPesoRotaItem[] | null;
 }): string {
   const op = opts.operacao.resumo;
   const insights = gerarInsightsOperacao(opts.operacao, opts.placasReserva);
@@ -400,7 +552,7 @@ function blocoOperacao(opts: {
   ${insightsHtml(insightsAll)}
 
   ${blocoDesempenhoPorTipoHtml(opts.capacidade)}
-  ${blocoRankingViagensHtml(opts.capacidade)}
+  ${blocoViagensPesoRotaHtml(opts.viagensPesoRota)}
 
   <div class="sec">Onde está o volume do dia</div>
   <table class="chart-tbl">
@@ -442,9 +594,12 @@ export function gerarHtmlRelatorioDia(opts: {
   placasReserva?: string[];
   /** PESO 1–4 tipados + ideal do contrato — ranking viagem a viagem. */
   capacidade?: ResumoCapacidadeDia | null;
+  /** PESO 1–4 com hora produtiva de cada viagem. */
+  viagensPesoRota?: ViagemPesoRotaItem[] | null;
   volumeL?: OptsEficienciaContrato['volumeL'];
   densidadeResiduoKgL?: number | null;
   densidadeKgL?: OptsEficienciaContrato['densidadeKgL'];
+  densidadeKgLPorPlaca?: OptsEficienciaContrato['densidadeKgLPorPlaca'];
   geradoEm?: Date;
 }): string {
   const { servicoNome, dataIso, diaSemana, operacao } = opts;
@@ -461,10 +616,12 @@ export function gerarHtmlRelatorioDia(opts: {
     kpisOperacao: opts.kpisOperacao,
     placasReserva: opts.placasReserva,
     capacidade: opts.capacidade,
+    viagensPesoRota: opts.viagensPesoRota,
     eficienciaOpts: {
       volumeL: opts.volumeL,
       densidadeResiduoKgL: opts.densidadeResiduoKgL,
       densidadeKgL: opts.densidadeKgL,
+      densidadeKgLPorPlaca: opts.densidadeKgLPorPlaca,
     },
   });
   const resumo = operacao.resumo;

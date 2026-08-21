@@ -22,7 +22,7 @@ export interface ConferenciaDiariaPlanilha {
   diasIguais: number;
   diasDivergentes: number;
   diasBloqueados: number;
-  /** Dias no sistema que não estão na planilha nova — serão preservados na consolidação */
+  /** Dias no sistema que não estão na planilha nova — serão removidos na importação */
   diasSomenteSistema: number;
   temDivergencia: boolean;
   ultimaDataPlanilha: string | null;
@@ -78,10 +78,10 @@ export function montarRecomendacaoConferencia(r: {
     partes.push(`${r.diasNovos} dia(s) novo(s) serão adicionados`);
   }
   if ((r.diasSomenteSistema || 0) > 0) {
-    partes.push(`${r.diasSomenteSistema} dia(s) só no sistema serão preservados`);
+    partes.push(`${r.diasSomenteSistema} dia(s) só no sistema serão removidos`);
   }
   if (partes.length > 0) {
-    return `${partes.join('; ')}. A planilha antiga será substituída pela nova (sem perder esses dias).`;
+    return `${partes.join('; ')}. A planilha antiga será substituída pela nova.`;
   }
   if (!r.temPlanilhaAnterior) {
     return 'Primeira importação — todos os dias válidos da planilha entrarão no sistema.';

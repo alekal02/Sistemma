@@ -233,4 +233,66 @@ describe('analisarPesoColeta — faixas vs peso ideal do tipo', () => {
     assert.equal(analise!.faixas[2].quantidade, 1);
     assert.equal(analise!.faixas[3].quantidade, 1);
   });
+
+  it('nao conta PESO 2–4 extras quando o CONTADOR DE VIAGENS e 1', () => {
+    const dados = [
+      {
+        PLACA: 'M1',
+        'TIPO DE CAMINHÃO': 'MINI',
+        'CONTADOR DE VIAGENS': 1,
+        'PESO 1': 1000, // péssimo
+        'PESO 2': 4000, // excedido — deve ser ignorado
+        'PESO TOTAL': 5000,
+        validoDashboard: true,
+      },
+    ];
+    const analise = analisarPesoColeta(dados, 'svc-faixas-contador');
+    assert.ok(analise);
+    assert.equal(analise!.numeroViagens, 1);
+    assert.equal(analise!.faixas[0].quantidade, 1);
+    assert.equal(analise!.faixas[3].quantidade, 0);
+    assert.equal(analise!.faixas[0].pct, 100);
+  });
+});
+
+describe('analisarPesoColeta — série diária', () => {
+  it('agrupa viagens e peso médio por dia', () => {
+    const dados = [
+      {
+        'DATA SAIDA': '2026-08-21',
+        PLACA: 'AAA1111',
+        'CONTADOR DE VIAGENS': 2,
+        'PESO 1': 4000,
+        'PESO 2': 6000,
+        'PESO TOTAL': 10000,
+        validoDashboard: true,
+      },
+      {
+        'DATA SAIDA': '2026-08-21',
+        PLACA: 'BBB2222',
+        'CONTADOR DE VIAGENS': 1,
+        'PESO 1': 5000,
+        'PESO TOTAL': 5000,
+        validoDashboard: true,
+      },
+      {
+        'DATA SAIDA': '2026-08-22',
+        PLACA: 'CCC3333',
+        'CONTADOR DE VIAGENS': 1,
+        'PESO 1': 8000,
+        'PESO TOTAL': 8000,
+        validoDashboard: true,
+      },
+    ];
+    const analise = analisarPesoColeta(dados, 'svc-por-dia');
+    assert.ok(analise?.porDia);
+    assert.equal(analise!.porDia!.length, 2);
+    assert.equal(analise!.porDia![0].data, '2026-08-21');
+    assert.equal(analise!.porDia![0].viagens, 3);
+    assert.equal(analise!.porDia![0].pesoTotalKg, 15000);
+    assert.equal(analise!.porDia![0].pesoMedioKg, 5000);
+    assert.equal(analise!.porDia![1].data, '2026-08-22');
+    assert.equal(analise!.porDia![1].viagens, 1);
+    assert.equal(analise!.porDia![1].pesoMedioKg, 8000);
+  });
 });

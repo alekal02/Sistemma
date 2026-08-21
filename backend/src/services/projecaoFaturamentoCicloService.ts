@@ -58,7 +58,7 @@ export function contarDiasComDadosOperacionais(dados: Record<string, unknown>[])
 
 /**
  * Projeção do faturamento para o ciclo completo:
- * média diária (realizado ÷ dias com dados) × total de dias do ciclo.
+ * média diária (realizado ÷ dias decorridos do ciclo) × total de dias do ciclo.
  */
 export function calcularProjecaoFaturamentoCiclo(
   faturamentoRealizado: number,
@@ -75,7 +75,7 @@ export function calcularProjecaoFaturamentoCiclo(
   const diasDecorridos = Math.max(1, diffDaysInclusive(dataInicio, fimReferencia));
   const cicloEmAndamento = hojeIso < dataFim;
 
-  const baseMedia = diasComDados > 0 ? diasComDados : diasDecorridos;
+  const baseMedia = diasDecorridos;
   const mediaDiaria = baseMedia > 0 && faturamentoRealizado > 0
     ? faturamentoRealizado / baseMedia
     : 0;

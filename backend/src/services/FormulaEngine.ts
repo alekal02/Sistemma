@@ -198,12 +198,29 @@ export function encontrarValorColuna(dado: Record<string, any>, nomeColuna: stri
   const semEspaco = chaveNorm.replace(/\s+/g, '');
   for (const [k, v] of Object.entries(dado)) { if (v !== null && v !== undefined && normalizarChave(k).replace(/\s+/g, '') === semEspaco) return v; }
   
-  // Nível 3: contains
-  for (const [k, v] of Object.entries(dado)) { if (v !== null && v !== undefined) { const chaveReal = normalizarChave(k).replace(/\s+/g, ''); if (chaveReal.includes(semEspaco) || semEspaco.includes(chaveReal)) return v; } }
+  // Nível 3: a coluna contém o nome buscado (ex.: "PESO TOTAL KG" ⊃ "PESOTOTAL").
+  // NÃO inverter (semEspaco.includes(chaveReal)): "PESO2".includes("ID") / tokens vazios
+  // faziam o id da linha virar PESO 2–5 e inflar o PESO TOTAL.
+  for (const [k, v] of Object.entries(dado)) {
+    if (v === null || v === undefined) continue;
+    const chaveReal = normalizarChave(k).replace(/\s+/g, '');
+    if (chaveReal.length >= 4 && chaveReal.includes(semEspaco)) return v;
+    if (chaveReal.length >= 5 && chaveReal.length >= semEspaco.length - 1 && semEspaco.includes(chaveReal)) return v;
+  }
   
-  // Nível 4: tokens comuns
+  // Nível 4: tokens comuns — só com tokens reais dos dois lados (id/PESO2 não batem)
   const tokensBuscados = semEspaco.split(/\s+/).filter(t => t.length > 2);
-  for (const [k, v] of Object.entries(dado)) { if (v !== null && v !== undefined) { const chaveReal = normalizarChave(k).replace(/\s+/g, ''); const tokensReal = chaveReal.split(/\s+/).filter(t => t.length > 2); const tokensComuns = tokensBuscados.filter(t => tokensReal.includes(t)); if (tokensComuns.length >= Math.min(tokensBuscados.length, tokensReal.length)) return v; } }
+  if (tokensBuscados.length > 0) {
+    for (const [k, v] of Object.entries(dado)) {
+      if (v === null || v === undefined) continue;
+      const chaveReal = normalizarChave(k).replace(/\s+/g, '');
+      const tokensReal = chaveReal.split(/\s+/).filter(t => t.length > 2);
+      if (tokensReal.length === 0) continue;
+      const tokensComuns = tokensBuscados.filter(t => tokensReal.includes(t));
+      if (tokensComuns.length === 0) continue;
+      if (tokensComuns.length >= Math.min(tokensBuscados.length, tokensReal.length)) return v;
+    }
+  }
   
   // Nível 5: dados brutos (d.dados)
   if (dado.dados && typeof dado.dados === 'object' && !Array.isArray(dado.dados)) return encontrarValorColuna(dado.dados, nomeColuna);

@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import { Repository } from 'typeorm';
 import AppDataSource from '../database/data-source';
 import { User, UserRole } from '../entities/User';
-import { gerarToken } from '../middlewares/authMiddleware';
+import { gerarRefreshToken, gerarToken, verificarTokenRenovacao } from '../middlewares/authMiddleware';
 
 class AuthController {
   private get repository(): Repository<User> {
@@ -57,16 +57,19 @@ class AuthController {
 
       await this.repository.save(user);
 
-      const token = gerarToken({
+      const payload = {
         id: user.id,
         email: user.email,
         nome: user.nome,
         role: user.role,
-      });
+      };
+      const token = gerarToken(payload);
+      const refreshToken = gerarRefreshToken(payload);
 
       res.status(201).json({
         message: 'Usuário cadastrado com sucesso',
         token,
+        refreshToken,
         user: user.toJSON(),
       });
     } catch (error) {
@@ -111,21 +114,65 @@ class AuthController {
         return;
       }
 
-      const token = gerarToken({
+      const payload = {
         id: user.id,
         email: user.email,
         nome: user.nome,
         role: user.role,
-      });
+      };
+      const token = gerarToken(payload);
+      const refreshToken = gerarRefreshToken(payload);
 
       res.json({
         message: 'Login realizado com sucesso',
         token,
+        refreshToken,
         user: user.toJSON(),
       });
     } catch (error) {
       console.error('Erro ao fazer login:', error);
       res.status(500).json({ error: 'Erro interno ao fazer login' });
+    }
+  }
+
+  /**
+   * POST /api/auth/refresh
+   * Renova access + refresh. Aceita refresh token (body ou Bearer) ou
+   * access token expirado há menos de 7 dias (TV/kiosk).
+   */
+  async refresh(req: Request, res: Response): Promise<void> {
+    try {
+      const raw =
+        (typeof req.body?.refreshToken === 'string' && req.body.refreshToken)
+        || (typeof req.headers.authorization === 'string'
+          && req.headers.authorization.replace(/^Bearer\s+/i, ''))
+        || '';
+      const payload = raw ? verificarTokenRenovacao(raw) : null;
+      if (!payload) {
+        res.status(401).json({ error: 'Sessão expirada. Faça login novamente.' });
+        return;
+      }
+
+      const user = await this.repository.findOne({ where: { id: payload.id } });
+      if (!user || !user.ativo) {
+        res.status(401).json({ error: 'Usuário desativado. Contate o administrador.' });
+        return;
+      }
+
+      const novo = {
+        id: user.id,
+        email: user.email,
+        nome: user.nome,
+        role: user.role,
+      };
+      res.json({
+        token: gerarToken(novo),
+        refreshToken: gerarRefreshToken(novo),
+        user: user.toJSON(),
+      });
+    } catch (error) {
+      console.error('Erro ao renovar sessão:', error);
+      res.status(500).json({ error: 'Erro interno ao renovar sessão' });
     }
   }
 

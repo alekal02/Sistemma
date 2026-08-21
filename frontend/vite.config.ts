@@ -34,6 +34,12 @@ export default defineConfig({
     __APP_VERSION__: JSON.stringify(appVersion),
   },
   resolve: {
+    alias: {
+      '@sistemma/shared': resolve(
+        fileURLToPath(new URL('.', import.meta.url)),
+        '../packages/shared/src/index.ts',
+      ),
+    },
     dedupe: ['react', 'react-dom'],
   },
   server: {

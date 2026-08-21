@@ -205,15 +205,17 @@ export interface ParamsRelatorioRocadaCiclo {
 
 export function gerarHtmlRelatorioRocadaCiclo(p: ParamsRelatorioRocadaCiclo): string {
   const areaTotal = p.totais.areaM2 || p.analise.resumo.areaM2 || 0;
-  const mediaDia = p.diasComDados > 0 ? areaTotal / p.diasComDados : 0;
+  const diasDecorridos = Math.max(p.dias.length, 1);
+  const mediaDia = areaTotal / diasDecorridos;
   const receita = p.valorM2 && p.valorM2 > 0 ? areaTotal * p.valorM2 : 0;
   const geradoEm = new Date().toLocaleString('pt-BR');
 
   const cards = cardsHtml([
     { label: 'Área total', valor: `${fmtAreaM2(areaTotal)} m²`, cor: '#22c55e' },
     { label: 'Registros', valor: fmtNum(p.totais.rotas || p.analise.resumo.registros, 0), cor: '#6366f1' },
-    { label: 'Dias com operação', valor: String(p.diasComDados), cor: '#0ea5e9' },
-    { label: 'Média m² / dia', valor: `${fmtAreaM2(mediaDia)} m²`, cor: '#8b5cf6' },
+    { label: 'Dias do ciclo', valor: String(p.dias.length), cor: '#0ea5e9' },
+    { label: 'Dias com operação', valor: String(p.diasComDados), cor: '#14b8a6' },
+    { label: 'Média m² / dia do ciclo', valor: `${fmtAreaM2(mediaDia)} m²`, cor: '#8b5cf6' },
     { label: 'Bairros', valor: String(p.analise.resumo.bairros), cor: '#14b8a6' },
     { label: 'Operadores', valor: String(p.analise.resumo.operadores), cor: '#f59e0b' },
     { label: 'Equipes', valor: String(p.analise.resumo.equipes), cor: '#ef4444' },
@@ -248,7 +250,8 @@ export function gerarHtmlRelatorioRocadaCiclo(p: ParamsRelatorioRocadaCiclo): st
     <div class="val">${fmtAreaM2(areaTotal)} m²</div>
     <div class="sub">
       ${fmtNum(p.totais.rotas || p.analise.resumo.registros, 0)} registro(s)
-      · ${p.diasComDados} dia(s) com operação
+      · ${p.dias.length} dia(s) do ciclo
+      · ${p.diasComDados} com operação
       · ${p.analise.resumo.bairros} bairro(s)
       · ${p.analise.resumo.operadores} operador(es)
     </div>

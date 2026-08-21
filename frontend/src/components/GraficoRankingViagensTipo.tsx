@@ -27,9 +27,12 @@ type Props = {
   volumeL?: MapaLimiteCaminhao | null;
   densidadeResiduoKgL?: number | null;
   densidadeKgL?: MapaLimiteCaminhao | null;
+  densidadeKgLPorPlaca?: Record<string, number> | null;
   limitesPesoKg?: MapaLimiteCaminhao | null;
-  /** Máx. de linhas no gráfico (piores primeiro). */
+  /** Máx. de linhas no gráfico (piores primeiro). 0 = todas as viagens. */
   limite?: number;
+  /** Total do dia no card Toneladas (PESO TOTAL). Só para contraste com o ranking. */
+  toneladasDia?: number | null;
 };
 
 const BADGE_STYLE: Record<StatusRankingViagem, CSSProperties> = {
@@ -67,8 +70,10 @@ export default function GraficoRankingViagensTipo({
   volumeL = null,
   densidadeResiduoKgL = null,
   densidadeKgL = null,
+  densidadeKgLPorPlaca = null,
   limitesPesoKg = null,
   limite = 40,
+  toneladasDia = null,
 }: Props) {
   const [filtro, setFiltro] = useState<FiltroTipo>('TODOS');
 
@@ -78,8 +83,9 @@ export default function GraficoRankingViagensTipo({
       volumeL,
       densidadeResiduoKgL,
       densidadeKgL,
+      densidadeKgLPorPlaca,
     }),
-    [registros, limitesPesoKg, volumeL, densidadeResiduoKgL, densidadeKgL],
+    [registros, limitesPesoKg, volumeL, densidadeResiduoKgL, densidadeKgL, densidadeKgLPorPlaca],
   );
 
   const ranking = useMemo(
@@ -89,17 +95,21 @@ export default function GraficoRankingViagensTipo({
 
   const tipos = useMemo(() => tiposPresentesRanking(ranking), [ranking]);
 
-  const filtrados = useMemo(() => {
-    const base = filtro === 'TODOS'
-      ? ranking
-      : ranking.filter((r) => r.tipo === filtro);
-    return base.slice(0, limite);
-  }, [ranking, filtro, limite]);
+  const doFiltro = useMemo(() => (
+    filtro === 'TODOS' ? ranking : ranking.filter((r) => r.tipo === filtro)
+  ), [ranking, filtro]);
+
+  const filtrados = useMemo(
+    () => (limite > 0 ? doFiltro.slice(0, limite) : doFiltro),
+    [doFiltro, limite],
+  );
 
   if (!ranking.length) return null;
 
   const maxTon = Math.max(...filtrados.map((d) => d.toneladas), 0.01);
-  const totalTon = filtrados.reduce((s, d) => s + d.toneladas, 0);
+  const totalPeso14 = doFiltro.reduce((s, d) => s + d.toneladas, 0);
+  const totalVisivel = filtrados.reduce((s, d) => s + d.toneladas, 0);
+  const truncado = limite > 0 && doFiltro.length > limite;
   const nPessimo = filtrados.filter((d) => d.status === 'pessimo').length;
   const nRuim = filtrados.filter((d) => d.status === 'ruim').length;
   const nOtimo = filtrados.filter((d) => d.status === 'otimo').length;
@@ -157,19 +167,40 @@ export default function GraficoRankingViagensTipo({
           </div>
           <div style={{ fontSize: '0.62rem', color: '#64748b', marginTop: 2, lineHeight: 1.35 }}>
             Toneladas por viagem{captionRef}. Escala: &lt;{PCT_PESSIMO_BAIXO}% péssimo · {PCT_PESSIMO_BAIXO}–{PCT_IDEAL_MIN}% ruim · {PCT_IDEAL_MIN}–{PCT_IDEAL_MAX}% ótimo · {PCT_IDEAL_MAX}–{PCT_PESSIMO_ALTO}% ruim · &gt;{PCT_PESSIMO_ALTO}% péssimo.
+            {' '}O card Toneladas soma o PESO TOTAL da planilha; este ranking soma só PESO 1–4 de cada viagem.
           </div>
         </div>
-        <span style={{
-          fontSize: '0.58rem',
-          fontWeight: 700,
-          padding: '0.15rem 0.5rem',
-          borderRadius: 6,
-          color: '#1d4ed8',
-          background: '#dbeafe',
-          whiteSpace: 'nowrap',
-        }}>
-          Total: {fmtNum(totalTon, 1)} t
-        </span>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
+          {toneladasDia != null && toneladasDia > 0 ? (
+            <span style={{
+              fontSize: '0.58rem',
+              fontWeight: 700,
+              padding: '0.15rem 0.5rem',
+              borderRadius: 6,
+              color: '#166534',
+              background: '#dcfce7',
+              whiteSpace: 'nowrap',
+            }}
+            title="Mesmo número do card Toneladas: soma do PESO TOTAL das rotas no dia."
+            >
+              Dia (PESO TOTAL): {fmtNum(toneladasDia, 1)} t
+            </span>
+          ) : null}
+          <span style={{
+            fontSize: '0.58rem',
+            fontWeight: 700,
+            padding: '0.15rem 0.5rem',
+            borderRadius: 6,
+            color: '#1d4ed8',
+            background: '#dbeafe',
+            whiteSpace: 'nowrap',
+          }}
+          title="Soma dos PESO 1–4 das viagens neste filtro. Não é o PESO TOTAL do dia."
+          >
+            PESO 1–4: {fmtNum(totalPeso14, 1)} t
+            {truncado ? ` · ${limite} piores: ${fmtNum(totalVisivel, 1)} t` : ''}
+          </span>
+        </div>
       </div>
 
       <div style={{
@@ -203,7 +234,7 @@ export default function GraficoRankingViagensTipo({
         })}
         <span style={{ fontSize: '0.58rem', color: '#94a3b8', marginLeft: 4 }} title={textoEscalaIdealCurto()}>
           {fmtNum(nPessimo, 0)} péssimo · {fmtNum(nRuim, 0)} ruim · {fmtNum(nOtimo, 0)} ótimo
-          {ranking.length > limite ? ` · top ${limite} piores` : ''}
+          {truncado ? ` · gráfico: ${limite} piores de ${fmtNum(doFiltro.length, 0)}` : ''}
         </span>
       </div>
 

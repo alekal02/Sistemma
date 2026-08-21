@@ -21,6 +21,13 @@ function problemaEhTratamentoHodometro(pl: string): boolean {
     || pl.includes('km chegada');
 }
 
+function fmtPesoTon(kg: unknown): string {
+  if (kg == null || kg === '') return '—';
+  const n = Number(kg);
+  if (Number.isNaN(n)) return '—';
+  return (n / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 2, minimumFractionDigits: 1 });
+}
+
 export function gerarHtmlSaudeDadosServer(opts: {
   relatorio: ResultadoAnaliseViagens;
   contratoNome: string;
@@ -35,6 +42,8 @@ export function gerarHtmlSaudeDadosServer(opts: {
   const corrigidasHodometro = relatorio.viagensCorrigidasHodometro ?? 0;
   const pesagensAltas = relatorio.pesagensAltas ?? 0;
   const linhasPesagemAlta = relatorio.linhasComPesagemAlta ?? 0;
+  const tDash = ((relatorio.pesoKgDashboard ?? 0) / 1000);
+  const tFora = ((relatorio.pesoKgForaDashboard ?? 0) / 1000);
   const dataRelatorio = new Date().toLocaleDateString('pt-BR');
 
   const filtrarProblemas = (
@@ -92,9 +101,7 @@ export function gerarHtmlSaudeDadosServer(opts: {
         <td>${esc(v.motorista || '—')}</td>
         <td style="text-align:center;font-weight:700;color:${v.foraDashboard || v.descartada ? '#dc2626' : '#16a34a'}">${esc(v.contadorViagens ?? '—')}</td>
         <td>${kmCell}</td>
-        <td style="${v.alertaPesagemAlta ? 'font-weight:700;color:#9a3412' : ''}">${v.pesoTotal != null
-          ? Number(v.pesoTotal).toLocaleString('pt-BR', { maximumFractionDigits: 1 })
-          : '—'}${v.alertaPesagemAlta && v.pesoAlertaKg != null
+        <td style="${v.alertaPesagemAlta ? 'font-weight:700;color:#9a3412' : ''}">${fmtPesoTon(v.pesoTotal)}${v.alertaPesagemAlta && v.pesoAlertaKg != null
           ? ` <span style="font-size:8px">(máx viagem ${Number(v.pesoAlertaKg).toLocaleString('pt-BR', { maximumFractionDigits: 0 })} kg)</span>`
           : ''}</td>
         <td style="color:${corProb};font-size:9px">${statusHtml}</td>
@@ -158,6 +165,12 @@ export function gerarHtmlSaudeDadosServer(opts: {
     ${pesagensAltas > 0
       ? `<div class="card"><div class="num" style="color:#ea580c">${esc(pesagensAltas)}</div><div class="label">Pesagens &gt; 15 t</div></div>`
       : ''}
+    ${tFora > 0
+      ? `<div class="card incompletas"><div class="num">${esc(tFora.toLocaleString('pt-BR', { maximumFractionDigits: 1 }))}</div><div class="label">t FORA do ciclo</div></div>`
+      : ''}
+    ${tDash > 0
+      ? `<div class="card completas"><div class="num">${esc(tDash.toLocaleString('pt-BR', { maximumFractionDigits: 1 }))}</div><div class="label">t no ciclo/dash</div></div>`
+      : ''}
     ${descartadas > 0
       ? `<div class="card"><div class="num">${esc(descartadas)}</div><div class="label">Linhas ignoradas</div></div>`
       : ''}
@@ -169,6 +182,11 @@ export function gerarHtmlSaudeDadosServer(opts: {
     Entram no dashboard: <strong>${esc(relatorio.somaContadorNoDashboard ?? validas)}</strong>.
     Ficam fora: <strong>${esc(relatorio.somaContadorForaDashboard ?? 0)}</strong>
     (${esc(inconsistentes)} linha(s) inconsistente(s)${descartadas > 0 ? ` + ${esc(descartadas)} ignorada(s)` : ''}).
+    ${tFora > 0
+      ? `A coluna <strong>Toneladas</strong> do ciclo soma só as viagens válidas: <strong>${esc(tDash.toLocaleString('pt-BR', { maximumFractionDigits: 1 }))} t</strong>. `
+        + `<strong>${esc(tFora.toLocaleString('pt-BR', { maximumFractionDigits: 1 }))} t</strong> ficaram FORA DO DASH (linhas com erro) e não entram no total. `
+        + `Planilha ≈ ciclo + toneladas fora. `
+      : ''}
     ${corrigidasHodometro > 0
       ? `${esc(corrigidasHodometro)} viagem(ns) com hodômetro inconsistente foram tratadas (KM zerado; peso/viagens mantidos). `
       : ''}
@@ -203,7 +221,7 @@ export function gerarHtmlSaudeDadosServer(opts: {
     </thead>
     <tbody>${linhasTabela}</tbody>
   </table>
-  <div class="obs">* Contador = coluna CONTADOR DE VIAGENS. Linhas com fora do dashboard não entram nos KPIs.</div>
+  <div class="obs">* Contador = coluna CONTADOR DE VIAGENS. Peso em toneladas (kg ÷ 1000). Linhas FORA DO DASH não entram na coluna Toneladas do ciclo.</div>
   ` : ''}
 
   <div class="footer">
