@@ -1,9 +1,10 @@
 /* ============================================
    COMPONENTE DE ROTA PROTEGIDA
-   Redireciona para /login se não autenticado
+   Sem sessão volta para a escolha de área
    ============================================ */
 import { Navigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
+import { ROTA_ACESSO } from '../utils/homePath'
 import type { ReactNode } from 'react'
 
 interface ProtectedRouteProps {
@@ -23,7 +24,7 @@ function ProtectedRoute({ children }: ProtectedRouteProps) {
   }
 
   if (!user) {
-    return <Navigate to="/login" replace />
+    return <Navigate to={ROTA_ACESSO} replace />
   }
 
   return <>{children}</>

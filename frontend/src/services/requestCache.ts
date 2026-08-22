@@ -81,3 +81,11 @@ export function chavePadraoServico(contractId: string, servicoId: string): strin
 export function chaveContrato(contractId: string): string {
   return `contrato:${contractId}`;
 }
+
+export function chaveServicosContrato(contractId: string): string {
+  return `servicos:${contractId}`;
+}
+
+export function chaveSaudeContratos(): string {
+  return 'contratos-saude';
+}

@@ -13,11 +13,9 @@ import {
   verificarTokenRenovacao,
 } from '../middlewares/authMiddleware';
 
-/** Só no ambiente local/dev. Em produção exige ACESSO_LIVRE=true de propósito. */
+/** Sem senha na tela inicial, salvo ACESSO_LIVRE=false no .env. */
 export function acessoLivreHabilitado(): boolean {
-  if (process.env.ACESSO_LIVRE === 'true') return true;
-  if (process.env.ACESSO_LIVRE === 'false') return false;
-  return process.env.NODE_ENV !== 'production';
+  return process.env.ACESSO_LIVRE !== 'false';
 }
 
 function payloadUsuario(user: User, tenantDb?: string | null): TokenPayload {

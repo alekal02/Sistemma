@@ -41,9 +41,9 @@ docker compose up -d
 
 ### Entrar sem senha (botões Gestor e Contratos)
 
-A tela inicial só abre direto nas áreas quando o acesso livre está ligado. Em
-`development` já vem ligado; em produção exige `ACESSO_LIVRE=true` no `.env`.
-Sem isso o clique em **Contratos** cai no formulário de email e senha.
+A tela inicial abre direto em Gestor e Contratos. Só volta a pedir senha com
+`ACESSO_LIVRE=false` no `.env`. Se o clique em **Contratos** mostrar email e
+senha, a variável ficou `false` no container — rode o script abaixo.
 
 ```powershell
 cd C:\Sistemma
@@ -90,10 +90,11 @@ assinado. Equivalente manual:
 
 ```powershell
 # Dev
-.\publicar.ps1 -Tag 2.0.2
+.\publicar.ps1 -Tag 3.2.0
 
-# Destino — só muda a TAG no .env e:
-docker compose up -d
+# Destino — só muda a TAG no .env (já em multi-banco: NÃO rode o cutover de novo):
+docker compose pull
+docker compose up -d --force-recreate backend frontend
 ```
 
 O compose **não tem build** — sempre puxa `backend` e `frontend` do Nexus (`pull_policy: always`).

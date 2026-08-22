@@ -9,7 +9,13 @@ import { Contract } from '../entities/Contract';
 import { normalizarTipoCaminhaoPeso } from '../config/pesoMaximoCaminhao';
 import { aplicarFiltroViagensValidasDashboard } from './validacaoViagemService';
 import { separarMelhoresPiores } from './rankingOperacionalService';
-import { sqlSumViagens, sqlSumPesoEfetivoKg, sqlExprPesoEfetivoKg, contarViagensPorRotaRegistro } from './viagensPorRotaService';
+import {
+  sqlSumViagens,
+  sqlSumPesoEfetivoKg,
+  sqlExprPesoEfetivoKg,
+  sqlExprViagensLinha,
+  contarViagensPorRotaRegistro,
+} from './viagensPorRotaService';
 import { decomporJornadaRegistro, type JornadaDecomposta } from './jornadaTrechosService';
 import { calcularPesoIdealViagem, densidadeOptsToInput } from './relatorioDia/escalaIdealPeso';
 import { montarViagensPesoDoRegistro, type ViagemPesoRotaItem } from './viagemPesoRotaService';
@@ -105,27 +111,41 @@ function baseQb(
   return qb;
 }
 
-/** Expressão SQL: tarifa R$/ton por tipo de caminhão. */
-function sqlTarifaPorTipo(valoresFixos: Record<string, number>): string {
+/**
+ * Expressão SQL: tarifa R$/ton por tipo de caminhão.
+ * `exprTipo` permite aplicar a mesma regra sobre a coluna já projetada por uma
+ * subconsulta, em vez de reler a tabela.
+ */
+function sqlTarifaPorTipo(
+  valoresFixos: Record<string, number>,
+  exprTipo = `c."tipoCaminhao"`,
+): string {
   const truck = Number(valoresFixos.VALOR_TRUCK || valoresFixos.VALOR_TONELADA || 0);
   const toco = Number(valoresFixos.VALOR_TOCO || valoresFixos.VALOR_TONELADA || 0);
   const mini = Number(valoresFixos.VALOR_MINI || valoresFixos.VALOR_TONELADA || 0);
   const basc = Number(valoresFixos.VALOR_BASCULANTE || valoresFixos.VALOR_TONELADA || 0);
   const fallback = Number(valoresFixos.VALOR_TONELADA || truck || 0);
+  const tipo = `UPPER(TRIM(COALESCE(${exprTipo}, '')))`;
   return `
     CASE
-      WHEN UPPER(TRIM(COALESCE(c."tipoCaminhao", ''))) LIKE '%MINI%' THEN ${mini}
-      WHEN UPPER(TRIM(COALESCE(c."tipoCaminhao", ''))) LIKE '%TOCO%' THEN ${toco}
-      WHEN UPPER(TRIM(COALESCE(c."tipoCaminhao", ''))) LIKE '%BASC%' THEN ${basc}
-      WHEN UPPER(TRIM(COALESCE(c."tipoCaminhao", ''))) LIKE '%TRUCK%' THEN ${truck}
+      WHEN ${tipo} LIKE '%MINI%' THEN ${mini}
+      WHEN ${tipo} LIKE '%TOCO%' THEN ${toco}
+      WHEN ${tipo} LIKE '%BASC%' THEN ${basc}
+      WHEN ${tipo} LIKE '%TRUCK%' THEN ${truck}
       ELSE ${fallback}
     END
   `;
 }
 
-/** Tipo predominante = o que mais aparece ordenado por viagens da linha. */
+/**
+ * Tipo predominante = o que mais aparece ordenado por viagens da linha.
+ * Peso e nome entram como critério de desempate: só as viagens deixavam o
+ * rótulo à mercê da ordem em que o banco devolveu as linhas, e ele mudava de
+ * um relatório para o outro sem nada ter mudado nos dados.
+ */
 const SQL_TIPO_PREDOMINANTE =
-  `(ARRAY_AGG(NULLIF(TRIM(c."tipoCaminhao"), '') ORDER BY COALESCE(c."viagensPorRota", 0) DESC NULLS LAST))[1]`;
+  `(ARRAY_AGG(NULLIF(TRIM(c."tipoCaminhao"), '') ORDER BY COALESCE(c."viagensPorRota", 0) DESC NULLS LAST, `
+  + `COALESCE(c."pesoTotal", 0) DESC, NULLIF(TRIM(c."tipoCaminhao"), '') ASC))[1]`;
 
 function mapRanking(rows: any[]): LinhaRankingColeta[] {
   return rows.map((r) => {
@@ -151,12 +171,23 @@ function mapRanking(rows: any[]): LinhaRankingColeta[] {
   });
 }
 
+/**
+ * Resumo do período em duas consultas paralelas.
+ *
+ * Antes era uma consulta só, e ela pagava dois preços altos: os quatro
+ * COUNT(DISTINCT) na mesma passada das somas, e a expressão de peso efetivo
+ * (que lê o JSONB da planilha) calculada duas vezes por linha — uma para o peso
+ * e outra para o faturamento. Aqui a linha é projetada uma vez numa subconsulta,
+ * o total e o valor por tipo saem juntos via GROUPING SETS, e a contagem de
+ * placas/motoristas/rotas roda em paralelo.
+ */
 export async function getMetricasColetaSql(
   servicoId: string,
   opts: { dataInicio?: string; dataFim?: string; data?: string } = {},
   valoresFixos: Record<string, number> = {},
+  uploadIdsConhecidos?: number[],
 ): Promise<MetricasColetaSql> {
-  const uploadIds = await getUploadIds(servicoId);
+  const uploadIds = uploadIdsConhecidos ?? await getUploadIds(servicoId);
   const vazio: MetricasColetaSql = {
     registros: 0, viagens: 0, pesoTotalKg: 0, pesoTotalTon: 0, kmTotal: 0,
     horasProdutivas: 0, placas: 0, motoristas: 0, regionais: 0, distritos: 0,
@@ -165,52 +196,68 @@ export async function getMetricasColetaSql(
   if (!uploadIds.length) return vazio;
 
   const { dataInicio, dataFim } = parsePeriodo(opts);
-  const tarifa = sqlTarifaPorTipo(valoresFixos);
+  const tarifa = sqlTarifaPorTipo(valoresFixos, 't.tipo_bruto');
 
-  const resumoRaw = await baseQb(uploadIds, dataInicio, dataFim)
+  const porLinha = baseQb(uploadIds, dataInicio, dataFim)
     .select([
+      `${sqlExprPesoEfetivoKg('c')} AS peso_kg`,
+      `${sqlExprViagensLinha('c')} AS viagens`,
+      'COALESCE(c."kmTotal", 0) AS km',
+      `CASE WHEN c."horasForaUnidade" BETWEEN 0 AND 24 THEN c."horasForaUnidade" ELSE 0 END AS horas`,
+      'COALESCE(c."numeroColetores", 0) AS coletores',
+      `c."tipoCaminhao" AS tipo_bruto`,
+    ]);
+
+  const somasEPorTipo = AppDataSource.createQueryBuilder()
+    .select([
+      'GROUPING(t.tipo_bruto) AS eh_total',
+      `COALESCE(NULLIF(TRIM(t.tipo_bruto), ''), 'Não informado') AS tipo`,
       'COUNT(*)::int AS registros',
-      `${sqlSumViagens('c')} AS viagens`,
-      `${sqlSumPesoEfetivoKg('c')} AS peso_kg`,
-      'COALESCE(SUM(COALESCE(c."kmTotal", 0)), 0) AS km_total',
-      `COALESCE(SUM(CASE WHEN c."horasForaUnidade" BETWEEN 0 AND 24 THEN c."horasForaUnidade" ELSE 0 END), 0) AS horas`,
+      'COALESCE(SUM(t.viagens), 0) AS viagens',
+      'COALESCE(SUM(t.peso_kg), 0) AS peso_kg',
+      'COALESCE(SUM(t.km), 0) AS km_total',
+      'COALESCE(SUM(t.horas), 0) AS horas',
+      'COALESCE(SUM(t.coletores), 0) AS soma_coletores',
+      `COALESCE(SUM(t.peso_kg / 1000.0 * (${tarifa})), 0) AS faturamento`,
+    ])
+    .from(`(${porLinha.getQuery()})`, 't')
+    .setParameters(porLinha.getParameters())
+    .groupBy(`GROUPING SETS ((COALESCE(NULLIF(TRIM(t.tipo_bruto), ''), 'Não informado'), t.tipo_bruto), ())`)
+    .getRawMany();
+
+  const distintos = baseQb(uploadIds, dataInicio, dataFim)
+    .select([
       `COUNT(DISTINCT NULLIF(TRIM(c.placa), ''))::int AS placas`,
       `COUNT(DISTINCT NULLIF(TRIM(c.motorista), ''))::int AS motoristas`,
       `COUNT(DISTINCT NULLIF(TRIM(c.regional), ''))::int AS regionais`,
       `COUNT(DISTINCT NULLIF(TRIM(c.distrito), ''))::int AS distritos`,
-      'COALESCE(SUM(COALESCE(c."numeroColetores", 0)), 0) AS soma_coletores',
-      `COALESCE(SUM((${sqlExprPesoEfetivoKg('c')}) / 1000.0 * (${tarifa})), 0) AS faturamento`,
     ])
     .getRawOne();
 
-  const porTipo = await baseQb(uploadIds, dataInicio, dataFim)
-    .select([
-      `COALESCE(NULLIF(TRIM(c."tipoCaminhao"), ''), 'Não informado') AS tipo`,
-      `COALESCE(SUM((${sqlExprPesoEfetivoKg('c')}) / 1000.0 * (${tarifa})), 0) AS fat`,
-    ])
-    .groupBy(`COALESCE(NULLIF(TRIM(c."tipoCaminhao"), ''), 'Não informado')`)
-    .getRawMany();
+  const [linhas, contagens] = await Promise.all([somasEPorTipo, distintos]);
 
-  const pesoKg = Number(resumoRaw?.peso_kg || 0);
+  const total = linhas.find((l) => Number(l.eh_total) === 1);
   const fatPorTipo: Record<string, number> = {};
-  for (const r of porTipo) {
+  for (const r of linhas) {
+    if (Number(r.eh_total) === 1) continue;
     const t = String(r.tipo || 'Não informado');
-    fatPorTipo[t] = round2(Number(r.fat || 0));
+    fatPorTipo[t] = round2((fatPorTipo[t] || 0) + Number(r.faturamento || 0));
   }
 
+  const pesoKg = Number(total?.peso_kg || 0);
   return {
-    registros: Number(resumoRaw?.registros || 0),
-    viagens: Number(resumoRaw?.viagens || 0),
+    registros: Number(total?.registros || 0),
+    viagens: Number(total?.viagens || 0),
     pesoTotalKg: pesoKg,
     pesoTotalTon: round2(pesoKg / 1000),
-    kmTotal: round2(Number(resumoRaw?.km_total || 0)),
-    horasProdutivas: round2(Number(resumoRaw?.horas || 0)),
-    placas: Number(resumoRaw?.placas || 0),
-    motoristas: Number(resumoRaw?.motoristas || 0),
-    regionais: Number(resumoRaw?.regionais || 0),
-    distritos: Number(resumoRaw?.distritos || 0),
-    somaColetores: Number(resumoRaw?.soma_coletores || 0),
-    faturamento: round2(Number(resumoRaw?.faturamento || 0)),
+    kmTotal: round2(Number(total?.km_total || 0)),
+    horasProdutivas: round2(Number(total?.horas || 0)),
+    placas: Number(contagens?.placas || 0),
+    motoristas: Number(contagens?.motoristas || 0),
+    regionais: Number(contagens?.regionais || 0),
+    distritos: Number(contagens?.distritos || 0),
+    somaColetores: Number(total?.soma_coletores || 0),
+    faturamento: round2(Number(total?.faturamento || 0)),
     fatPorTipo,
   };
 }
@@ -230,7 +277,7 @@ export async function getAgregacaoColeta(
   const topN = Math.min(Math.max(opts.topN || 50, 5), 200);
   const valoresFixos = opts.valoresFixos || {};
 
-  const resumo = await getMetricasColetaSql(servicoId, opts, valoresFixos);
+  const resumo = await getMetricasColetaSql(servicoId, opts, valoresFixos, uploadIds);
   const vazio: AgregacaoColetaResult = {
     resumo,
     porMotorista: [],
@@ -589,6 +636,14 @@ export async function getMapeamentoOperacional(
       'c.peso2',
       'c.peso3',
       'c.peso4',
+      'c.kmRota1',
+      'c.kmRota2',
+      'c.kmRota3',
+      'c.kmRota4',
+      'c.horaRota1',
+      'c.horaRota2',
+      'c.horaRota3',
+      'c.horaRota4',
       'c.dados',
     ])
     .orderBy('c.dataSaida', 'ASC')
@@ -657,7 +712,7 @@ export async function getMapeamentoOperacional(
       dados: reg.dados,
     };
     const jornada = decomporJornadaRegistro(obj);
-    const viagens = contarViagensPorRotaRegistro(reg);
+    const viagens = contarViagensPorRotaRegistro(obj);
     const km = Number(reg.kmTotal) || 0;
     const peso = Number(reg.pesoTotal) || 0;
     const dia = toIsoDate(reg.dataSaida);
@@ -743,6 +798,7 @@ export async function getMapeamentoOperacional(
       pesos: [reg.peso1, reg.peso2, reg.peso3, reg.peso4],
       objHoras: obj,
       pesoIdealKg: pesoIdealViagem && pesoIdealViagem > 0 ? pesoIdealViagem : null,
+      nViagens: viagens,
     }));
   }
 

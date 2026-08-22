@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  obterContadorViagensRegistro,
   obterPesoTotalRegistro,
   sqlDataIsoDia,
   sqlExprPesoEfetivoKg,
@@ -31,5 +32,17 @@ describe('sql peso efetivo / data ISO do ciclo', () => {
       dados: { 'PESO 1': 8300, 'PESO 2': '', 'PESO TOTAL': 8300 },
     });
     assert.equal(kg, 8300);
+  });
+});
+
+describe('contador de viagens no JSON da planilha', () => {
+  it('lê CONTADOR DE VIAGENS de dados mesmo sem campo tipado', () => {
+    const n = obterContadorViagensRegistro({
+      peso1: 8390,
+      numeroViagens: null,
+      viagensPorRota: 0,
+      dados: { 'CONTADOR DE VIAGENS': 2, 'PESO 1': 8390 },
+    });
+    assert.equal(n, 2);
   });
 });

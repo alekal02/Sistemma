@@ -47,7 +47,12 @@ function csvEscape(v: string | number): string {
   return s;
 }
 
+function viagemTemPesagem(v: ViagemPesoRotaItem): boolean {
+  return !v.semPesagem && Number(v.pesoKg) > 0;
+}
+
 function corBarraViagem(v: ViagemPesoRotaItem): string {
+  if (!viagemTemPesagem(v)) return '#94a3b8';
   const st = statusPorPctIdeal(v.pctIdeal);
   if (st) return COR_STATUS_RANKING[st];
   if (v.encheu) return '#0f766e';
@@ -401,9 +406,9 @@ export default function MapeamentoOperacionalPainel({
                     Viagens do dia — qualidade, peso e hora produtiva
                   </div>
                   <div style={{ fontSize: '0.68rem', color: '#64748b', marginBottom: '0.65rem', lineHeight: 1.45 }}>
-                    Cada faixa é uma descarga (PESO 1–4). Qualidade vs peso ideal da caixa
-                    (péssimo / ruim / ótimo). Hora produtiva = tempo na rota nessa viagem.
-                    Estimativa de enchimento só aparece abaixo do ideal.
+                    Cada faixa é uma viagem com dado real (peso ou horário da ROTA N).
+                    Hora produtiva = saída − chegada daquele trecho, não a rota inteira.
+                    “Sem pesagem” só aparece se o trecho existe e o peso falta.
                   </div>
                   <div style={{ display: 'grid', gap: '0.65rem', maxHeight: '520px', overflow: 'auto' }}>
                     {gruposViagem.map((g) => (
@@ -453,7 +458,7 @@ export default function MapeamentoOperacionalPainel({
                                 }}>
                                   <strong style={{ fontSize: '0.75rem', color: '#0f172a' }}>
                                     Viagem {v.nViagem}
-                                    {st && stStyle && (
+                                    {viagemTemPesagem(v) && st && stStyle && (
                                       <span style={{
                                         marginLeft: 6, fontSize: '0.62rem', fontWeight: 800,
                                         padding: '2px 7px', borderRadius: '6px',
@@ -471,7 +476,14 @@ export default function MapeamentoOperacionalPainel({
                                     }}>
                                       {fmtNum(v.horasProdutivasViagem, 1)} h produtivas
                                     </span>
-                                    {v.pesoIdealKg != null && (
+                                    {!viagemTemPesagem(v) ? (
+                                      <span style={{
+                                        fontSize: '0.65rem', fontWeight: 800, padding: '2px 7px', borderRadius: '6px',
+                                        color: '#334155', background: '#e2e8f0',
+                                      }}>
+                                        Sem pesagem
+                                      </span>
+                                    ) : v.pesoIdealKg != null && (
                                       <span style={{
                                         fontSize: '0.65rem', fontWeight: 800, padding: '2px 7px', borderRadius: '6px',
                                         color: v.encheu ? '#065f46' : '#9a3412',
@@ -500,14 +512,20 @@ export default function MapeamentoOperacionalPainel({
                                   </span>
                                 </div>
                                 <div style={{ fontSize: '0.68rem', color: '#64748b', marginTop: '0.25rem' }}>
-                                  {fmtNum(v.pesoKg, 0)} kg
-                                  {v.pesoIdealKg != null ? ` / ${fmtNum(v.pesoIdealKg, 0)} kg ideal` : ''}
-                                  {!v.encheu && v.pesoIdealKg != null
-                                    ? ` · falta ${fmtNum(Math.max(0, v.pesoIdealKg - v.pesoKg), 0)} kg`
-                                    : ''}
-                                  {v.tempoEqEncher != null
-                                    ? ` · estimativa para encher: ${fmtNum(v.tempoEqEncher, 2)} h`
-                                    : ''}
+                                  {!viagemTemPesagem(v)
+                                    ? 'Sem pesagem — hora desta viagem (trecho), não da rota completa'
+                                    : (
+                                      <>
+                                        {fmtNum(v.pesoKg, 0)} kg
+                                        {v.pesoIdealKg != null ? ` / ${fmtNum(v.pesoIdealKg, 0)} kg ideal` : ''}
+                                        {!v.encheu && v.pesoIdealKg != null
+                                          ? ` · falta ${fmtNum(Math.max(0, v.pesoIdealKg - v.pesoKg), 0)} kg`
+                                          : ''}
+                                        {v.tempoEqEncher != null
+                                          ? ` · estimativa para encher: ${fmtNum(v.tempoEqEncher, 2)} h`
+                                          : ''}
+                                      </>
+                                    )}
                                 </div>
                               </div>
                             );

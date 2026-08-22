@@ -274,7 +274,9 @@ export function extrairPesosViagemRegistro(
 export function obterContadorViagensRegistro(
   registro: Partial<ColetaData> | Record<string, unknown>,
 ): number | null {
-  const raw = registro as Record<string, unknown>;
+  // CONTADOR fica no JSON da planilha (`dados`); sem unificar, a gente só via
+  // o campo tipado e a 01AD com 2 viagens virava 1.
+  const raw = registroUnificado(registro);
 
   for (const col of COLUNAS_CONTADOR_VIAGENS) {
     const val = encontrarValorColuna(raw, col);

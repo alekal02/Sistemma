@@ -1,5 +1,5 @@
 import api from './api'
-import { cachedFetch, chaveContrato, invalidateCacheExact } from './requestCache'
+import { cachedFetch, chaveContrato, chaveSaudeContratos, invalidateCacheExact } from './requestCache'
 
 export function invalidateContratoCache(id: string): void {
   invalidateCacheExact(chaveContrato(id))
@@ -45,11 +45,17 @@ export interface ContratoDetalhe {
 }
 
 const contractService = {
-  async listarSaude(): Promise<ContratoSaude[]> {
-    const { data } = await api.get<{ contratos: ContratoSaude[] }>('/contracts/saude')
-    const lista = data.contratos || []
-    return lista.sort((a, b) =>
-      a.numeroContrato.localeCompare(b.numeroContrato, 'pt-BR', { sensitivity: 'base' }),
+  async listarSaude(opts?: { force?: boolean }): Promise<ContratoSaude[]> {
+    return cachedFetch(
+      chaveSaudeContratos(),
+      async () => {
+        const { data } = await api.get<{ contratos: ContratoSaude[] }>('/contracts/saude')
+        const lista = data.contratos || []
+        return lista.sort((a, b) =>
+          a.numeroContrato.localeCompare(b.numeroContrato, 'pt-BR', { sensitivity: 'base' }),
+        )
+      },
+      { ttlMs: 60_000, force: opts?.force },
     )
   },
 
@@ -73,6 +79,7 @@ const contractService = {
   },
 
   async criar(payload: { numeroContrato: string; diaInicioCiclo?: number }): Promise<ContratoDetalhe> {
+    invalidateCacheExact(chaveSaudeContratos())
     const { data } = await api.post<ContratoDetalhe>('/contracts', payload)
     return data
   },
@@ -96,10 +103,13 @@ const contractService = {
   ): Promise<ContratoDetalhe> {
     const { data } = await api.put<ContratoDetalhe>(`/contracts/${id}`, payload)
     invalidateContratoCache(id)
+    invalidateCacheExact(chaveSaudeContratos())
     return data
   },
 
   async excluir(id: string): Promise<void> {
+    invalidateContratoCache(id)
+    invalidateCacheExact(chaveSaudeContratos())
     await api.delete(`/contracts/${id}`)
   },
 }

@@ -19,17 +19,9 @@ import { htmlToPdf } from './PdfGeneratorService';
 import { gerarHtmlSaudeDadosServer } from './PdfSaudeDadosHtml';
 import { gerarHtmlRelatorioDiaRocadaServer } from './PdfRelatorioDiaHtml';
 import { analisarViagensPlanilha } from './analisarViagensPlanilhaService';
-import { getAgregacaoColeta, getMapeamentoOperacional } from './coletaAgregacaoService';
 import { getAgregacaoRocada } from './rocadaAgregacaoService';
 import { extrairCadastroOperacional } from '../utils/configOperacional';
-import { normalizarListaPlacasReserva } from '../utils/placasReserva';
-import { buildValoresFixosFaturamento } from './configFaturamentoValores';
-import { gerarHtmlRelatorioDia } from './relatorioDia/gerarHtmlRelatorioDiaOperacao';
-import { gerarNomePdfRelatorioDia } from './relatorioDia/gerarNomePdf';
-import { analiseOperacaoDeAgregacaoSql } from './relatorioDia/operacaoDia';
-import { diaSemanaPt } from './relatorioDia/fmt';
-import { calcularKpisOperacaoDiaSql } from './relatorioDia/kpisOperacaoDia';
-import { carregarViagensCapacidadeDia } from './relatorioDia/capacidadeViagemDia';
+import { montarHtmlRelatorioDiaColeta } from './relatorioDia/montarRelatorioDiaColeta';
 import wuzapiService from './WuzapiService';
 import {
   extrairTextoMensagem,
@@ -641,56 +633,11 @@ export class WhatsappPlanilhaPipelineService {
         await wuzapiService.enviarTexto(grupoJid, linhasMsg.join('\n'));
         pdfDiario = true;
       } else {
-        const valoresFixos = buildValoresFixosFaturamento(contrato || null, servico.configFaturamento);
-        const agg = await getAgregacaoColeta(servico.id, {
-          data: ultimoDia,
-          topN: 50,
-          valoresFixos,
-        });
-        const operacao = analiseOperacaoDeAgregacaoSql(agg);
-        const placasReserva = normalizarListaPlacasReserva(contrato?.configOperacional?.placasReserva);
-        const kpisOperacao = calcularKpisOperacaoDiaSql({
+        const { html: htmlDia, nomeArquivo: nomeDia } = await montarHtmlRelatorioDiaColeta({
           servico,
-          contract: contrato || null,
-          metricas: agg.resumo,
-          valoresFixos,
-          limite: 8,
-        });
-        const cfgOp = contrato?.configOperacional;
-        const capacidade = await carregarViagensCapacidadeDia(servico.id, ultimoDia, {
-          volumeL: cfgOp?.volumeL || null,
-          pesoMaximoKg: cfgOp?.pesoMaximoKg || null,
-          densidadeResiduoKgL: cfgOp?.densidadeResiduoKgL ?? null,
-          densidadeKgL: cfgOp?.densidadeKgL || null,
-          densidadeKgLPorPlaca: cfgOp?.densidadeKgLPorPlaca || null,
-        });
-        let viagensPesoRota: Awaited<ReturnType<typeof getMapeamentoOperacional>>['viagensPesoRota'] = [];
-        try {
-          const mapeamento = await getMapeamentoOperacional(servico.id, { data: ultimoDia });
-          viagensPesoRota = mapeamento.viagensPesoRota || [];
-        } catch (errMap: any) {
-          console.warn('[WhatsappPipeline] Mapeamento operacional (viagens peso):', errMap?.message || errMap);
-        }
-        const htmlDia = gerarHtmlRelatorioDia({
-          aba: 'operacao',
-          servicoNome: servico.nome,
+          contrato: contrato || null,
           dataIso: ultimoDia,
-          diaSemana: diaSemanaPt(ultimoDia),
-          operacao,
-          kpisOperacao,
-          placasReserva,
-          capacidade,
-          viagensPesoRota,
-          volumeL: cfgOp?.volumeL || null,
-          densidadeResiduoKgL: cfgOp?.densidadeResiduoKgL ?? null,
-          densidadeKgL: cfgOp?.densidadeKgL || null,
-          densidadeKgLPorPlaca: cfgOp?.densidadeKgLPorPlaca || null,
         });
-        const nomeDia = `${gerarNomePdfRelatorioDia({
-          servicoNome: servico.nome,
-          aba: 'operacao',
-          dataIso: ultimoDia,
-        })}.pdf`;
         const pdfDia = await htmlToPdf(htmlDia, {
           margin: { top: '10mm', bottom: '10mm', left: '8mm', right: '8mm' },
         });

@@ -1,6 +1,6 @@
 import { Navigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
-import { ehGestor, homePath } from '../utils/homePath'
+import { ehGestor, homePath, ROTA_ACESSO } from '../utils/homePath'
 import type { ReactNode } from 'react'
 
 interface AdminRouteProps {
@@ -21,7 +21,7 @@ export default function AdminRoute({ children }: AdminRouteProps) {
   }
 
   if (!user) {
-    return <Navigate to="/login" replace />
+    return <Navigate to={ROTA_ACESSO} replace />
   }
 
   if (!isAdmin) {

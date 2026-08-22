@@ -37,5 +37,6 @@ Compress-Archive -Path "$DeployDir\*" -DestinationPath "dist\deploy.zip" -Force
 
 Write-Host ""
 Write-Host "Publicado: $Tag" -ForegroundColor Green
-Write-Host "IMPORTANTE na destino: substitua docker-compose.yml + .env (WuzAPI) e use --force-recreate" -ForegroundColor Yellow
-Write-Host "Destino: TAG=$Tag no .env  ->  docker compose up -d --force-recreate" -ForegroundColor Cyan
+Write-Host "Destino: so mude TAG=$Tag no .env (nao substitua o arquivo inteiro)." -ForegroundColor Yellow
+Write-Host "Mantenha ACESSO_LIVRE=true para Contratos nao pedir senha." -ForegroundColor Yellow
+Write-Host "Depois: docker compose pull && docker compose up -d --force-recreate backend frontend" -ForegroundColor Cyan

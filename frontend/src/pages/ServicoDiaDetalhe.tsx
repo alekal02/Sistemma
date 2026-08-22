@@ -6,7 +6,7 @@ import {
 import { useToast } from '../contexts/ToastContext';
 import { useBreadcrumbs } from '../contexts/BreadcrumbContext';
 import { useKpiCalculator } from '../hooks/useKpiCalculator';
-import servicoService, { type TrechosJornadaDimensao } from '../services/servicoService';
+import servicoService from '../services/servicoService';
 import contractService from '../services/contractService';
 import { isRequestAborted } from '../services/abortableRequest';
 import pdfService from '../services/pdfService';
@@ -19,13 +19,10 @@ import {
   filtrarRegistrosPorDia,
 } from '../utils/dadosPorDia';
 import { analisarOperacaoDia, analiseOperacaoDeAgregacaoSql, isKpiMetricaBaseOperacao, type OperacaoDiaAnalise } from '../utils/operacaoDia';
-import { analisarEstudoRotasDia } from '../utils/estudoRotasDia';
 import { analisarCenarioCaixaMediaDia } from '../utils/cenarioCaixaMediaDia';
-import { gerarHtmlRelatorioDia } from '../utils/gerarHtmlRelatorioDia';
 import { gerarHtmlRelatorioRocadaDia } from '../utils/gerarHtmlRelatorioRocadaDia';
 import { gerarHtmlRelatorioUnidadeDia } from '../utils/gerarHtmlRelatorioUnidadeDia';
 import {
-  gerarNomePdfRelatorioDia,
   gerarNomePdfRelatorioRocadaDia,
   gerarNomePdfRelatorioUnidadeDia,
 } from '../utils/gerarNomePdf';
@@ -459,95 +456,19 @@ export default function ServicoDiaDetalhe() {
       return;
     }
 
-    const operacao = analiseColeta || (registrosDia.length ? analisarOperacaoDia(registrosDia) : null);
-    if (!operacao || operacao.resumo.viagens <= 0) {
-      adicionarToast('Nenhum dado operacional para exportar', 'warning');
+    if (!contractId || !servicoId) {
+      adicionarToast('Contrato ou serviço não identificado', 'warning');
       return;
     }
 
     setExportandoPdf(true);
     try {
-      // Para capacidade/gargalos por tipo, precisa das linhas do dia (agregação SQL não traz peso por viagem)
-      let regsExport = registrosDia;
-      if ((!regsExport.length || regsExport.length < operacao.resumo.registros) && contractId && servicoId) {
-        const full = await servicoService.getDadosDia(contractId, servicoId, dataIso, { all: true });
-        regsExport = full?.dados || regsExport;
-      }
-
-      // Reanalisa com linhas do dia para tipar placas (Mini/Toco/…) — agregação SQL não traz tipo por placa
-      const operacaoPdf = regsExport.length
-        ? analisarOperacaoDia(regsExport)
-        : operacao;
-
-      const estudoRotas = regsExport.length
-        ? analisarEstudoRotasDia(regsExport, {
-          limitesPesoKg,
-          volumeL,
-          densidadeResiduoKgL,
-          densidadeKgL,
-          densidadeKgLPorPlaca,
-        })
-        : null;
-
-      const cenarioPdf = analisarCenarioCaixaMediaDia(operacaoPdf, {
-        registros: regsExport,
-        volumeL,
-        densidadeResiduoKgL,
-        densidadeKgL,
-      }) || cenarioCaixaMedia;
-
-      let viagensPesoRota: Awaited<ReturnType<typeof servicoService.getMapeamentoOperacional>>['viagensPesoRota'] = [];
-      let mapeamentoResumo: Awaited<ReturnType<typeof servicoService.getMapeamentoOperacional>>['resumo'] | null = null;
-      let mapeamentoLinhas: Awaited<ReturnType<typeof servicoService.getMapeamentoOperacional>>['linhas'] = [];
-      let trechosPorPlaca: TrechosJornadaDimensao[] = [];
-      let trechosPorRota: TrechosJornadaDimensao[] = [];
-      if (contractId && servicoId) {
-        try {
-          const mapeamento = await servicoService.getMapeamentoOperacional(contractId, servicoId, {
-            data: dataIso,
-          });
-          viagensPesoRota = mapeamento.viagensPesoRota || [];
-          mapeamentoResumo = mapeamento.resumo || null;
-          mapeamentoLinhas = (mapeamento.linhas || [])
-            .slice()
-            .sort((a, b) => (b.horasProdutivas || 0) - (a.horasProdutivas || 0));
-          trechosPorPlaca = mapeamento.trechosPorPlaca || [];
-          trechosPorRota = mapeamento.trechosPorRota || [];
-        } catch {
-          // PDF segue sem o bloco se o mapeamento falhar
-        }
-      }
-
-      const html = gerarHtmlRelatorioDia({
-        aba: 'operacao',
-        servicoNome,
+      const { blob, filename } = await servicoService.baixarRelatorioDiaOperacao(
+        contractId,
+        servicoId,
         dataIso,
-        diaSemana,
-        operacao: operacaoPdf,
-        receita: null,
-        linhas: regsExport.length ? listarLinhasDia(regsExport) : linhas,
-        kpisOperacao: kpisOperacaoAvancados.slice(0, 8),
-        placasReserva,
-        estudoRotas,
-        cenarioCaixaMedia: cenarioPdf,
-        limitesPesoKg,
-        volumeL,
-        densidadeResiduoKgL,
-        densidadeKgL,
-        densidadeKgLPorPlaca,
-        viagensPesoRota,
-        mapeamentoResumo,
-        mapeamentoLinhas,
-        trechosPorPlaca,
-        trechosPorRota,
-        baselineDia: regua.baseline,
-      });
-      const nomeArquivo = gerarNomePdfRelatorioDia({
-        servicoNome,
-        aba: 'operacao',
-        dataIso,
-      });
-      await pdfService.gerarEBaixar(html, nomeArquivo, 'default', false);
+      );
+      pdfService.downloadBlob(blob, filename);
       adicionarToast('PDF de operação exportado', 'success');
     } catch {
       adicionarToast('Erro ao gerar PDF', 'error');
@@ -555,11 +476,11 @@ export default function ServicoDiaDetalhe() {
       setExportandoPdf(false);
     }
   }, [
-    registrosDia, linhas, adicionarToast, ehRocada, ehUnidadeNaoRocada, analiseRocada, analiseColeta,
-    servicoNome, contratoNome, dataIso, diaSemana, kpisOperacao, kpisOperacaoAvancados, placasReserva,
-    porTipoRocada, blocoManualRocada, blocoMecanizadaRocada, configFaturamento, limitesPesoKg,
-    volumeL, densidadeResiduoKgL, densidadeKgL, densidadeKgLPorPlaca, cenarioCaixaMedia, agregacaoUnidadeDia, totalRegistrosDia, tipoServico,
-    contractId, servicoId, regua.baseline,
+    adicionarToast, ehRocada, ehUnidadeNaoRocada, analiseRocada,
+    servicoNome, contratoNome, dataIso, diaSemana, kpisOperacao,
+    porTipoRocada, blocoManualRocada, blocoMecanizadaRocada, configFaturamento,
+    agregacaoUnidadeDia, totalRegistrosDia, tipoServico, registrosDia,
+    contractId, servicoId,
   ]);
 
   const carregandoPainel = ehRocada

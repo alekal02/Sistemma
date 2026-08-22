@@ -346,22 +346,32 @@ export default function ContratoDetalhe() {
   const { setBreadcrumbs } = useBreadcrumbs();
 
   /* ═══ Carregar dados ═══ */
-  const carregarDados = useCallback(async (opts?: { silencioso?: boolean }) => {
+  /**
+   * `aproveitarCache` existe porque a busca do padrão é uma requisição por
+   * serviço: na primeira abertura vale reusar o que o cliente já tem, e só
+   * ignorar o cache quando a recarga vem de uma ação que mudou os dados.
+   */
+  const carregarDados = useCallback(async (opts?: { silencioso?: boolean; aproveitarCache?: boolean }) => {
     if (!id) return;
     if (!opts?.silencioso) setCarregando(true);
     try {
-      // Garante todos os tipos padrão do contrato antes de listar
-      try {
-        await servicoService.garantirServicosPadrao(id);
-      } catch {
-        /* contrato inexistente ou rede — listagem abaixo trata */
-      }
-
+      // Contrato e lista primeiro: o POST de tipos padrão não precisa travar a tela
+      // quando o contrato já tem serviços. Só espera se a lista vier vazia.
       const [contratoData, listaRaw] = await Promise.all([
         contractService.buscar(id),
-        servicoService.listarServicosContrato(id),
+        servicoService.listarServicosContrato(id, { force: !opts?.aproveitarCache }),
       ]);
-      const lista = Array.isArray(listaRaw) ? listaRaw : (listaRaw as any)?.servicos || [];
+      let lista = Array.isArray(listaRaw) ? listaRaw : (listaRaw as any)?.servicos || [];
+      if (lista.length === 0) {
+        try {
+          await servicoService.garantirServicosPadrao(id);
+          lista = await servicoService.listarServicosContrato(id);
+        } catch {
+          /* contrato inexistente ou rede — cards vazios abaixo */
+        }
+      } else {
+        void servicoService.garantirServicosPadrao(id).catch(() => undefined);
+      }
 
       setContrato(contratoData);
       setPastaBackupPlanilhas(String(contratoData.configOperacional?.pastaBackupPlanilhas || '').trim());
@@ -393,7 +403,7 @@ export default function ContratoDetalhe() {
       const resultados = await Promise.allSettled(
         lista.map(async (s: Servico) => {
           try {
-            const padrao = await servicoService.getPadrao(id, s.id, { force: true });
+            const padrao = await servicoService.getPadrao(id, s.id, { force: !opts?.aproveitarCache });
               const cols = padrao.servico?.padraoPlanilha?.colunas || [];
               const uploads = normalizarPlanilhasContrato(padrao.uploads?.ultimos || []);
               const config = padrao.servico?.configDashboard;
@@ -659,7 +669,7 @@ export default function ContratoDetalhe() {
     }
   };
 
-  useEffect(() => { carregarDados(); }, [id]);
+  useEffect(() => { carregarDados({ aproveitarCache: true }); }, [id]);
 
   useEffect(() => {
     if (!modalCriacaoAberto) return;

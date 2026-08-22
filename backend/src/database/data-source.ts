@@ -23,6 +23,21 @@ export function origemDatabaseName(): string {
   return process.env.DATABASE_NAME || 'abastecimento';
 }
 
+/**
+ * Em produção não logamos toda query, só as demoradas: é o que permite achar o
+ * gargalo de uma tela lenta sem inundar o log. Ajuste com DB_LOG_SLOW_MS.
+ */
+function configLog() {
+  if (process.env.NODE_ENV === 'development') {
+    return { logging: true as const };
+  }
+  const limite = parseInt(process.env.DB_LOG_SLOW_MS || '0', 10);
+  if (limite > 0) {
+    return { logging: ['warn', 'error'] as ('warn' | 'error')[], maxQueryExecutionTime: limite };
+  }
+  return { logging: ['error'] as 'error'[] };
+}
+
 function postgresBase() {
   return {
     type: 'postgres' as const,
@@ -32,7 +47,7 @@ function postgresBase() {
     password: process.env.DATABASE_PASSWORD || '',
     synchronize: process.env.TYPEORM_SYNCHRONIZE !== 'false',
     migrationsRun: false,
-    logging: process.env.NODE_ENV === 'development',
+    ...configLog(),
     extra: {
       max: parseInt(process.env.DB_POOL_MAX || '8', 10),
       idleTimeoutMillis: parseInt(process.env.DB_POOL_IDLE_MS || '10000', 10),

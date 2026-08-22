@@ -33,6 +33,7 @@ import {
 import { resolverLimitesDoContrato } from '../config/pesoMaximoCaminhao';
 import { normalizarDados } from './FormulaEngine';
 import { carregarViagensCapacidadePeriodo } from './relatorioDia/capacidadeViagemDia';
+import { montarHtmlRelatorioDiaColeta } from './relatorioDia/montarRelatorioDiaColeta';
 import {
   agregarQualidadeIdeal3d,
   type FaixaDominante3d,
@@ -44,7 +45,7 @@ import {
 } from './WhatsappComandoRelatorioTexto';
 
 type EtapaSessao = 'menu_relatorio' | 'menu_evolucao_janela';
-type TipoRelatorioSessao = 'ciclo' | 'peso' | 'evolucao';
+type TipoRelatorioSessao = 'ciclo' | 'peso' | 'evolucao' | 'dia';
 
 interface SessaoChat {
   etapa: EtapaSessao;
@@ -123,6 +124,9 @@ function menuRelatorioTexto(qual: QualCiclo = 'atual'): string {
     '',
     '*3* — Evolução diária (gráficos)',
     'PDF com gráficos de qualidade vs peso ideal *deste contrato*. Depois escolha a janela: semana, 15 dias, ciclo atual ou *ciclo anterior*.',
+    '',
+    '*4* — Relatório do dia (operação)',
+    'PDF diário no formato Coleta BH: viagens, peso × ideal, hora produtiva por trecho e rankings.',
     '',
     qual === 'atual'
       ? '_Atalho: *ciclo anterior* · *peso anterior* · *evolucao anterior*_'
@@ -258,6 +262,54 @@ async function listarServicosDoContratoMesmoTipo(servicoBase: Servico): Promise<
     lista.unshift(servicoBase);
   }
   return lista;
+}
+
+async function gerarEEnviarDia(
+  grupoJid: string,
+  servico: Servico,
+  contrato: Contract | null,
+): Promise<void> {
+  const tipo = String(servico.tipo || '');
+  const ehColeta = tipo === TipoServico.COLETA_CAMINHAO || tipo === 'coleta_caminhao';
+  if (!ehColeta) {
+    await wuzapiService.enviarTexto(
+      grupoJid,
+      'O relatório do dia no formato Coleta BH vale só para serviço de *coleta*.',
+    );
+    return;
+  }
+
+  const periodo = await PlanilhaService.getPeriodoDadosPorServico(servico.id);
+  const dataIso = periodo?.dataFim || null;
+  if (!dataIso) {
+    await wuzapiService.enviarTexto(
+      grupoJid,
+      '⚠️ Sem dia operacional neste contrato. Envie a planilha do dia primeiro.',
+    );
+    return;
+  }
+
+  const dataBr = dataIso.split('-').reverse().join('/');
+  await wuzapiService.enviarTexto(
+    grupoJid,
+    `⏳ Gerando *relatório de operação do dia* ${dataBr}…\n${servico.nome}`,
+  );
+
+  const { html, nomeArquivo } = await montarHtmlRelatorioDiaColeta({
+    servico,
+    contrato,
+    dataIso,
+  });
+  const pdf = await htmlToPdf(html, {
+    useCache: false,
+    margin: { top: '10mm', bottom: '10mm', left: '8mm', right: '8mm' },
+  });
+  await wuzapiService.enviarDocumento(
+    grupoJid,
+    nomeArquivo,
+    pdf,
+    `Operação ${dataBr} — ${servico.nome}`,
+  );
 }
 
 async function gerarEEnviarCiclo(
@@ -622,7 +674,25 @@ export async function processarComandoTextoWhatsapp(opts: {
   const { servico, contrato } = resolvido;
   const sessao = sessoes.get(opts.grupoJid);
 
-  const ehRelatorio = /^(relatorio|relatorios|report)(\b|$)/.test(norm);
+  const ehRelatorioDiaDireto =
+    norm === 'relatorio dia'
+    || norm === 'relatorio do dia'
+    || norm === 'relatorios do dia'
+    || /^relatorio(s)? do dia$/.test(norm);
+
+  const ehRelatorio = /^(relatorio|relatorios|report)(\b|$)/.test(norm) && !ehRelatorioDiaDireto;
+
+  if (ehRelatorioDiaDireto) {
+    try {
+      await gerarEEnviarDia(opts.grupoJid, servico, contrato);
+    } catch (err: any) {
+      await wuzapiService.enviarTexto(
+        opts.grupoJid,
+        `❌ Falha ao gerar o relatório do dia: ${err?.message || 'erro'}`,
+      );
+    }
+    return { processado: true };
+  }
 
   if (ehRelatorio) {
     const qualPedido = textoPedeCicloAnterior(norm) ? 'anterior' : undefined;
@@ -652,6 +722,7 @@ export async function processarComandoTextoWhatsapp(opts: {
         '',
         '*relatorio* — menu de PDFs (só deste contrato)',
         '*relatorio anterior* — mesmo menu, já no ciclo fechado',
+        '*diario* / *pdf dia* — relatório de operação do último dia',
         '*ciclo* / *ciclo anterior* — PDF ciclo operacional',
         '*comparativo* / *peso anterior* — PDF análise de peso',
         '*evolucao* — gráficos (semana, 15 dias, ciclo atual ou anterior)',
@@ -663,15 +734,21 @@ export async function processarComandoTextoWhatsapp(opts: {
   }
 
   if (sessao?.etapa === 'menu_relatorio') {
-    const escolhaCiclo = /^1\b/.test(norm) || (norm.includes('ciclo') && !norm.includes('evol') && !norm.includes('por'));
+    const escolhaCiclo = /^1\b/.test(norm) || (norm.includes('ciclo') && !norm.includes('evol') && !norm.includes('por') && !norm.includes('dia'));
     const escolhaComp = /^2\b/.test(norm) || norm.includes('compar') || norm.includes('peso') || norm.includes('analise');
     const escolhaEvol =
       /^3\b/.test(norm)
       || norm.includes('evolucao')
       || norm.includes('grafico')
       || norm.includes('gerente');
+    const escolhaDia =
+      /^4\b/.test(norm)
+      || norm === 'diario'
+      || norm.includes('do dia')
+      || norm === 'operacao'
+      || norm === 'pdf dia';
 
-    if (!escolhaCiclo && !escolhaComp && !escolhaEvol) {
+    if (!escolhaCiclo && !escolhaComp && !escolhaEvol && !escolhaDia) {
       if (textoPedeCicloAnterior(norm)) {
         sessoes.set(opts.grupoJid, {
           ...sessao,
@@ -683,12 +760,18 @@ export async function processarComandoTextoWhatsapp(opts: {
       }
       await wuzapiService.enviarTexto(
         opts.grupoJid,
-        'Não entendi. Responda *1* (ciclo), *2* (análise de peso) ou *3* (evolução diária), ou *cancelar*.',
+        'Não entendi. Responda *1* (ciclo), *2* (análise de peso), *3* (evolução) ou *4* (relatório do dia), ou *cancelar*.',
       );
       return { processado: true };
     }
 
-    const tipo: TipoRelatorioSessao = escolhaEvol ? 'evolucao' : escolhaCiclo ? 'ciclo' : 'peso';
+    const tipo: TipoRelatorioSessao = escolhaDia
+      ? 'dia'
+      : escolhaEvol
+        ? 'evolucao'
+        : escolhaCiclo
+          ? 'ciclo'
+          : 'peso';
     const qual: QualCiclo = textoPedeCicloAnterior(norm)
       ? 'anterior'
       : (/\batual\b/.test(norm) ? 'atual' : (sessao.qualCiclo || 'atual'));
@@ -778,6 +861,24 @@ export async function processarComandoTextoWhatsapp(opts: {
     return { processado: true };
   }
   if (
+    norm === 'diario'
+    || norm === 'pdf dia'
+    || norm === 'relatorio dia'
+    || norm === 'relatorio do dia'
+    || norm === 'operacao'
+    || norm === 'pdf operacao'
+  ) {
+    try {
+      await gerarEEnviarDia(opts.grupoJid, servico, contrato);
+    } catch (err: any) {
+      await wuzapiService.enviarTexto(
+        opts.grupoJid,
+        `❌ Falha ao gerar o relatório do dia: ${err?.message || 'erro'}`,
+      );
+    }
+    return { processado: true };
+  }
+  if (
     /^evolucao anterior$/.test(norm)
     || /^evolucao ciclo anterior$/.test(norm)
   ) {
@@ -828,6 +929,10 @@ async function gerarRelatorioTipo(
   tipo: TipoRelatorioSessao,
   qual: QualCiclo,
 ): Promise<void> {
+  if (tipo === 'dia') {
+    await gerarEEnviarDia(grupoJid, servico, contrato);
+    return;
+  }
   if (tipo === 'ciclo') {
     await gerarEEnviarCiclo(grupoJid, servico, contrato, qual);
     return;

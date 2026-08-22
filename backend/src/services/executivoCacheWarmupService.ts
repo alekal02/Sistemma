@@ -11,7 +11,19 @@ import AppDataSource, {
 import { contratosComBanco, escopoCacheTenant } from './tenantFanout';
 import { Contract } from '../entities/Contract';
 import { Servico } from '../entities/Servico';
-import { inferirMesReferenciaAtual } from '../utils/periodoCicloContrato';
+import {
+  calcularCicloMensalContrato,
+  inferirMesReferenciaAtual,
+  inferirMesReferenciaDeData,
+  normalizarDiaInicioCiclo,
+} from '../utils/periodoCicloContrato';
+import { buildValoresFixosFaturamento } from './configFaturamentoValores';
+import {
+  agregacaoColetaComCache,
+  mapeamentoOperacionalComCache,
+  rankingsColetaComCache,
+  fichaRotasCicloComCache,
+} from './coletaEndpointsCache';
 import { dashboardCache, type ExecutivoCacheParams } from './DashboardCacheManager';
 import PlanilhaService from './PlanilhaService';
 import type { DashboardExecutivoController } from '../controllers/DashboardExecutivoController';
@@ -174,6 +186,45 @@ export async function aquecerCacheExecutivo(opts?: {
   }
 }
 
+/**
+ * Aquece as consultas operacionais do ciclo corrente (agregação, rankings,
+ * mapeamento e ficha de rotas). São as telas do dia a dia e as mais caras de
+ * calcular; deixá-las prontas aqui evita que o usuário pague a primeira volta.
+ */
+async function aquecerOperacionalDoServico(servicoId: string, contractId: string): Promise<void> {
+  try {
+    const servico = await AppDataSource.getRepository(Servico).findOne({
+      where: { id: servicoId },
+      select: ['id', 'tipo'],
+    });
+    const ehColeta = servico?.tipo === 'coleta_caminhao';
+    if (!ehColeta) return;
+
+    const contrato = await AppDataSource.getRepository(Contract).findOne({ where: { id: contractId } });
+    const dia = normalizarDiaInicioCiclo(contrato?.diaInicioCiclo);
+    // O ciclo que interessa é o da planilha que acabou de entrar, não o de hoje:
+    // quem importa dado de um mês fechado vai abrir justamente aquele ciclo.
+    const periodoDados = await PlanilhaService.getPeriodoDadosPorServico(servicoId);
+    const { mes, ano } = periodoDados
+      ? inferirMesReferenciaDeData(periodoDados.dataFim, dia)
+      : inferirMesReferenciaAtual(dia);
+    const ciclo = calcularCicloMensalContrato(ano, mes, dia);
+
+    const opts = { dataInicio: ciclo.dataInicio, dataFim: ciclo.dataFim };
+    const valoresFixos = buildValoresFixosFaturamento(contrato, null);
+
+    await agregacaoColetaComCache(servicoId, { ...opts, valoresFixos, tipoServico: servico?.tipo });
+    await pausaWarmup();
+    await rankingsColetaComCache(servicoId, opts);
+    await pausaWarmup();
+    await fichaRotasCicloComCache(servicoId, opts);
+    await pausaWarmup();
+    await mapeamentoOperacionalComCache(servicoId, { ...opts, tipoServico: servico?.tipo });
+  } catch (err) {
+    console.warn('[DashboardWarmup] Aquecimento operacional falhou:', (err as Error)?.message || err);
+  }
+}
+
 /** Agenda warmup inicial + repetição diária */
 export function iniciarAgendamentoWarmupExecutivo(): void {
   if (!WARMUP_ENABLED) {
@@ -199,17 +250,39 @@ export function iniciarAgendamentoWarmupExecutivo(): void {
   }
 }
 
-/** Após upload — aquece só contrato/serviço afetado (em background) */
+/**
+ * Após upload — aquece só contrato/serviço afetado (em background).
+ *
+ * O banco do contrato precisa ser capturado agora: dentro do setTimeout o
+ * contexto da requisição já não existe, e com um banco por contrato a busca do
+ * serviço cairia no banco de controle, que não tem a tabela.
+ */
 export function agendarWarmupPosUpload(servicoId: string, contractId?: string): void {
   if (!WARMUP_ENABLED) return;
+  const tenantDb = getCurrentTenantDb();
+
+  const aquecer = async () => {
+    let cid = contractId;
+    if (!cid) {
+      const s = await AppDataSource.getRepository(Servico).findOne({ where: { id: servicoId } });
+      cid = s?.contract_id;
+    }
+    if (!cid) {
+      console.warn(`[DashboardWarmup] Serviço ${servicoId} sem contrato — aquecimento ignorado`);
+      return;
+    }
+    await aquecerCacheExecutivo({ contractId: cid, servicoId });
+    await aquecerOperacionalDoServico(servicoId, cid);
+  };
+
   setTimeout(() => {
     void (async () => {
-      let cid = contractId;
-      if (!cid) {
-        const s = await AppDataSource.getRepository(Servico).findOne({ where: { id: servicoId } });
-        cid = s?.contract_id;
+      try {
+        if (tenantDb) await runWithTenant(tenantDb, aquecer);
+        else await aquecer();
+      } catch (err) {
+        console.error('[DashboardWarmup] Falha no aquecimento pós-upload:', (err as Error)?.message || err);
       }
-      if (cid) await aquecerCacheExecutivo({ contractId: cid, servicoId });
     })();
   }, 5000);
 }

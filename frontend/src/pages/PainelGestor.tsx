@@ -23,11 +23,11 @@ export default function PainelGestor() {
     setBreadcrumbs([{ label: 'Gestor' }]);
   }, [setBreadcrumbs]);
 
-  const carregar = useCallback(async () => {
+  const carregar = useCallback(async (force = false) => {
     setCarregando(true);
     setErro('');
     try {
-      const lista = await contractService.listarSaude();
+      const lista = await contractService.listarSaude({ force });
       setUnidades(lista.filter((c) => c.status !== 'encerrado'));
     } catch {
       setErro('Não foi possível carregar os contratos.');
@@ -47,6 +47,14 @@ export default function PainelGestor() {
     })),
     [unidades],
   );
+
+  const dataReferenciaHint = useMemo(() => {
+    let melhor: string | null = null;
+    for (const c of unidades) {
+      if (c.ultimoUpload && (!melhor || c.ultimoUpload > melhor)) melhor = c.ultimoUpload;
+    }
+    return melhor;
+  }, [unidades]);
 
   const servicosCatalogo = useMemo(
     () => unidades.flatMap((c) => {
@@ -87,7 +95,7 @@ export default function PainelGestor() {
         <button
           type="button"
           className="btn btn-sm btn-secondary"
-          onClick={() => { void carregar(); }}
+          onClick={() => { void carregar(true); }}
           disabled={carregando}
         >
           <FiRefreshCw size={14} className={carregando ? 'spin' : ''} /> Atualizar lista
@@ -120,6 +128,7 @@ export default function PainelGestor() {
         <CompararPorTipoTv
           contratos={contratos}
           servicosCatalogo={servicosCatalogo}
+          dataReferenciaHint={dataReferenciaHint}
           onAbrirContrato={(id) => { void abrirUnidade(id); }}
         />
       )}

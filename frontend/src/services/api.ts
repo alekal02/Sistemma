@@ -90,8 +90,8 @@ api.interceptors.response.use(
     }
 
     limparSessaoLocal()
-    if (window.location.pathname !== '/login') {
-      window.location.href = '/login'
+    if (window.location.pathname !== '/') {
+      window.location.href = '/'
     }
     return Promise.reject(error)
   },

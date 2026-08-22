@@ -1,5 +1,8 @@
 import type { UserData } from '../types'
 
+/** Tela de escolha de área. Fica na raiz: não existe mais página de login. */
+export const ROTA_ACESSO = '/'
+
 export function isSuperadmin(user?: UserData | null): boolean {
   return user?.role === 'superadmin'
 }
@@ -15,7 +18,7 @@ export function ehGestor(user?: UserData | null): boolean {
 }
 
 export function homePath(user?: UserData | null): string {
-  if (!user) return '/login'
+  if (!user) return ROTA_ACESSO
   if (user.contractId) return `/contratos/${user.contractId}`
   if (ehGestor(user)) return '/visao-geral'
   return '/visao-geral'

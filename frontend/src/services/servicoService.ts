@@ -6,6 +6,8 @@ import { nextAbortSignal, resolveAbortSignal } from './abortableRequest';
 import {
   cachedFetch,
   chavePadraoServico,
+  chaveServicosContrato,
+  chaveSaudeContratos,
   invalidateCacheExact,
   invalidateCachePrefix,
 } from './requestCache';
@@ -16,6 +18,8 @@ export function invalidatePadraoServico(contractId: string, servicoId: string): 
 
 export function invalidateCachesServico(contractId: string, servicoId: string): void {
   invalidatePadraoServico(contractId, servicoId);
+  invalidateCacheExact(chaveServicosContrato(contractId));
+  invalidateCacheExact(chaveSaudeContratos());
   invalidateCachePrefix(`planilha:${contractId}:${servicoId}`);
   invalidateCachePrefix(`dia:${contractId}:${servicoId}`);
   invalidateCachePrefix(`brutos:${contractId}:${servicoId}`);
@@ -23,7 +27,14 @@ export function invalidateCachesServico(contractId: string, servicoId: string): 
   invalidateCachePrefix(`mapeamento-op:${contractId}:${servicoId}`);
   invalidateCachePrefix(`mapeamento-op-v2:${contractId}:${servicoId}`);
   invalidateCachePrefix(`mapeamento-op-v6:${contractId}:${servicoId}`);
+  invalidateCachePrefix(`mapeamento-op-v7:${contractId}:${servicoId}`);
+  invalidateCachePrefix(`mapeamento-op-v8:${contractId}:${servicoId}`);
+  invalidateCachePrefix(`mapeamento-op-v9:${contractId}:${servicoId}`);
+  invalidateCachePrefix(`mapeamento-op-v10:${contractId}:${servicoId}`);
+  invalidateCachePrefix(`rotas-ciclo:${contractId}:${servicoId}`);
+  invalidateCachePrefix(`resumo-ciclo:${contractId}:${servicoId}`);
   invalidateCachePrefix(`kpi-valores:${contractId}:${servicoId}`);
+  invalidateCachePrefix('kpis-consolidado:');
 }
 
 export interface LinhaMapeamentoOperacional {
@@ -112,6 +123,7 @@ export interface ViagemPesoRotaItem {
   pesoIdealKg: number | null;
   pctIdeal: number | null;
   encheu: boolean;
+  semPesagem?: boolean;
   horasProdutivasViagem: number;
   horasProdutivasRota: number;
   origemHora: 'trecho' | 'rateio';
@@ -483,14 +495,20 @@ const servicoService = {
     }
     const query = params.toString();
     const url = query ? `/dashboard/kpis-consolidado?${query}` : '/dashboard/kpis-consolidado';
-    const { data } = await api.get<KpisConsolidadoResponse>(url, {
-      signal: nextAbortSignal('servico:getKpisConsolidado'),
-    });
-    return data;
+    return cachedFetch(
+      `kpis-consolidado:${query}`,
+      async () => {
+        const { data } = await api.get<KpisConsolidadoResponse>(url, {
+          signal: nextAbortSignal('servico:getKpisConsolidado'),
+        });
+        return data;
+      },
+      { ttlMs: 60_000 },
+    );
   },
 
   /** Lista serviços de um contrato (id, nome, tipo) */
-  async listarServicosContrato(contratoId: string): Promise<Array<{
+  async listarServicosContrato(contratoId: string, opts?: { force?: boolean }): Promise<Array<{
     id: string;
     nome: string;
     tipo: string;
@@ -498,17 +516,23 @@ const servicoService = {
     configFaturamento?: unknown;
     criadoEm?: string;
   }>> {
-    const { data } = await api.get<{ servicos: Array<{
-      id: string;
-      nome: string;
-      tipo: string;
-      descricao?: string | null;
-      configFaturamento?: unknown;
-      criadoEm?: string;
-    }> }>(
-      `/contracts/${contratoId}/servicos`,
+    return cachedFetch(
+      chaveServicosContrato(contratoId),
+      async () => {
+        const { data } = await api.get<{ servicos: Array<{
+          id: string;
+          nome: string;
+          tipo: string;
+          descricao?: string | null;
+          configFaturamento?: unknown;
+          criadoEm?: string;
+        }> }>(
+          `/contracts/${contratoId}/servicos`,
+        );
+        return data.servicos || [];
+      },
+      { ttlMs: 60_000, force: opts?.force },
     );
-    return data.servicos || [];
   },
 
   /** Compara KPIs entre serviços do mesmo tipo dentro de um contrato */
@@ -758,7 +782,7 @@ const servicoService = {
     servicoId: string,
     opts?: { data?: string; dataInicio?: string; dataFim?: string },
   ) {
-    const chave = `mapeamento-op-v7:${contractId}:${servicoId}:${opts?.data || ''}:${opts?.dataInicio || ''}:${opts?.dataFim || ''}`;
+    const chave = `mapeamento-op-v10:${contractId}:${servicoId}:${opts?.data || ''}:${opts?.dataInicio || ''}:${opts?.dataFim || ''}`;
     return cachedFetch(chave, async () => {
       const { data } = await api.get(
         `/contracts/${contractId}/servicos/${servicoId}/mapeamento-operacional`,
@@ -766,6 +790,22 @@ const servicoService = {
       );
       return data;
     }, { ttlMs: 120_000 }) as Promise<MapeamentoOperacionalResponse>;
+  },
+
+  /** PDF diário no mesmo formato do chatbot (Coleta BH). */
+  async baixarRelatorioDiaOperacao(
+    contractId: string,
+    servicoId: string,
+    data: string,
+  ): Promise<{ blob: Blob; filename: string }> {
+    const resp = await api.get(
+      `/contracts/${contractId}/servicos/${servicoId}/relatorio-dia-operacao`,
+      { params: { data }, responseType: 'blob', timeout: 120000 },
+    );
+    const header = String(resp.headers?.['content-disposition'] || '');
+    const match = header.match(/filename="?([^"]+)"?/i);
+    const filename = match?.[1] || `Coleta_Operacao_${data}.pdf`;
+    return { blob: resp.data as Blob, filename };
   },
 
   /**
@@ -965,6 +1005,8 @@ const servicoService = {
   ) {
     const abortKey = opts?.abortKey
       || `servico:getResumoCicloPorDia:${params.dataInicio}:${params.dataFim}`;
+    const chave = `resumo-ciclo:${contractId}:${servicoId}:${params.dataInicio}:${params.dataFim}`;
+    return cachedFetch(chave, async () => {
     const { data } = await api.get(
       `/contracts/${contractId}/servicos/${servicoId}/resumo-ciclo-por-dia`,
       { params, signal: nextAbortSignal(abortKey) },
@@ -999,6 +1041,7 @@ const servicoService = {
       dataFim: string;
       tipoServico?: string | null;
     };
+    }, { ttlMs: 120_000 });
   },
 
   async getStatusCiclo(
@@ -1163,12 +1206,15 @@ const servicoService = {
   },
 
   async criarServico(contractId: string, body: unknown) {
+    invalidateCacheExact(chaveServicosContrato(contractId));
+    invalidateCacheExact(chaveSaudeContratos());
     const { data } = await api.post(`/contracts/${contractId}/servicos`, body);
     return data;
   },
 
   /** Garante Roçada, Capina, Varrição e Poda no contrato (idempotente). */
   async garantirServicosPadrao(contractId: string) {
+    invalidateCacheExact(chaveServicosContrato(contractId));
     const { data } = await api.post(`/contracts/${contractId}/servicos/garantir-padrao`);
     return data as {
       sucesso: boolean;
@@ -1185,6 +1231,7 @@ const servicoService = {
   },
 
   async excluirServico(contractId: string, servicoId: string) {
+    invalidateCachesServico(contractId, servicoId);
     const { data } = await api.delete<{
       message?: string;
       uploadsRemovidos?: number;

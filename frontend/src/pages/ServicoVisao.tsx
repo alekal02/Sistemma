@@ -3,7 +3,6 @@ import { useParams, useNavigate } from 'react-router-dom';
 import {
   FiSettings, FiArrowLeft, FiRefreshCw, FiAlertTriangle,
 } from 'react-icons/fi';
-import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { useBreadcrumbs } from '../contexts/BreadcrumbContext';
 import EmptyState from '../components/EmptyState';
@@ -19,6 +18,7 @@ import type { MapaLimiteCaminhao } from '../utils/limitesCaminhaoContrato';
 import { ehServicoPorUnidade } from '../utils/unidadeServico';
 import type { PeriodoCicloContrato } from '../utils/periodoCicloContrato';
 import servicoService from '../services/servicoService';
+import contractService from '../services/contractService';
 
 /** Acima disso, KPIs/executivo podem truncar no backend (GRAFICOS_DADOS_LIMITE). */
 const AVISO_VOLUME_ALTO = 20000;
@@ -26,7 +26,6 @@ const AVISO_VOLUME_ALTO = 20000;
 export default function ServicoVisao() {
   const { contractId, servicoId } = useParams<{ contractId: string; servicoId: string }>();
   const navigate = useNavigate();
-  const { token } = useAuth();
   const { adicionarToast } = useToast();
   const { setBreadcrumbs } = useBreadcrumbs();
 
@@ -87,80 +86,73 @@ export default function ServicoVisao() {
       return;
     }
     if (!opts?.silencioso) setCarregando(true);
-    const revalidar = opts?.revalidarInconsistencias ? '1' : '0';
+    const revalidar = !!opts?.revalidarInconsistencias;
     try {
-      const headers = { Authorization: 'Bearer ' + token };
-      // Sem dados-brutos (20k): ciclo usa agregação SQL; detalhe do dia carrega sob demanda.
-      const resPadrao = await fetch('/api/contracts/' + contractId + '/servicos/' + servicoId + '/padrao', { headers });
-      let tipoAtual = 'coleta_caminhao';
-      if (resPadrao.ok) {
-        const data = await resPadrao.json();
-        tipoAtual = data.servico?.tipo || 'coleta_caminhao';
-        setTipoServico(tipoAtual);
-        setServicoNome(data.servico?.nome || 'Servico');
-        setConfigFaturamento(data.servico?.configFaturamento ?? null);
-        const cols: ColunaDetectada[] = data.servico?.padraoPlanilha?.colunas || [];
-        setColunas(cols);
-        setTotalRegistros(data.uploads?.registrosValidos ?? data.uploads?.totalImportados ?? 0);
-        setRegistrosTotais(data.uploads?.registrosTotais ?? data.uploads?.totalImportados ?? 0);
-        setPeriodoDados(data.periodoDados ?? null);
-      }
-
-      const ehRocada = ehServicoPorUnidade(tipoAtual);
-      const [resContrato, resInconsistencias, resVerificacao] = await Promise.allSettled([
-        fetch('/api/contracts/' + contractId, { headers }),
-        ehRocada
-          ? Promise.resolve(null)
-          : fetch('/api/contracts/' + contractId + '/servicos/' + servicoId + '/inconsistencias-viagens?revalidar=' + revalidar, { headers }),
-        ehRocada
-          ? Promise.resolve(null)
-          : servicoService.getVerificacaoViagens(contractId, servicoId),
+      // Padrão e contrato em paralelo, reusando o cache do cliente.
+      const [data, contrato] = await Promise.all([
+        servicoService.getPadrao(contractId, servicoId, { force: revalidar }),
+        contractService.buscar(contractId, { force: revalidar }),
       ]);
 
-      if (resContrato.status === 'fulfilled' && resContrato.value && resContrato.value.ok) {
-        const contrato = await resContrato.value.json();
-        if (contrato.diaInicioCiclo) setDiaInicioCiclo(Number(contrato.diaInicioCiclo));
-        setContratoTarifas({
-          valorTonelada: contrato.valorTonelada,
-          valorMini: contrato.valorMini,
-          valorTruck: contrato.valorTruck,
-          valorToco: contrato.valorToco,
-          valorBasculante: contrato.valorBasculante,
-        });
-        setPlacasReserva(extrairPlacasReservaContrato(contrato));
-        const cfg = contrato.configOperacional as {
-          pesoMaximoKg?: MapaLimiteCaminhao;
-          volumeL?: MapaLimiteCaminhao;
-          densidadeResiduoKgL?: number | null;
-          densidadeKgL?: MapaLimiteCaminhao;
-        } | undefined;
-        setLimitesPesoKg(cfg?.pesoMaximoKg || null);
-        setVolumeL(cfg?.volumeL || null);
-        setDensidadeResiduoKgL(
-          cfg?.densidadeResiduoKgL != null && cfg.densidadeResiduoKgL > 0
-            ? cfg.densidadeResiduoKgL
-            : null,
-        );
-        setDensidadeKgL(cfg?.densidadeKgL || null);
-      }
+      const tipoAtual = data.servico?.tipo || 'coleta_caminhao';
+      setTipoServico(tipoAtual);
+      setServicoNome(data.servico?.nome || 'Servico');
+      setConfigFaturamento(data.servico?.configFaturamento ?? null);
+      const cols: ColunaDetectada[] = data.servico?.padraoPlanilha?.colunas || [];
+      setColunas(cols);
+      setTotalRegistros(data.uploads?.registrosValidos ?? data.uploads?.totalImportados ?? 0);
+      setRegistrosTotais(data.uploads?.registrosTotais ?? data.uploads?.totalImportados ?? 0);
+      setPeriodoDados(data.periodoDados ?? null);
 
-      if (!ehRocada && resInconsistencias.status === 'fulfilled' && resInconsistencias.value && resInconsistencias.value.ok) {
-        setInconsistencias(await resInconsistencias.value.json());
-      } else {
+      if (contrato.diaInicioCiclo) setDiaInicioCiclo(Number(contrato.diaInicioCiclo));
+      setContratoTarifas({
+        valorTonelada: contrato.valorTonelada,
+        valorMini: contrato.valorMini,
+        valorTruck: contrato.valorTruck,
+        valorToco: contrato.valorToco,
+        valorBasculante: contrato.valorBasculante,
+      });
+      setPlacasReserva(extrairPlacasReservaContrato(contrato));
+      const cfg = contrato.configOperacional as {
+        pesoMaximoKg?: MapaLimiteCaminhao;
+        volumeL?: MapaLimiteCaminhao;
+        densidadeResiduoKgL?: number | null;
+        densidadeKgL?: MapaLimiteCaminhao;
+      } | undefined;
+      setLimitesPesoKg(cfg?.pesoMaximoKg || null);
+      setVolumeL(cfg?.volumeL || null);
+      setDensidadeResiduoKgL(
+        cfg?.densidadeResiduoKgL != null && cfg.densidadeResiduoKgL > 0
+          ? cfg.densidadeResiduoKgL
+          : null,
+      );
+      setDensidadeKgL(cfg?.densidadeKgL || null);
+
+      // Libera o ciclo antes da verificação pesada (até 20k linhas no servidor).
+      if (!opts?.silencioso) setCarregando(false);
+
+      const ehRocada = ehServicoPorUnidade(tipoAtual);
+      if (ehRocada) {
         setInconsistencias(null);
+        setVerificacaoViagens(null);
+        return;
       }
 
-      if (!ehRocada && resVerificacao.status === 'fulfilled' && resVerificacao.value) {
-        setVerificacaoViagens(resVerificacao.value as VerificacaoViagensData);
-      } else {
-        setVerificacaoViagens(null);
-      }
+      const [resInconsistencias, resVerificacao] = await Promise.allSettled([
+        servicoService.getInconsistenciasViagens(contractId, servicoId, revalidar),
+        servicoService.getVerificacaoViagens(contractId, servicoId),
+      ]);
+      setInconsistencias(resInconsistencias.status === 'fulfilled' ? resInconsistencias.value : null);
+      setVerificacaoViagens(
+        resVerificacao.status === 'fulfilled'
+          ? resVerificacao.value as VerificacaoViagensData
+          : null,
+      );
     } catch {
       adicionarToast('Erro ao carregar dados', 'error');
-    } finally {
       if (!opts?.silencioso) setCarregando(false);
     }
-  }, [contractId, servicoId, token, adicionarToast]);
+  }, [contractId, servicoId, adicionarToast]);
 
   const handleUploadConcluido = useCallback(() => {
     carregarDados({ silencioso: true, revalidarInconsistencias: true });
@@ -172,7 +164,7 @@ export default function ServicoVisao() {
 
   useEffect(() => {
     carregarDados();
-  }, [contractId, servicoId, token]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [contractId, servicoId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const temPlanilha = colunas.length > 0 || totalRegistros > 0;
   const ehRocada = tipoServico === 'rocadeira';

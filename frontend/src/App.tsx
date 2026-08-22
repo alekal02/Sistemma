@@ -7,7 +7,7 @@ import ToastContainer from './components/Toast'
 import ProtectedRoute from './components/ProtectedRoute'
 import AdminRoute from './components/AdminRoute'
 import Layout from './components/Layout'
-import Login from './pages/Login'
+import Acesso from './pages/Acesso'
 import VisaoGeral from './pages/VisaoGeral'
 import Contratos from './pages/Contratos'
 import ContratoDetalhe from './pages/ContratoDetalhe'
@@ -33,6 +33,14 @@ function HomeRedirect() {
   return <Navigate to={homePath(user)} replace />
 }
 
+/** Sem sessão a raiz é a própria escolha de área; com sessão vai para a home. */
+function RaizOuAcesso() {
+  const { user, loading } = useAuth()
+  if (loading) return null
+  if (user) return <Navigate to={homePath(user)} replace />
+  return <Acesso />
+}
+
 function App() {
   return (
     <AuthProvider>
@@ -41,14 +49,13 @@ function App() {
           <ToastContainer />
           <BreadcrumbProvider>
         <Routes>
-      {/* Rota pública — sem sidebar */}
-          <Route path="/login" element={<Login />} />
+      {/* Escolha de área (Gestor / Contratos) — sem sidebar */}
+          <Route path="/" element={<RaizOuAcesso />} />
+          <Route path="/acesso" element={<Navigate to="/" replace />} />
+          {/* Link antigo de quando existia tela de login */}
+          <Route path="/login" element={<Navigate to="/" replace />} />
 
       {/* Rotas protegidas com Layout (sidebar + logout) */}
-          <Route
-            path="/"
-            element={<HomeRedirect />}
-          />
           <Route
             path="/visao-geral"
             element={

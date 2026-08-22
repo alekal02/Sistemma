@@ -4,6 +4,8 @@ import { User } from './User';
 @Entity('abastecimentos')
 @Index(['placa'])
 @Index(['dataAbastecimento'])
+// O dashboard executivo filtra sempre por contrato dentro de um período.
+@Index(['contract_id', 'dataAbastecimento'])
 export class Abastecimento {
   @PrimaryGeneratedColumn('uuid')
   id!: string;

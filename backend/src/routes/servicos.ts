@@ -46,6 +46,9 @@ router.get('/:id/coleta/agregacao', authenticate, (req, res) => controller.getCo
 // GET /api/contracts/:contractId/servicos/:id/mapeamento-operacional
 router.get('/:id/mapeamento-operacional', authenticate, (req, res) => controller.getMapeamentoOperacional(req, res));
 
+// GET /api/contracts/:contractId/servicos/:id/relatorio-dia-operacao?data=YYYY-MM-DD
+router.get('/:id/relatorio-dia-operacao', authenticate, (req, res) => controller.getRelatorioDiaOperacao(req, res));
+
 // GET /api/contracts/:contractId/servicos/:id/rotas-ciclo
 router.get('/:id/rotas-ciclo', authenticate, (req, res) => controller.getRotasCiclo(req, res));
 

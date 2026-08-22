@@ -1,6 +1,7 @@
 import PlanilhaService from './PlanilhaService';
 import {
   DADOS_CACHE_MAX_ENTRADAS,
+  DADOS_CACHE_MAX_LINHAS,
   DADOS_CACHE_TTL_MS,
   LIMITE_DADOS_MAX,
 } from '../config/limitesRecursos';
@@ -18,17 +19,29 @@ function chaveCache(servicoId: string): string {
   return `dados:${servicoId}`;
 }
 
+function linhasNoCache(): number {
+  let total = 0;
+  for (const v of cacheDados.values()) total += v.dados.length;
+  return total;
+}
+
 function evictarCacheSeNecessario(): void {
   const agora = Date.now();
   for (const [k, v] of cacheDados) {
     if (agora - v.timestamp > DADOS_CACHE_TTL_MS) cacheDados.delete(k);
   }
-  if (cacheDados.size <= DADOS_CACHE_MAX_ENTRADAS) return;
 
+  // Descarta do mais antigo até respeitar os dois tetos: número de serviços e
+  // total de linhas guardadas (este é o que segura o heap).
   const ordenado = [...cacheDados.entries()].sort((a, b) => a[1].timestamp - b[1].timestamp);
-  const remover = ordenado.length - DADOS_CACHE_MAX_ENTRADAS;
-  for (let i = 0; i < remover; i++) {
+  let i = 0;
+  while (
+    i < ordenado.length
+    && cacheDados.size > 1
+    && (cacheDados.size > DADOS_CACHE_MAX_ENTRADAS || linhasNoCache() > DADOS_CACHE_MAX_LINHAS)
+  ) {
     cacheDados.delete(ordenado[i][0]);
+    i++;
   }
 }
 

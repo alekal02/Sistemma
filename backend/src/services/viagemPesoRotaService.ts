@@ -1,7 +1,7 @@
 /**
- * Viagem = PESO 1–4 preenchido (mesma granularidade do ranking Mini).
- * Hora produtiva da viagem: trecho da rota quando a quantidade bate;
- * senão, rateio da jornada produtiva da linha.
+ * Viagem = slot 1–4 com dado real (PESO N ou horário da ROTA N).
+ * Sem pesagem só entra se o trecho existe (hora chegada/saída) e o peso falta.
+ * CONTADOR ou KM sozinhos não inventam faixa vazia no relatório.
  */
 import {
   calcularHorasPorTrechoRota,
@@ -35,6 +35,8 @@ export interface ViagemPesoRotaItem {
   pesoIdealKg: number | null;
   pctIdeal: number | null;
   encheu: boolean;
+  /** true quando o trecho (horário da ROTA N) existe e a planilha não trouxe PESO N. */
+  semPesagem: boolean;
   horasProdutivasViagem: number;
   horasProdutivasRota: number;
   origemHora: OrigemHoraViagem;
@@ -55,6 +57,73 @@ export interface GrupoViagemPesoRota {
   viagens: ViagemPesoRotaItem[];
 }
 
+export function viagemTemPesagem(v: { semPesagem?: boolean; pesoKg?: number }): boolean {
+  return !v.semPesagem && Number(v.pesoKg) > 0;
+}
+
+function normalizarPesos(pesos: Array<number | null | undefined>): number[] {
+  const raw = (pesos || []).slice(0, 4).map((kg) => {
+    const n = Number(kg);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  });
+  while (raw.length < 4) raw.push(0);
+  return raw;
+}
+
+/** Slot com peso ou com horário do trecho — o que justifica uma faixa no relatório. */
+export function slotTemDadoDeViagem(pesoKg: number, horasTrecho: number): boolean {
+  return pesoKg > 0 || horasTrecho > 0;
+}
+
+/**
+ * Quantas faixas listar: só slots com PESO ou com horário de trecho.
+ * CONTADOR/KM não entram — senão o relatório ganha “sem pesagem” vazia.
+ */
+export function resolverQtdViagensPesoRota(
+  nPesos: number,
+  nTrechos: number,
+  _nInformado?: number,
+  _nKmSlots = 0,
+): number {
+  return Math.min(4, Math.max(nPesos, nTrechos, 0));
+}
+
+function horasDoSlot(
+  indice: number,
+  trechos: number[],
+  indices: number[],
+  horasRota: number,
+): { horas: number; origem: OrigemHoraViagem } {
+  const hTrecho = trechos[indice] || 0;
+  if (hTrecho > 0) return { horas: round2(hTrecho), origem: 'trecho' };
+
+  const algumTrecho = indices.some((i) => (trechos[i] || 0) > 0);
+  if (algumTrecho) return { horas: 0, origem: 'trecho' };
+
+  const semTrecho = indices.filter((i) => !(trechos[i] > 0));
+  if (horasRota > 0 && semTrecho.length > 0) {
+    const rateio = ratearHoras(horasRota, semTrecho.length);
+    const pos = semTrecho.indexOf(indice);
+    return { horas: pos >= 0 ? rateio[pos] : 0, origem: 'rateio' };
+  }
+  return { horas: 0, origem: 'rateio' };
+}
+
+function completarPesosDoJson(
+  pesos: number[],
+  objHoras: Record<string, any>,
+): number[] {
+  const dados = objHoras?.dados && typeof objHoras.dados === 'object' ? objHoras.dados : objHoras;
+  const out = [...pesos];
+  for (let i = 0; i < 4; i++) {
+    if (out[i] > 0) continue;
+    const bruto = dados?.[`PESO ${i + 1}`] ?? dados?.[`PESO${i + 1}`] ?? objHoras[`peso${i + 1}`];
+    const n = Number(bruto);
+    if (Number.isFinite(n) && n > 0) out[i] = n;
+  }
+  return out;
+}
+
 export function montarViagensPesoDoRegistro(opts: {
   data?: string | null;
   rota: string;
@@ -64,56 +133,49 @@ export function montarViagensPesoDoRegistro(opts: {
   pesos: Array<number | null | undefined>;
   objHoras: Record<string, any>;
   pesoIdealKg: number | null;
+  /** Ignorado na listagem: CONTADOR sozinho não cria faixa vazia. */
+  nViagens?: number;
 }): ViagemPesoRotaItem[] {
-  const pesos = (opts.pesos || [])
-    .map((kg, i) => ({ nViagem: i + 1, pesoKg: Number(kg) }))
-    .filter((p) => Number.isFinite(p.pesoKg) && p.pesoKg > 0);
-  if (!pesos.length) return [];
+  void opts.nViagens;
+  const pesosRaw = completarPesosDoJson(normalizarPesos(opts.pesos), opts.objHoras);
+  const trechos = calcularHorasPorTrechoRota(opts.objHoras);
+  const indices = [0, 1, 2, 3].filter((i) => slotTemDadoDeViagem(pesosRaw[i] || 0, trechos[i] || 0));
+  if (indices.length === 0) return [];
 
   const horasRota = calcularHorasProdutivaImprodutivaRegistro(opts.objHoras).horasProdutivas;
-  const trechosPos = calcularHorasPorTrechoRota(opts.objHoras).filter((h) => h > 0);
-
-  let horasList: number[];
-  let origem: OrigemHoraViagem;
-  if (trechosPos.length === pesos.length) {
-    horasList = trechosPos.map((h) => round2(h));
-    origem = 'trecho';
-  } else if (horasRota > 0) {
-    horasList = ratearHoras(horasRota, pesos.length);
-    origem = 'rateio';
-  } else {
-    horasList = pesos.map(() => 0);
-    origem = 'rateio';
-  }
-
   const ideal = opts.pesoIdealKg != null && opts.pesoIdealKg > 0 ? round2(opts.pesoIdealKg) : null;
 
-  return pesos.map((p, i) => {
-    const h = horasList[i] || 0;
-    const pctIdeal = ideal ? round2((p.pesoKg / ideal) * 100) : null;
-    const encheu = ideal != null && p.pesoKg >= ideal;
+  const itens: ViagemPesoRotaItem[] = [];
+  for (const i of indices) {
+    const pesoKg = pesosRaw[i] || 0;
+    const semPesagem = !(pesoKg > 0);
+    const { horas: h, origem } = horasDoSlot(i, trechos, indices, horasRota);
+    const pctIdeal = !semPesagem && ideal ? round2((pesoKg / ideal) * 100) : null;
+    const encheu = !semPesagem && ideal != null && pesoKg >= ideal;
     let tempoEqEncher: number | null = null;
-    if (!encheu && ideal && p.pesoKg > 0 && h > 0) {
-      tempoEqEncher = round2(h * (ideal / p.pesoKg));
+    if (!semPesagem && !encheu && ideal && pesoKg > 0 && h > 0) {
+      tempoEqEncher = round2(h * (ideal / pesoKg));
     }
-    return {
+    itens.push({
       data: opts.data || null,
       rota: opts.rota,
       placa: opts.placa,
       motorista: opts.motorista,
       tipo: opts.tipo,
-      nViagem: p.nViagem,
-      pesoKg: round2(p.pesoKg),
-      pesoIdealKg: ideal,
+      nViagem: i + 1,
+      pesoKg: semPesagem ? 0 : round2(pesoKg),
+      pesoIdealKg: semPesagem ? null : ideal,
       pctIdeal,
       encheu,
+      semPesagem,
       horasProdutivasViagem: h,
       horasProdutivasRota: horasRota,
       origemHora: origem,
       tempoEqEncher,
-      estimado: !encheu && tempoEqEncher != null,
-    };
-  });
+      estimado: !semPesagem && !encheu && tempoEqEncher != null,
+    });
+  }
+  return itens;
 }
 
 export function agruparViagensPesoPorLinha(itens: ViagemPesoRotaItem[]): GrupoViagemPesoRota[] {

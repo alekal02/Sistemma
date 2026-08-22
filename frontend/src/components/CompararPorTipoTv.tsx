@@ -20,6 +20,7 @@ import {
   calcularCicloMensalContrato,
   deslocarMesReferencia,
   inferirMesReferenciaAtual,
+  inferirMesReferenciaDeData,
   mesInputParaReferencia,
   normalizarDiaInicioCiclo,
   referenciaParaMesInput,
@@ -61,6 +62,8 @@ interface CompararPorTipoTvProps {
   selecaoInicial?: string[];
   onSelecaoConsumida?: () => void;
   onAbrirContrato?: (contratoId: string) => void;
+  /** Último upload conhecido — abre no ciclo dos dados, não no mês corrente. */
+  dataReferenciaHint?: string | null;
 }
 
 function labelTipo(tipo: string): string {
@@ -121,12 +124,22 @@ function fmtEficiencia(a: AnalisePesoColeta): string {
   return `${fmtPctPeso((a.pesoMedioKg / ideal) * 100)}`;
 }
 
+function mesInicialTv(contratos: ContratoOpcao[], dataReferenciaHint?: string | null): string {
+  const dia = normalizarDiaInicioCiclo(contratos[0]?.diaInicioCiclo);
+  const iso = dataReferenciaHint?.slice(0, 10);
+  const ref = iso && /^\d{4}-\d{2}-\d{2}$/.test(iso)
+    ? inferirMesReferenciaDeData(iso, dia)
+    : inferirMesReferenciaAtual(dia);
+  return referenciaParaMesInput(ref.ano, ref.mes);
+}
+
 export default function CompararPorTipoTv({
   contratos,
   servicosCatalogo = [],
   selecaoInicial,
   onSelecaoConsumida,
   onAbrirContrato,
+  dataReferenciaHint = null,
 }: CompararPorTipoTvProps) {
   const [modoAnalitico, setModoAnalitico] = useState(false);
   const [tipoServico, setTipoServico] = useState('');
@@ -142,10 +155,7 @@ export default function CompararPorTipoTv({
   const [atualizando3d, setAtualizando3d] = useState(false);
   const [erro3d, setErro3d] = useState('');
   const [ultimoRefresh3d, setUltimoRefresh3d] = useState<Date | null>(null);
-  const [medicaoRef, setMedicaoRef] = useState(() => {
-    const { mes, ano } = inferirMesReferenciaAtual(1);
-    return referenciaParaMesInput(ano, mes);
-  });
+  const [medicaoRef, setMedicaoRef] = useState(() => mesInicialTv(contratos, dataReferenciaHint));
   const emVoo = useRef(false);
   const emVoo3d = useRef(false);
   const rootRef = useRef<HTMLDivElement>(null);

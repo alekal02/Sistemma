@@ -5,7 +5,7 @@ import {
   FiAlertTriangle, FiClock, FiRefreshCw, FiDownload,
 } from 'react-icons/fi';
 import { useAuth } from '../contexts/AuthContext';
-import { ehGestor } from '../utils/homePath';
+import { ehGestor, ROTA_ACESSO } from '../utils/homePath';
 import { useToast } from '../contexts/ToastContext';
 import contractService, { type ContratoSaude } from '../services/contractService';
 import coletaService from '../services/coletaService';
@@ -160,8 +160,8 @@ export default function Contratos() {
   const handleSalvar = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) {
-      adicionarToast('Sessão expirada. Faça login novamente.', 'warning');
-      navigate('/login');
+      adicionarToast('Sessão encerrada. Escolha a área novamente.', 'warning');
+      navigate(ROTA_ACESSO);
       return;
     }
     if (!form.numeroContrato.trim()) {

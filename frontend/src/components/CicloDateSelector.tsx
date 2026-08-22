@@ -168,7 +168,12 @@ export default function CicloDateSelector({
   const [cicloFechado, setCicloFechado] = useState(false);
   const [fechandoCiclo, setFechandoCiclo] = useState(false);
   const [reabrindoCiclo, setReabrindoCiclo] = useState(false);
-  const refInicial = useMemo(() => inferirMesReferenciaAtual(diaInicioCiclo), [diaInicioCiclo]);
+  const refInicial = useMemo(() => {
+    if (periodoDados?.dataFim) {
+      return inferirMesReferenciaDeData(periodoDados.dataFim, diaInicioCiclo);
+    }
+    return inferirMesReferenciaAtual(diaInicioCiclo);
+  }, [diaInicioCiclo, periodoDados?.dataFim]);
   const [mesRef, setMesRef] = useState(refInicial.mes);
   const [anoRef, setAnoRef] = useState(refInicial.ano);
   const cicloInicializadoRef = useRef(false);
@@ -183,7 +188,7 @@ export default function CicloDateSelector({
 
   useEffect(() => {
     cicloInicializadoRef.current = false;
-  }, [contractId, servicoId, periodoDados?.dataInicio, periodoDados?.dataFim]);
+  }, [contractId, servicoId]);
 
   /** Abre no ciclo dos dados importados apenas na carga inicial — não bloqueia navegação manual */
   useEffect(() => {

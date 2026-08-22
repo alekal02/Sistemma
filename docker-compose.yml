@@ -144,8 +144,8 @@ services:
       DATABASE_NAME: ${DB_NAME:-abastecimento}
       CONTROL_DATABASE_NAME: ${CONTROL_DATABASE_NAME:-}
       MULTI_TENANT: ${MULTI_TENANT:-false}
-      # true = tela inicial entra sem senha (Gestor / lista de contratos)
-      ACESSO_LIVRE: ${ACESSO_LIVRE:-false}
+      # false = volta a pedir email/senha nos botões Gestor e Contratos
+      ACESSO_LIVRE: ${ACESSO_LIVRE:-true}
       JWT_SECRET: ${JWT_SECRET:?Defina JWT_SECRET no .env}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-8h}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?Defina JWT_REFRESH_SECRET no .env}

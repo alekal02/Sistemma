@@ -5,7 +5,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { STORAGE_EMAIL, migrarStorageLegado } from '../utils/storage'
 import { ehGestor, homePath } from '../utils/homePath'
 import api from '../services/api'
-import '../styles/Login.css'
+import '../styles/Acesso.css'
 import { useAppVersion } from '../hooks/useAppVersion'
 
 migrarStorageLegado()
@@ -64,17 +64,21 @@ function mensagemErro(err: unknown): string {
   return 'Não foi possível entrar.'
 }
 
-function Login() {
+function Acesso() {
   const navigate = useNavigate()
-  const { login, logout, entrarLocal, user } = useAuth()
+  const { login, logout, entrarLocal } = useAuth()
+
+  const emailSalvo = () => localStorage.getItem(STORAGE_EMAIL)
+    || localStorage.getItem('abastecimento_email')
+    || ''
 
   const [modo, setModo] = useState<ModoAcesso>('escolha')
-  const [acessoLivre, setAcessoLivre] = useState(false)
-  const [email, setEmail] = useState('')
+  const [acessoLivre, setAcessoLivre] = useState<boolean | null>(null)
+  const [email, setEmail] = useState(emailSalvo)
   const [senha, setSenha] = useState('')
   const [carregando, setCarregando] = useState(false)
   const [erro, setErro] = useState('')
-  const [lembrar, setLembrar] = useState(false)
+  const [lembrar, setLembrar] = useState(() => Boolean(emailSalvo()))
   const [mostrarSenha, setMostrarSenha] = useState(false)
   const [shake, setShake] = useState(false)
   const [contratos, setContratos] = useState<ContratoLocal[]>([])
@@ -87,26 +91,29 @@ function Login() {
   }, [modo])
 
   useEffect(() => {
-    if (!user || modo !== 'escolha') return
-    navigate(homePath(user), { replace: true })
-  }, [user, modo, navigate])
+    let cancelado = false
+    let tentativas = 0
 
-  useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_EMAIL)
-      || localStorage.getItem('abastecimento_email')
-    if (saved) {
-      setEmail(saved)
-      setLembrar(true)
+    const consultar = () => {
+      api.get<{ habilitado: boolean; contratos: ContratoLocal[] }>('/auth/acesso-local')
+        .then(({ data }) => {
+          if (cancelado) return
+          setAcessoLivre(Boolean(data.habilitado))
+          setContratos((data.contratos || []).filter((c) => c.status !== 'encerrado'))
+        })
+        .catch(() => {
+          if (cancelado) return
+          tentativas += 1
+          if (tentativas >= 8) {
+            setErro('Não foi possível confirmar o acesso. Tente de novo em alguns segundos.')
+            return
+          }
+          window.setTimeout(consultar, 1500)
+        })
     }
-  }, [])
 
-  useEffect(() => {
-    api.get<{ habilitado: boolean; contratos: ContratoLocal[] }>('/auth/acesso-local')
-      .then(({ data }) => {
-        setAcessoLivre(Boolean(data.habilitado))
-        setContratos((data.contratos || []).filter((c) => c.status !== 'encerrado'))
-      })
-      .catch(() => setAcessoLivre(false))
+    consultar()
+    return () => { cancelado = true }
   }, [])
 
   const triggerError = (msg: string) => {
@@ -215,7 +222,7 @@ function Login() {
           </div>
           <h1>Sistemma</h1>
           <p className="subtitle">
-            {modo === 'escolha' && (acessoLivre ? 'Escolha a área' : 'Como você quer entrar?')}
+            {modo === 'escolha' && (acessoLivre === null ? 'Carregando…' : acessoLivre ? 'Escolha a área' : 'Como você quer entrar?')}
             {modo === 'gestor' && 'Gestor — todos os contratos para comparar'}
             {modo === 'contratos' && 'Contratos — acesso a uma unidade'}
             {modo === 'lista-contratos' && 'Escolha a unidade'}
@@ -238,8 +245,11 @@ function Login() {
             <button
               type="button"
               className="login-modo"
-              disabled={carregando}
-              onClick={() => { acessoLivre ? void entrarComoGestor() : setModo('gestor') }}
+              disabled={carregando || acessoLivre === null}
+              onClick={() => {
+                if (acessoLivre) void entrarComoGestor()
+                else setModo('gestor')
+              }}
             >
               <strong>Gestor</strong>
               <span>Ver e comparar dados de todos os contratos</span>
@@ -247,19 +257,22 @@ function Login() {
             <button
               type="button"
               className="login-modo"
-              disabled={carregando}
-              onClick={() => { acessoLivre ? abrirListaContratos() : setModo('contratos') }}
+              disabled={carregando || acessoLivre === null}
+              onClick={() => {
+                if (acessoLivre) abrirListaContratos()
+                else setModo('contratos')
+              }}
             >
               <strong>Contratos</strong>
               <span>Entrar numa unidade e ver só os dados dela</span>
             </button>
-            {carregando && (
-              <p className="login-footer"><IconSpinner /> Entrando…</p>
+            {(carregando || acessoLivre === null) && (
+              <p className="login-footer"><IconSpinner /> {acessoLivre === null ? 'Verificando acesso…' : 'Entrando…'}</p>
             )}
           </div>
         )}
 
-        {(modo === 'gestor' || modo === 'contratos') && !acessoLivre && (
+        {(modo === 'gestor' || modo === 'contratos') && acessoLivre === false && (
           <form className="login-form" onSubmit={(e) => { void handleSubmit(e) }} noValidate>
             <div className="login-field">
               <label htmlFor="email">Email</label>
@@ -354,4 +367,4 @@ function Login() {
   )
 }
 
-export default Login
+export default Acesso

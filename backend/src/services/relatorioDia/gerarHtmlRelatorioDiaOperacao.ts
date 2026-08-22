@@ -20,6 +20,7 @@ import {
 } from './escalaIdealPeso';
 import {
   agruparViagensPesoPorLinha,
+  viagemTemPesagem,
   type ViagemPesoRotaItem,
 } from '../viagemPesoRotaService';
 import {
@@ -176,6 +177,7 @@ function statusPorPctIdeal(pct: number | null | undefined): NotaIdealViagem | nu
 }
 
 function corBarraViagemPeso(v: ViagemPesoRotaItem): string {
+  if (v.semPesagem || !(v.pesoKg > 0)) return '#94a3b8';
   const st = statusPorPctIdeal(v.pctIdeal);
   if (st) return COR_NOTA_IDEAL[st];
   if (v.encheu) return '#0f766e';
@@ -194,11 +196,13 @@ function badgeStatusViagemHtml(pct: number | null): string {
 function blocoViagensPesoRotaHtml(itens?: ViagemPesoRotaItem[] | null): string {
   if (!itens?.length) return '';
   const gruposAll = agruparViagensPesoPorLinha(itens);
-  const nEncheu = itens.filter((v) => v.encheu).length;
-  const nFaltou = itens.length - nEncheu;
-  const nP = itens.filter((v) => statusPorPctIdeal(v.pctIdeal) === 'pessimo').length;
-  const nR = itens.filter((v) => statusPorPctIdeal(v.pctIdeal) === 'ruim').length;
-  const nO = itens.filter((v) => statusPorPctIdeal(v.pctIdeal) === 'otimo').length;
+  const pesadas = itens.filter(viagemTemPesagem);
+  const nSemPeso = itens.length - pesadas.length;
+  const nEncheu = pesadas.filter((v) => v.encheu).length;
+  const nFaltou = pesadas.length - nEncheu;
+  const nP = pesadas.filter((v) => statusPorPctIdeal(v.pctIdeal) === 'pessimo').length;
+  const nR = pesadas.filter((v) => statusPorPctIdeal(v.pctIdeal) === 'ruim').length;
+  const nO = pesadas.filter((v) => statusPorPctIdeal(v.pctIdeal) === 'otimo').length;
 
   const ordemSt: Record<NotaIdealViagem, number> = { pessimo: 0, ruim: 1, otimo: 2 };
   const piores = [...itens]
@@ -207,7 +211,7 @@ function blocoViagensPesoRotaHtml(itens?: ViagemPesoRotaItem[] | null): string {
       st: statusPorPctIdeal(v.pctIdeal),
       desvio: Math.abs((v.pctIdeal ?? 100) - 100),
     }))
-    .filter((x): x is typeof x & { st: NotaIdealViagem } => x.st != null)
+    .filter((x): x is typeof x & { st: NotaIdealViagem } => x.st != null && viagemTemPesagem(x.v))
     .sort((a, b) => (ordemSt[a.st] - ordemSt[b.st]) || b.desvio - a.desvio)
     .slice(0, 5);
 
@@ -244,18 +248,24 @@ function blocoViagensPesoRotaHtml(itens?: ViagemPesoRotaItem[] | null): string {
     const rows = g.viagens.map((v) => {
       const pct = v.pctIdeal != null ? Math.min(100, Math.max(4, Math.round(v.pctIdeal))) : 4;
       const cor = corBarraViagemPeso(v);
-      const pill = v.pesoIdealKg
-        ? (v.encheu
-          ? '<span class="vg-pill ok">Já encheu</span>'
-          : '<span class="vg-pill no">Não encheu</span>')
-        : '';
-      const pesoIdealTxt = v.pesoIdealKg != null ? ` / ${fmtNum(v.pesoIdealKg, 0)} kg ideal` : '';
-      const falta = !v.encheu && v.pesoIdealKg != null
+      const semPeso = !viagemTemPesagem(v);
+      const pill = semPeso
+        ? '<span class="vg-pill">Sem pesagem</span>'
+        : (v.pesoIdealKg
+          ? (v.encheu
+            ? '<span class="vg-pill ok">Já encheu</span>'
+            : '<span class="vg-pill no">Não encheu</span>')
+          : '');
+      const pesoIdealTxt = !semPeso && v.pesoIdealKg != null ? ` / ${fmtNum(v.pesoIdealKg, 0)} kg ideal` : '';
+      const falta = !semPeso && !v.encheu && v.pesoIdealKg != null
         ? ` · falta ${fmtNum(Math.max(0, v.pesoIdealKg - v.pesoKg), 0)} kg`
         : '';
-      const estim = v.tempoEqEncher != null
+      const estim = !semPeso && v.tempoEqEncher != null
         ? ` · estimativa para encher: <strong>${fmtNum(v.tempoEqEncher, 2)} h</strong>`
         : '';
+      const pesoTxt = semPeso
+        ? 'Sem pesagem — hora desta viagem (trecho), não da rota completa'
+        : `${fmtNum(v.pesoKg, 0)} kg${pesoIdealTxt}${falta}${estim}`;
       return `
       <div class="vg-item">
         <table class="vg-hd-tbl"><tr>
@@ -267,7 +277,7 @@ function blocoViagensPesoRotaHtml(itens?: ViagemPesoRotaItem[] | null): string {
           <div class="bar-val">${v.pctIdeal != null ? `${fmtNum(v.pctIdeal, 0)}%` : '—'}</div>
         </div>
         <div class="bar-detail" style="margin-left:0">
-          ${fmtNum(v.pesoKg, 0)} kg${pesoIdealTxt}${falta}${estim}
+          ${pesoTxt}
         </div>
       </div>`;
     }).join('');
@@ -284,11 +294,11 @@ function blocoViagensPesoRotaHtml(itens?: ViagemPesoRotaItem[] | null): string {
   return `
   <div class="sec">Viagens do dia — qualidade, peso e hora produtiva</div>
   <p style="font-size:6.5px;color:#64748b;margin:0 0 5px">
-    Uma linha = uma descarga (PESO 1–4). Qualidade vs peso ideal da caixa
-    (${esc(textoEscalaIdealCurto())}).
-    Hora produtiva = tempo na rota nessa viagem (trecho ou rateio da jornada).
-    Estimativa de enchimento só aparece abaixo do ideal.
-    ${fmtNum(gruposAll.length, 0)} rota(s) · ${fmtNum(itens.length, 0)} viagem(ns).
+    Uma linha = uma viagem da rota. Hora produtiva = HORA SAÍDA ROTA − HORA CHEGADA ROTA
+    daquela viagem — não a jornada da rota inteira.
+    Qualidade só nas viagens com PESO 1–4 (${esc(textoEscalaIdealCurto())}).
+    “Sem pesagem” só entra se o trecho (horário) existe e o peso falta.
+    ${fmtNum(gruposAll.length, 0)} rota(s) · ${fmtNum(itens.length, 0)} viagem(ns)${nSemPeso ? ` · ${fmtNum(nSemPeso, 0)} sem pesagem` : ''}.
   </p>
   <table class="kpi-grid" style="margin-bottom:6px"><tr>
     <td class="kpi-card"><div class="kpi-lbl">Péssimo</div><div class="kpi-val" style="color:#b91c1c">${fmtNum(nP, 0)}</div></td>

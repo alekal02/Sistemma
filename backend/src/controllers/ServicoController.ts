@@ -95,14 +95,16 @@ import {
 } from '../services/rocadaAgregacaoService';
 import {
   getMetricasColetaSql,
-  getRankingsColetaSql,
-  getAgregacaoColeta,
-  getMapeamentoOperacional as agregarMapeamentoOperacional,
   resolverKpiColetaSql,
   metricaExecutivaDeColetaSql,
   agregarGraficoColetaSql,
 } from '../services/coletaAgregacaoService';
-import { getFichaRotasCiclo } from '../services/rotaCicloService';
+import {
+  agregacaoColetaComCache,
+  rankingsColetaComCache,
+  mapeamentoOperacionalComCache,
+  fichaRotasCicloComCache,
+} from '../services/coletaEndpointsCache';
 import { invalidarCacheSaudeContratos } from './ContractController';
 
 /** KPI "Viagens Realizadas" — viagens em rotas (linhas) validadas, não só contagem de linhas */
@@ -1011,18 +1013,19 @@ export class ServicoController {
       const dataFim = typeof req.query.dataFim === 'string' ? req.query.dataFim : undefined;
       const topN = req.query.topN ? parseInt(String(req.query.topN), 10) : undefined;
 
-      const cacheKey = ['coleta-agregacao', id, data || '', dataInicio || '', dataFim || '', String(topN || '')].join(':');
-      const cached = getCache<any>(cacheKey);
-      if (cached) return res.json(cached);
-
       const contract = await this.contractRepo.findOne({ where: { id: contractId } });
       const valoresFixos = buildValoresFixosFaturamento(
         contract,
         servico.configFaturamento?.ativo ? servico.configFaturamento : null,
       );
-      const agregacao = await getAgregacaoColeta(id, { data, dataInicio, dataFim, topN, valoresFixos });
-      const response = { ...agregacao, tipoServico: servico.tipo, modo: 'coleta-sql' };
-      setCache(cacheKey, response);
+      const response = await agregacaoColetaComCache(id, {
+        data,
+        dataInicio,
+        dataFim,
+        topN,
+        valoresFixos,
+        tipoServico: servico.tipo,
+      });
       return res.json(response);
     } catch (error) {
       console.error('Erro na agregação de coleta:', error);
@@ -1058,17 +1061,60 @@ export class ServicoController {
         return res.status(400).json({ error: 'dataFim inválida. Use YYYY-MM-DD.' });
       }
 
-      const cacheKey = ['mapeamento-operacional-v7', id, data || '', dataInicio || '', dataFim || ''].join(':');
-      const cached = getCache<any>(cacheKey);
-      if (cached) return res.json(cached);
-
-      const resultado = await agregarMapeamentoOperacional(id, { data, dataInicio, dataFim });
-      const response = { ...resultado, tipoServico: servico.tipo };
-      setCache(cacheKey, response);
+      const response = await mapeamentoOperacionalComCache(id, {
+        data,
+        dataInicio,
+        dataFim,
+        tipoServico: servico.tipo,
+      });
       return res.json(response);
     } catch (error) {
       console.error('Erro no mapeamento operacional:', error);
       return res.status(500).json({ error: 'Erro ao montar mapeamento operacional' });
+    }
+  }
+
+  /**
+   * GET /api/contracts/:contractId/servicos/:id/relatorio-dia-operacao?data=YYYY-MM-DD
+   * PDF diário idêntico ao do chatbot (formato Coleta BH).
+   */
+  async getRelatorioDiaOperacao(req: Request, res: Response): Promise<any> {
+    try {
+      const id = req.params.id as string;
+      const servico = await this.repository.findOne({ where: { id } });
+      if (!servico) return res.status(404).json({ error: 'Serviço não encontrado' });
+      const ehColeta = servico.tipo === TipoServico.COLETA_CAMINHAO || servico.tipo === 'coleta_caminhao';
+      if (!ehColeta) {
+        return res.status(400).json({ error: 'Relatório de operação do dia disponível apenas para coleta' });
+      }
+
+      const data = typeof req.query.data === 'string' ? req.query.data : '';
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) {
+        return res.status(400).json({ error: 'Data inválida. Use YYYY-MM-DD.' });
+      }
+
+      const contrato = servico.contract_id
+        ? await AppDataSource.getRepository(Contract).findOne({ where: { id: servico.contract_id } })
+        : null;
+
+      const { montarHtmlRelatorioDiaColeta } = await import('../services/relatorioDia/montarRelatorioDiaColeta');
+      const { html, nomeArquivo } = await montarHtmlRelatorioDiaColeta({
+        servico,
+        contrato,
+        dataIso: data,
+      });
+      const { htmlToPdf } = await import('../services/PdfGeneratorService');
+      const pdf = await htmlToPdf(html, {
+        useCache: false,
+        margin: { top: '10mm', bottom: '10mm', left: '8mm', right: '8mm' },
+      });
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${nomeArquivo}"`);
+      return res.send(pdf);
+    } catch (error: any) {
+      console.error('Erro no PDF diário de operação:', error);
+      return res.status(500).json({ error: 'Erro ao gerar o relatório do dia: ' + (error?.message || '') });
     }
   }
 
@@ -1095,12 +1141,7 @@ export class ServicoController {
         return res.status(400).json({ error: 'dataFim inválida. Use YYYY-MM-DD.' });
       }
 
-      const cacheKey = ['rotas-ciclo-v1', id, dataInicio || '', dataFim || ''].join(':');
-      const cached = getCache<any>(cacheKey);
-      if (cached) return res.json(cached);
-
-      const resultado = await getFichaRotasCiclo(id, { dataInicio, dataFim });
-      setCache(cacheKey, resultado);
+      const resultado = await fichaRotasCicloComCache(id, { dataInicio, dataFim });
       return res.json(resultado);
     } catch (error) {
       console.error('Erro na ficha de rotas do ciclo:', error);
@@ -3156,15 +3197,23 @@ export class ServicoController {
         return res.status(400).json({ error: 'dataInicio e dataFim (yyyy-MM-dd) são obrigatórios' });
       }
 
+      const cacheKey = [
+        'qualidade-3d', escopoCacheTenant(), servicoIds.join('|'), dataInicio, dataFim,
+      ].join(':');
+      const cached = getCache<any>(cacheKey);
+      if (cached) return res.json(cached);
+
       const { agregarQualidadeIdeal3d } = await import('../services/qualidadeIdeal3dService');
       const result = ehHubDeContratos(req.usuario)
         ? await this.qualidade3dEmTodosOsContratos(servicoIds, dataInicio, dataFim)
         : await agregarQualidadeIdeal3d({ servicoIds, dataInicio, dataFim });
-      return res.json({
+      const response = {
         tipoServico: 'coleta_caminhao',
         tipoServicoLabel: TIPOS_SERVICO_META.coleta_caminhao?.label || 'Coleta com caminhão',
         ...result,
-      });
+      };
+      setCache(cacheKey, response);
+      return res.json(response);
     } catch (error: any) {
       console.error('Erro qualidade-ideal-3d:', error?.message || error);
       return res.status(500).json({ error: 'Erro ao agregar qualidade vs ideal 3D' });
@@ -3196,15 +3245,23 @@ export class ServicoController {
         return res.status(400).json({ error: 'dataInicio e dataFim (yyyy-MM-dd) são obrigatórios' });
       }
 
+      const cacheKey = [
+        'evolucao-operacional', escopoCacheTenant(), servicoIds.join('|'), dataInicio, dataFim,
+      ].join(':');
+      const cached = getCache<any>(cacheKey);
+      if (cached) return res.json(cached);
+
       const { agregarEvolucaoOperacional } = await import('../services/evolucaoOperacionalService');
       const result = ehHubDeContratos(req.usuario)
         ? await this.evolucaoEmTodosOsContratos(servicoIds, dataInicio, dataFim)
         : await agregarEvolucaoOperacional({ servicoIds, dataInicio, dataFim });
-      return res.json({
+      const response = {
         tipoServico: 'coleta_caminhao',
         tipoServicoLabel: TIPOS_SERVICO_META.coleta_caminhao?.label || 'Coleta com caminhão',
         ...result,
-      });
+      };
+      setCache(cacheKey, response);
+      return res.json(response);
     } catch (error: any) {
       console.error('Erro evolucao-operacional:', error?.message || error);
       return res.status(500).json({ error: 'Erro ao agregar evolução operacional' });
@@ -3594,12 +3651,16 @@ export class ServicoController {
    */
   async getDiagnosticoTodosServicos(req: Request, res: Response): Promise<any> {
     try {
+      const cacheKey = `diagnostico-servicos:${escopoCacheTenant()}`;
+      const cached = getCache<any>(cacheKey);
+      if (cached) return res.json(cached);
+
       const partes = ehHubDeContratos(req.usuario)
         ? await emCadaContrato(() => this.montarDiagnosticoServicos())
         : [await this.montarDiagnosticoServicos()];
       const itens = partes.flat();
 
-      return res.json({
+      const response = {
         total: itens.length,
         resumo: {
           ok: itens.filter(i => i.status === 'ok').length,
@@ -3608,7 +3669,9 @@ export class ServicoController {
           vazio: itens.filter(i => i.status === 'vazio').length,
         },
         servicos: itens,
-      });
+      };
+      setCache(cacheKey, response);
+      return res.json(response);
     } catch (error: any) {
       console.error('Erro no diagnostico-servicos:', error?.message || error);
       return res.status(500).json({ error: 'Erro ao gerar diagnóstico dos dashboards' });
@@ -4392,10 +4455,9 @@ async getModeloExecutivo(req: Request, res: Response): Promise<any> {
 
       // Caminho SQL (escala 600k+) quando não há filtros extras
       if (!temFiltroExtra) {
-        const sqlRank = await getRankingsColetaSql(id, {
+        const sqlRank = await rankingsColetaComCache(id, {
           dataInicio: filtros.dataInicio,
           dataFim: filtros.dataFim,
-          topN: 100,
         });
         return res.json(sqlRank);
       }
@@ -4692,6 +4754,10 @@ async getModeloExecutivo(req: Request, res: Response): Promise<any> {
         return res.status(400).json({ error: 'Datas invalidas. Use YYYY-MM-DD.' });
       }
 
+      const cacheKey = ['resumo-ciclo-dia', id, dataInicio, dataFim].join(':');
+      const cached = getCache<any>(cacheKey);
+      if (cached) return res.json(cached);
+
       const dias = await PlanilhaService.getMetricasPorDia(id, dataInicio, dataFim);
       const totais = dias.reduce(
         (acc, d) => ({
@@ -4720,13 +4786,15 @@ async getModeloExecutivo(req: Request, res: Response): Promise<any> {
         },
       );
 
-      return res.json({
+      const response = {
         dias,
         totais,
         dataInicio,
         dataFim,
         tipoServico: servico.tipo || null,
-      });
+      };
+      setCache(cacheKey, response);
+      return res.json(response);
     } catch (error: any) {
       console.error('Erro ao buscar resumo ciclo por dia:', error?.message || error);
       return res.status(500).json({ error: 'Erro ao buscar resumo do ciclo por dia' });

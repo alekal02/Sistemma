@@ -10,6 +10,7 @@ import {
 import { useToast } from '../contexts/ToastContext';
 import { useBreadcrumbs } from '../contexts/BreadcrumbContext';
 import servicoService from '../services/servicoService';
+import contractService from '../services/contractService';
 import { isRequestAborted } from '../services/abortableRequest';
 import api from '../services/api';
 import type { ServicoConsolidado, KpiConsolidadoItem } from '../services/servicoService';
@@ -212,10 +213,10 @@ function VisaoGeralOperacional() {
   }, []);
 
   useEffect(() => {
-    api.get<{ contratos: Array<{ id: string; diaInicioCiclo?: number }> }>('/contracts/saude')
-      .then(({ data }) => {
+    contractService.listarSaude()
+      .then((lista) => {
         const map: Record<string, number> = {};
-        for (const c of data.contratos || []) {
+        for (const c of lista) {
           map[c.id] = c.diaInicioCiclo ?? 1;
         }
         setMetaContratos(map);
@@ -312,6 +313,14 @@ function VisaoGeralOperacional() {
     return Array.from(map.values());
   }, [servicos, metaContratos]);
 
+  const dataReferenciaHint = useMemo(() => {
+    let melhor: string | null = null;
+    for (const s of servicos) {
+      if (s.ultimoUpload && (!melhor || s.ultimoUpload > melhor)) melhor = s.ultimoUpload;
+    }
+    return melhor;
+  }, [servicos]);
+
   const servicosCatalogo = servicos.map(s => ({
     id: s.id,
     nome: s.servicoNome,
@@ -351,9 +360,9 @@ function VisaoGeralOperacional() {
       let diaInicioPorContrato = metaContratos;
       if (Object.keys(diaInicioPorContrato).length === 0) {
         try {
-          const { data } = await api.get<{ contratos: Array<{ id: string; diaInicioCiclo?: number }> }>('/contracts/saude');
+          const lista = await contractService.listarSaude();
           const map: Record<string, number> = {};
-          for (const c of data.contratos || []) {
+          for (const c of lista) {
             map[c.id] = c.diaInicioCiclo ?? 1;
           }
           diaInicioPorContrato = map;
@@ -519,6 +528,7 @@ function VisaoGeralOperacional() {
         <CompararPorTipoTv
           contratos={contratosOpcoes}
           servicosCatalogo={servicosCatalogo}
+          dataReferenciaHint={dataReferenciaHint}
           selecaoInicial={selecaoComparar}
           onSelecaoConsumida={() => setSelecaoComparar(undefined)}
         />

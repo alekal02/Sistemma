@@ -27,7 +27,7 @@ import {
   normalizarMapaDensidadesKgL,
   normalizarMapaDensidadesPorPlaca,
 } from '../services/analisePesoColetaService';
-import { invalidarCacheComparacaoContrato } from '../services/comparacaoCache';
+import { invalidarCacheComparacaoContrato, limparCacheEndpoints } from '../services/comparacaoCache';
 import { garantirServicosPadraoContrato } from '../services/servicosPadraoContratoService';
 
 const cacheSaude = new Map<string, { data: any; timestamp: number }>();
@@ -262,10 +262,9 @@ export class ContractController {
       invalidarPdfCache(id);
       invalidarPdfCache(); // limpar cache geral também
       invalidarCacheSaudeContratos(id);
-      // CAIXA MÉDIA / análise de peso usam volumeL e pesoMaximoKg do contrato
-      if (configOperacional !== undefined) {
-        invalidarCacheComparacaoContrato(id);
-      }
+      // Tarifa e limites do contrato entram em conta espalhada pelos serviços, e as
+      // chaves de cache deles não carregam o id do contrato: zera tudo.
+      limparCacheEndpoints();
 
       const atualizado = await this.repository.findOne({ where: { id } });
       return res.json(atualizado || contract);

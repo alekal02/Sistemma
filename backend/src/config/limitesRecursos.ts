@@ -12,6 +12,19 @@ export const DADOS_CACHE_TTL_MS = parseInt(process.env.DADOS_CACHE_TTL_MS || '12
 /** Máximo de entradas no cache de dados brutos */
 export const DADOS_CACHE_MAX_ENTRADAS = parseInt(process.env.DADOS_CACHE_MAX_ENTRADAS || '12', 10);
 
+/**
+ * Teto de linhas somadas no cache de dados brutos.
+ *
+ * Contar entradas não protege a memória: medido, um serviço com 20 mil linhas
+ * ocupa ~67 MB de heap, então 12 entradas projetam ~800 MB — mais do que o heap
+ * de 512 MB do container. Limitar pelo total de linhas faz caber muitos serviços
+ * pequenos ou poucos grandes, sem estourar.
+ */
+export const DADOS_CACHE_MAX_LINHAS = parseInt(
+  process.env.DADOS_CACHE_MAX_LINHAS || '60000',
+  10,
+);
+
 /** Concorrência padrão para KPIs consolidados / comparação */
 export const KPIS_CONSOLIDADO_CONCURRENCY = parseInt(
   process.env.KPIS_CONSOLIDADO_CONCURRENCY || '2',
