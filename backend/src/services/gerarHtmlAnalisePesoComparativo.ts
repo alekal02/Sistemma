@@ -4,6 +4,7 @@ import {
   CORES_SERVICO_PESO,
   METRICAS_PESO,
   SECAO_LABEL_PESO,
+  avisoTipoCaminhaoDeduzido,
   formatarCelulaMetricaPeso,
   type SecaoPeso,
 } from './analisePesoComparativoMetricas';
@@ -100,6 +101,14 @@ export function gerarHtmlAnalisePesoComparativo(opts: {
     );
   }
 
+  const avisosTipo = comDados
+    .map((s) => {
+      const aviso = avisoTipoCaminhaoDeduzido(s.analisePeso!);
+      return aviso ? `<li><strong>${esc(s.nome)}:</strong> ${esc(aviso)}</li>` : '';
+    })
+    .filter(Boolean)
+    .join('');
+
   return `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -152,6 +161,17 @@ export function gerarHtmlAnalisePesoComparativo(opts: {
     .celula-cenario-perda, .celula-resultado-perda { color: #b91c1c; font-weight: 800; }
     .celula-cenario-ganho, .celula-resultado-ganho { color: #15803d; font-weight: 800; }
     .celula-ideal { background: #bbf7d0; color: #166534; }
+    .aviso-tipo {
+      margin-top: 8px;
+      background: #fff7ed;
+      border: 1px solid #fed7aa;
+      border-radius: 8px;
+      padding: 6px 8px;
+      font-size: 7px;
+      color: #9a3412;
+      line-height: 1.5;
+    }
+    .aviso-tipo ul { margin: 3px 0 0 12px; }
     .footer { margin-top: 10px; font-size: 6px; color: #94a3b8; text-align: center; }
   </style>
 </head>
@@ -174,6 +194,10 @@ export function gerarHtmlAnalisePesoComparativo(opts: {
       ${bodyRows.join('\n')}
     </tbody>
   </table>
+  ${avisosTipo ? `<div class="aviso-tipo">
+    <strong>Origem do tipo de caminhão</strong>
+    <ul>${avisosTipo}</ul>
+  </div>` : ''}
   <div class="footer">SistemMA — Análise de peso por viagem (PESO 1–4, qualidade vs peso ideal do tipo, frota e cenário caixa × densidade)</div>
 </body>
 </html>`;

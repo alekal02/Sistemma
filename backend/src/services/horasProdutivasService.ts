@@ -53,7 +53,7 @@ function lerHoraCampo(obj: Record<string, any>, ...candidatos: string[]): number
 }
 
 /** Leitura estrita (sem fuzzy contains) — evita confundir HORA SAÍDA ROTA com horaSaida da base. */
-function lerHoraCampoEstrito(obj: Record<string, any>, ...candidatos: string[]): number {
+export function lerHoraCampoEstrito(obj: Record<string, any>, ...candidatos: string[]): number {
   if (!obj) return 0;
   const fontes: Record<string, any>[] = [];
   if (obj.dados && typeof obj.dados === 'object' && !Array.isArray(obj.dados)) {
@@ -80,20 +80,94 @@ function lerHoraCampoEstrito(obj: Record<string, any>, ...candidatos: string[]):
   return 0;
 }
 
+/** Hora de chegada na rota N (1–4). 0 quando não informada. */
+export function lerHoraChegadaRota(obj: Record<string, any>, n: number): number {
+  const par = COLUNAS_HORAS_ROTAS[n - 1];
+  if (!par) return 0;
+  const candidatos = par.nome === 'Rota 03'
+    ? [par.horaChegada, 'HORA CHEGA ROTA 03']
+    : [par.horaChegada];
+  return lerHoraCampoEstrito(obj, ...candidatos);
+}
+
+/** Hora de saída da rota N (1–4). 0 quando não informada. */
+export function lerHoraSaidaRota(obj: Record<string, any>, n: number): number {
+  const par = COLUNAS_HORAS_ROTAS[n - 1];
+  return par ? lerHoraCampoEstrito(obj, par.horaSaida) : 0;
+}
+
+/** Hora de saída da base (início da jornada). */
+export function lerHoraSaidaBase(obj: Record<string, any>): number {
+  return lerHoraCampoEstrito(
+    obj,
+    'HORA SÁIDA BASE',
+    'HORA SAIDA BASE',
+    'HORA SÁIDA  BASE',
+    'HORA SAIDA  BASE',
+  );
+}
+
+/** Hora de chegada na base (fim da jornada). */
+export function lerHoraChegadaBase(obj: Record<string, any>): number {
+  return lerHoraCampoEstrito(obj, 'HORA CHEGADA BASE', 'HORA CHEGA BASE');
+}
+
+/** Hodômetro de chegada na rota N (1–4). */
+export function lerKmChegadaRota(obj: Record<string, any>, n: number): number {
+  const par = COLUNAS_HODOMETRO.rotas[n - 1];
+  if (!par) return 0;
+  return lerKmCampoEstrito(
+    obj,
+    par.kmChegada,
+    par.kmChegada.trim(),
+    `KM CHEGADA ROTA 0${n}`,
+    `KM CHEGADA ROTA ${n}`,
+  );
+}
+
+/** Hodômetro de saída da rota N (1–4). */
+export function lerKmSaidaRota(obj: Record<string, any>, n: number): number {
+  const par = COLUNAS_HODOMETRO.rotas[n - 1];
+  if (!par) return 0;
+  return lerKmCampoEstrito(
+    obj,
+    par.kmSaida,
+    par.kmSaida.trim(),
+    `KM SAIDA ROTA 0${n}`,
+    `KM SAÍDA ROTA 0${n}`,
+    `KM SAIDA ROTA ${n}`,
+    `KM SAÍDA ROTA ${n}`,
+  );
+}
+
+/** Hodômetro na saída da base. */
+export function lerKmSaidaBase(obj: Record<string, any>): number {
+  return lerKmCampoEstrito(
+    obj,
+    COLUNAS_HODOMETRO.saidaBase,
+    COLUNAS_HODOMETRO.saidaBase.trim(),
+    'KM SÁIDA BASE',
+  );
+}
+
+/** Hodômetro na chegada à base. */
+export function lerKmChegadaBase(obj: Record<string, any>): number {
+  return lerKmCampoEstrito(
+    obj,
+    COLUNAS_HODOMETRO.chegadaBase,
+    COLUNAS_HODOMETRO.chegadaBase.trim(),
+    'KM CHEGA BASE',
+  );
+}
+
 /**
  * Horas produtivas de cada trecho (ROTA 01–04): saída − chegada.
  */
 export function calcularHorasPorTrechoRota(obj: Record<string, any>): number[] {
   if (!obj) return COLUNAS_HORAS_ROTAS.map(() => 0);
-  return COLUNAS_HORAS_ROTAS.map((par) => {
-    const chegadaCands =
-      par.nome === 'Rota 03'
-        ? [par.horaChegada, 'HORA CHEGA ROTA 03']
-        : [par.horaChegada];
-    const chegadaNaRota = lerHoraCampoEstrito(obj, ...chegadaCands);
-    const saidaDaRota = lerHoraCampoEstrito(obj, par.horaSaida);
-    return diffHorasSaidaChegada(chegadaNaRota, saidaDaRota);
-  });
+  return COLUNAS_HORAS_ROTAS.map((_par, i) =>
+    diffHorasSaidaChegada(lerHoraChegadaRota(obj, i + 1), lerHoraSaidaRota(obj, i + 1)),
+  );
 }
 
 /**
@@ -105,7 +179,7 @@ export function calcularHorasNasRotasRegistro(obj: Record<string, any>): number 
   return Math.round(total * 100) / 100;
 }
 
-function lerKmCampoEstrito(obj: Record<string, any>, ...candidatos: string[]): number {
+export function lerKmCampoEstrito(obj: Record<string, any>, ...candidatos: string[]): number {
   if (!obj) return 0;
   const fontes: Record<string, any>[] = [];
   if (obj.dados && typeof obj.dados === 'object' && !Array.isArray(obj.dados)) {
@@ -146,24 +220,9 @@ export function calcularKmNasRotasRegistro(obj: Record<string, any>): number {
   let total = 0;
 
   for (let i = 0; i < COLUNAS_HODOMETRO.rotas.length; i++) {
-    const par = COLUNAS_HODOMETRO.rotas[i];
     const n = i + 1;
-    const chegada = lerKmCampoEstrito(
-      obj,
-      par.kmChegada,
-      par.kmChegada.trim(),
-      `KM CHEGADA ROTA 0${n}`,
-      `KM CHEGADA ROTA ${n}`,
-    );
-    const saida = lerKmCampoEstrito(
-      obj,
-      par.kmSaida,
-      par.kmSaida.trim(),
-      `KM SAIDA ROTA 0${n}`,
-      `KM SAÍDA ROTA 0${n}`,
-      `KM SAIDA ROTA ${n}`,
-      `KM SAÍDA ROTA ${n}`,
-    );
+    const chegada = lerKmChegadaRota(obj, n);
+    const saida = lerKmSaidaRota(obj, n);
 
     if (chegada > 0 && saida > 0 && saida >= chegada) {
       const diff = saida - chegada;
@@ -205,18 +264,8 @@ export function calcularVelocidadeColetaRegistro(obj: Record<string, any>): numb
 export function calcularHorasTotaisForaUnidadeRegistro(obj: Record<string, any>): number {
   if (!obj) return 0;
 
-  const saidaBase = lerHoraCampoEstrito(
-    obj,
-    'HORA SÁIDA BASE',
-    'HORA SAIDA BASE',
-    'HORA SÁIDA  BASE',
-    'HORA SAIDA  BASE',
-  );
-  const chegadaBase = lerHoraCampoEstrito(
-    obj,
-    'HORA CHEGADA BASE',
-    'HORA CHEGA BASE',
-  );
+  const saidaBase = lerHoraSaidaBase(obj);
+  const chegadaBase = lerHoraChegadaBase(obj);
   if (saidaBase > 0 && chegadaBase > 0) {
     return diffHorasSaidaChegada(saidaBase, chegadaBase);
   }

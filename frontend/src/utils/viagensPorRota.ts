@@ -16,8 +16,6 @@ const COLUNAS_CONTADOR = [
   'NUMERO VIAGENS',
 ];
 
-const COLUNAS_PESO = ['PESO 1', 'PESO 2', 'PESO 3', 'PESO 4'] as const;
-
 /**
  * Peso máximo plausível de UMA viagem (kg).
  * Acima disso costuma ser PESO TOTAL da rota — não usar como viagem.
@@ -49,12 +47,6 @@ function contadorPlausivel(n: number): boolean {
 function limitarViagens(n: number): number {
   if (isNaN(n) || n <= 0) return 0;
   return Math.min(Math.round(n), MAX_VIAGENS_DENTRO_ROTA);
-}
-
-function valorPreenchido(val: unknown): boolean {
-  if (val === null || val === undefined || val === '') return false;
-  const n = paraNumero(val);
-  return n > 0 || String(val).trim().length > 0;
 }
 
 export function obterContadorViagensRegistro(registro: Record<string, unknown>): number | null {

@@ -7,6 +7,7 @@ import {
   contarFrotaPorTipoCaminhao,
   DENSIDADE_OTIMA_PADRAO,
 } from './analisePesoColetaService';
+import { avisoTipoCaminhaoDeduzido } from './analisePesoComparativoMetricas';
 import { PESO_MAX_KG_PADRAO, VOLUME_L_PADRAO } from '../config/pesoMaximoCaminhao';
 
 describe('contarFrotaPorTipoCaminhao', () => {
@@ -67,6 +68,114 @@ describe('contarFrotaPorTipoCaminhao', () => {
     );
     assert.equal(tiposCaminhao.MINI, 1);
     assert.equal(tiposCaminhao.TRUCK, 0);
+  });
+
+  it('marca como deduzida a placa sem tipo na planilha', () => {
+    const dados = [
+      { PLACA: 'AAA1111', 'TIPO DE CAMINHÃO': 'TOCO', 'PESO TOTAL': 8000 },
+      { PLACA: 'BBB2222', 'PESO TOTAL': 15000 },
+    ];
+    const { tiposCaminhao, tipoDeduzido } = contarFrotaPorTipoCaminhao(
+      dados,
+      'PLACA',
+      'TIPO DE CAMINHÃO',
+      'PESO TOTAL',
+      PESO_MAX_KG_PADRAO,
+    );
+
+    assert.equal(tiposCaminhao.soma, 2);
+    assert.equal(tipoDeduzido.placas, 1);
+    assert.deepEqual(tipoDeduzido.placasLista, ['BBB2222']);
+    assert.equal(tipoDeduzido.placasDeclaradas, 1);
+    assert.equal(tipoDeduzido.placasSemTipo, 0);
+    // porTipo conta só o que foi deduzido — a placa declarada não entra
+    const deduzidasPorTipo = Object.values(tipoDeduzido.porTipo).reduce((s, n) => s + n, 0);
+    assert.equal(deduzidasPorTipo, 1);
+    assert.equal(tipoDeduzido.porTipo.TOCO, 0);
+  });
+
+  it('não marca dedução quando toda a frota vem declarada na planilha', () => {
+    const dados = [
+      { PLACA: 'AAA1111', 'TIPO DE CAMINHÃO': 'TOCO', 'PESO TOTAL': 8000 },
+      { PLACA: 'BBB2222', 'TIPO DE CAMINHÃO': 'BASCULANTE', 'PESO TOTAL': 9000 },
+    ];
+    const { tipoDeduzido } = contarFrotaPorTipoCaminhao(
+      dados,
+      'PLACA',
+      'TIPO DE CAMINHÃO',
+      'PESO TOTAL',
+      PESO_MAX_KG_PADRAO,
+    );
+
+    assert.equal(tipoDeduzido.placas, 0);
+    assert.equal(tipoDeduzido.placasDeclaradas, 2);
+    assert.deepEqual(tipoDeduzido.placasLista, []);
+  });
+
+  it('placa sem tipo e sem peso fica fora da contagem por tipo', () => {
+    const dados = [
+      { PLACA: 'AAA1111', 'TIPO DE CAMINHÃO': 'TOCO', 'PESO TOTAL': 8000 },
+      { PLACA: 'CCC3333' },
+    ];
+    const { tiposCaminhao, tipoDeduzido, caminhoesUnicos } = contarFrotaPorTipoCaminhao(
+      dados,
+      'PLACA',
+      'TIPO DE CAMINHÃO',
+      'PESO TOTAL',
+      PESO_MAX_KG_PADRAO,
+    );
+
+    assert.equal(caminhoesUnicos, 2);
+    assert.equal(tiposCaminhao.soma, 1);
+    assert.equal(tipoDeduzido.placas, 0);
+    assert.equal(tipoDeduzido.placasSemTipo, 1);
+  });
+});
+
+describe('avisoTipoCaminhaoDeduzido', () => {
+  it('fica calado quando todo tipo veio da planilha', () => {
+    const analise = analisarPesoColeta(
+      [
+        {
+          PLACA: 'AAA1111',
+          'TIPO DE CAMINHÃO': 'BASCULANTE',
+          'DATA SAIDA': '01/07/2026',
+          'CONTADOR DE VIAGENS': 1,
+          'PESO 1': 9000,
+          'PESO TOTAL': 9000,
+        },
+      ],
+      'srv-1',
+    );
+
+    assert.ok(analise);
+    assert.equal(analise!.frotaTipoDeduzido.placas, 0);
+    assert.equal(analise!.viagensTipoDeduzido, 0);
+    assert.equal(avisoTipoCaminhaoDeduzido(analise!), null);
+  });
+
+  it('avisa quais placas tiveram o tipo deduzido pelo peso', () => {
+    const analise = analisarPesoColeta(
+      [
+        {
+          PLACA: 'BBB2222',
+          'DATA SAIDA': '01/07/2026',
+          'CONTADOR DE VIAGENS': 1,
+          'PESO 1': 9000,
+          'PESO TOTAL': 9000,
+        },
+      ],
+      'srv-2',
+    );
+
+    assert.ok(analise);
+    assert.equal(analise!.frotaTipoDeduzido.placas, 1);
+    assert.equal(analise!.viagensTipoDeduzido, 1);
+
+    const aviso = avisoTipoCaminhaoDeduzido(analise!);
+    assert.ok(aviso);
+    assert.match(aviso!, /BBB2222/);
+    assert.match(aviso!, /deduzido pelo peso/);
   });
 });
 

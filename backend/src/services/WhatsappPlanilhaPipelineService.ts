@@ -1,4 +1,9 @@
-import AppDataSource from '../database/data-source';
+import AppDataSource, {
+  getCurrentTenantDb,
+  isMultiTenant,
+  runWithTenant,
+} from '../database/data-source';
+import { buscarRoteamentoGrupo } from './whatsappRoteamentoService';
 import { WhatsappGrupoMapa } from '../entities/WhatsappGrupoMapa';
 import { Servico } from '../entities/Servico';
 import { Contract } from '../entities/Contract';
@@ -421,6 +426,12 @@ export class WhatsappPlanilhaPipelineService {
     }
 
     const grupoJid = normalizarGrupoJid(chat);
+    if (isMultiTenant() && !getCurrentTenantDb()) {
+      const rota = await buscarRoteamentoGrupo(grupoJid);
+      if (rota) {
+        return runWithTenant(rota.tenantDb, () => this.processarWebhook(rawPayload));
+      }
+    }
     const textoMsg = extrairTextoMensagem(payload);
 
     // Comandos de texto (relatorio / ciclo / comparativo) — antes do fluxo de planilha

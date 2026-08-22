@@ -9,7 +9,7 @@
    - Sincronia com URL (search params)
    ═══════════════════════════════════════════ */
 
-import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 /* ─── Tipos ─── */

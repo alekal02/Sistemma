@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Navigate, useNavigate, useSearchParams } from 'react-router-dom';
+import { useAuth } from '../contexts/AuthContext';
+import { ehGestor, homePath } from '../utils/homePath';
 import {
   FiSettings, FiRefreshCw, FiBarChart2, FiAlertCircle,
   FiTrendingUp, FiDollarSign, FiActivity, FiTruck,
@@ -12,6 +14,7 @@ import { isRequestAborted } from '../services/abortableRequest';
 import api from '../services/api';
 import type { ServicoConsolidado, KpiConsolidadoItem } from '../services/servicoService';
 import CompararPorTipoTv from '../components/CompararPorTipoTv';
+import PainelGestor from './PainelGestor';
 import pdfService from '../services/pdfService';
 import { gerarHtmlRelatorioMelhoriaCicloTodosContratos } from '../utils/gerarHtmlRelatorioMelhoriaCicloOperacao';
 import { montarItensMelhoriaCicloTodos } from '../utils/exportarMelhoriaCicloTodos';
@@ -174,8 +177,9 @@ function ServicoCard({
   );
 }
 
-export default function VisaoGeral() {
+function VisaoGeralOperacional() {
   const navigate = useNavigate();
+  const { user, entrarContrato } = useAuth();
   const { adicionarToast } = useToast();
   const { setBreadcrumbs } = useBreadcrumbs();
 
@@ -183,17 +187,25 @@ export default function VisaoGeral() {
   const [carregando, setCarregando] = useState(true);
   const [carregandoKpis, setCarregandoKpis] = useState(false);
   const [erro, setErro] = useState('');
-  const [abaAtiva, setAbaAtiva] = useState<AbaDashboard>('visao');
+  const [searchParams] = useSearchParams();
+  const [abaAtiva, setAbaAtiva] = useState<AbaDashboard>(
+    searchParams.get('aba') === 'comparar' ? 'comparar' : 'visao',
+  );
   const [servicosSelecionados, setServicosSelecionados] = useState<Set<string>>(new Set());
   const [selecaoComparar, setSelecaoComparar] = useState<string[] | undefined>(undefined);
   const [metaContratos, setMetaContratos] = useState<Record<string, number>>({});
   const [gerandoMelhorias, setGerandoMelhorias] = useState(false);
   const [progressoMelhorias, setProgressoMelhorias] = useState('');
   const gerandoMelhoriasRef = useRef(false);
+  const indoParaUnidadeRef = useRef(false);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: 'Dashboard' }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: abaAtiva === 'comparar' ? 'Modo TV' : 'Dashboard' }]);
+  }, [setBreadcrumbs, abaAtiva]);
+
+  useEffect(() => {
+    if (searchParams.get('aba') === 'comparar') setAbaAtiva('comparar');
+  }, [searchParams]);
 
   useEffect(() => () => {
     gerandoMelhoriasRef.current = false;
@@ -253,9 +265,26 @@ export default function VisaoGeral() {
     return () => window.clearTimeout(timer);
   }, [servicos.length, carregando, carregarKpisCompletos]);
 
+  const entrarNaUnidade = useCallback(async (contratoId: string, destino?: string) => {
+    indoParaUnidadeRef.current = true;
+    if (ehGestor(user) && user?.contractId !== contratoId) {
+      try {
+        await entrarContrato(contratoId);
+      } catch {
+        /* banco único: segue para a unidade mesmo assim */
+      }
+    }
+    navigate(destino || `/contratos/${contratoId}`);
+  }, [user, entrarContrato, navigate]);
+
   const handleNavigate = useCallback((path: string) => {
+    const match = path.match(/^\/contratos\/([^/]+)/);
+    if (match && ehGestor(user) && user?.contractId !== match[1]) {
+      void entrarNaUnidade(match[1], path);
+      return;
+    }
     navigate(path);
-  }, [navigate]);
+  }, [user, entrarNaUnidade, navigate]);
 
   const totalServicos = servicos.length;
   const totalRegistros = servicos.reduce((s, sv) => s + sv.totalRegistros, 0);
@@ -373,6 +402,10 @@ export default function VisaoGeral() {
       setProgressoMelhorias('');
     }
   }, [servicos, metaContratos, adicionarToast]);
+
+  if (user?.contractId && !indoParaUnidadeRef.current) {
+    return <Navigate to={homePath(user)} replace />;
+  }
 
   if (carregando) {
     return (
@@ -493,13 +526,19 @@ export default function VisaoGeral() {
 
       {abaAtiva === 'visao' && Array.from(grupos.entries()).map(([contratoId, grupo]) => (
         <div key={contratoId} className="vg-grupo">
-          <div className="vg-grupo-header">
+          <button
+            type="button"
+            className="vg-grupo-header vg-grupo-header-btn"
+            onClick={() => { void entrarNaUnidade(contratoId); }}
+            title="Abrir somente esta unidade"
+          >
             <div className="vg-grupo-indicator" />
             <span className="vg-grupo-nome">{grupo.contratoNome}</span>
             <span className="vg-grupo-badge">
               {grupo.servicos.length} serviço{grupo.servicos.length !== 1 ? 's' : ''}
             </span>
-          </div>
+            <span className="vg-grupo-abrir">Abrir unidade</span>
+          </button>
           <div className="vg-servicos-grid">
             {grupo.servicos.map(servico => (
               <ServicoCard
@@ -516,4 +555,15 @@ export default function VisaoGeral() {
       ))}
     </div>
   );
+}
+
+export default function VisaoGeral() {
+  const { user } = useAuth();
+  if (user?.contractId) {
+    return <Navigate to={homePath(user)} replace />;
+  }
+  if (ehGestor(user)) {
+    return <PainelGestor />;
+  }
+  return <VisaoGeralOperacional />;
 }

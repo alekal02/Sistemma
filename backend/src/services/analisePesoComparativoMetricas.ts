@@ -9,6 +9,7 @@ export type {
 
 export {
   aplicarDensidadeNaAnalisePeso,
+  avisoTipoCaminhaoDeduzido,
   calcularViagensEquivalentesResultado,
   CORES_SERVICO_PESO,
   DENSIDADE_RESIDUO_PADRAO,

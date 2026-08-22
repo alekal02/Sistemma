@@ -1,5 +1,14 @@
 import { Request, Response } from 'express';
-import AppDataSource from '../database/data-source';
+import { randomUUID } from 'node:crypto';
+import AppDataSource, {
+  getControlDataSource,
+  isMultiTenant,
+  runWithTenant,
+} from '../database/data-source';
+import { isSuperadmin } from '../middlewares/authMiddleware';
+import { ehHubDeContratos, emCadaContrato, escopoCacheTenant } from '../services/tenantFanout';
+import { Tenant } from '../entities/Tenant';
+import { provisionarBancoContrato } from '../services/tenantDatabaseService';
 import { Contract } from '../entities/Contract';
 import { Servico } from '../entities/Servico';
 import { PlanilhaUpload } from '../entities/PlanilhaUpload';
@@ -58,6 +67,27 @@ export class ContractController {
 
   async listar(req: Request, res: Response): Promise<any> {
     try {
+      if (ehHubDeContratos(req.usuario)) {
+        // Lê o contrato dentro do banco de cada um: o gestor vê o cadastro completo,
+        // não só o nome registrado no controle.
+        const partes = await emCadaContrato(async (tenant) => {
+          const doBanco = await this.repository.find();
+          if (doBanco.length > 0) {
+            return doBanco.map((c) => ({ ...c, tenantDb: tenant.databaseName }));
+          }
+          return [{
+            id: tenant.contractId,
+            numeroContrato: tenant.numeroContrato,
+            status: tenant.status,
+            tenantDb: tenant.databaseName,
+          }];
+        });
+        const contratos = partes
+          .flat()
+          .sort((a: any, b: any) => compareContratoNome(a.numeroContrato, b.numeroContrato));
+        return res.json({ contratos, total: contratos.length });
+      }
+
       const contracts = await this.repository.find();
       contracts.sort((a, b) => compareContratoNome(a.numeroContrato, b.numeroContrato));
 
@@ -92,7 +122,7 @@ export class ContractController {
         return res.status(400).json({ error: 'Nome do contrato é obrigatório' });
       }
 
-      const contract = this.repository.create({
+      const dados = {
         numeroContrato: numeroContrato.trim(),
         diaInicioCiclo: normalizarDiaInicioCiclo(diaInicioCiclo),
         valorTonelada: valorTonelada !== undefined ? Number(valorTonelada) : null,
@@ -100,12 +130,35 @@ export class ContractController {
         valorTruck: valorTruck !== undefined ? Number(valorTruck) : null,
         valorToco: valorToco !== undefined ? Number(valorToco) : null,
         valorBasculante: valorBasculante !== undefined ? Number(valorBasculante) : null,
-      });
+      };
 
+      if (isMultiTenant()) {
+        if (!isSuperadmin(req.usuario)) {
+          return res.status(403).json({ error: 'Apenas o super-admin pode criar contratos' });
+        }
+        const contractId = randomUUID();
+        const tenant = await provisionarBancoContrato({
+          contractId,
+          numeroContrato: dados.numeroContrato,
+        });
+        const novoContract = await runWithTenant(tenant.databaseName, async () => {
+          const contract = this.repository.create({ id: contractId, ...dados });
+          const salvo = await this.repository.save(contract);
+          try {
+            await garantirServicosPadraoContrato(salvo.id);
+          } catch (err) {
+            console.warn('[ContractController] Falha ao garantir serviços padrão:', err);
+          }
+          return salvo;
+        });
+        invalidarCacheSaudeContratos(novoContract.id);
+        return res.status(201).json({ ...novoContract, tenantDb: tenant.databaseName });
+      }
+
+      const contract = this.repository.create(dados);
       const novoContract = await this.repository.save(contract);
       invalidarCacheSaudeContratos(novoContract.id);
 
-      // Já cria Roçada / Capina / Varrição / Poda
       try {
         await garantirServicosPadraoContrato(novoContract.id);
       } catch (err) {
@@ -253,6 +306,16 @@ export class ContractController {
       }
 
       await this.repository.remove(contract);
+
+      if (isMultiTenant()) {
+        const tenantRepo = getControlDataSource().getRepository(Tenant);
+        const tenant = await tenantRepo.findOne({ where: { contractId: id } });
+        if (tenant) {
+          tenant.status = 'encerrado';
+          await tenantRepo.save(tenant);
+        }
+      }
+
       invalidarCacheSaudeContratos(id);
       invalidarCacheComparacaoContrato(id);
       invalidarPdfCache();
@@ -391,12 +454,7 @@ export class ContractController {
    * Cada contrato inclui statusSaude (green/yellow/red),
    * totalServicos, servicosConfigurados, totalRegistros, ultimoUpload, tiposServico, etc.
    */
-  async saudeLista(req: Request, res: Response): Promise<any> {
-    try {
-      const cacheKey = 'contracts-saude-lista';
-      const cached = getCacheSaude<any>(cacheKey);
-      if (cached) return res.json(cached);
-
+  private async montarSaudeLista(): Promise<any[]> {
       const servicoRepo = AppDataSource.getRepository(Servico);
 
       const [contracts, todosServicos] = await Promise.all([
@@ -481,6 +539,22 @@ export class ContractController {
       });
 
       resultados.sort((a, b) => compareContratoNome(a.numeroContrato, b.numeroContrato));
+      return resultados;
+  }
+
+  async saudeLista(req: Request, res: Response): Promise<any> {
+    try {
+      const cacheKey = `contracts-saude-lista:${escopoCacheTenant()}`;
+      const cached = getCacheSaude<any>(cacheKey);
+      if (cached) return res.json(cached);
+
+      let resultados: any[];
+      if (ehHubDeContratos(req.usuario)) {
+        resultados = (await emCadaContrato(() => this.montarSaudeLista())).flat();
+        resultados.sort((a, b) => compareContratoNome(a.numeroContrato, b.numeroContrato));
+      } else {
+        resultados = await this.montarSaudeLista();
+      }
 
       const response = { contratos: resultados };
       setCacheSaude(cacheKey, response);

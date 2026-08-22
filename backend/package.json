@@ -10,8 +10,9 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "pretest": "npm run build --prefix ../packages/shared",
-    "test": "node --require ts-node/register/transpile-only --test src/services/formulaEngine.test.ts src/services/analisePesoColetaService.test.ts src/utils/periodoCicloContrato.test.ts src/services/viagensPorRotaService.test.ts src/services/validacaoViagemService.test.ts",
-    "diagnostico:dashboards": "ts-node --transpile-only scripts/diagnostico-dashboards.ts"
+    "test": "node --require ts-node/register/transpile-only --test src/services/formulaEngine.test.ts src/services/analisePesoColetaService.test.ts src/services/analisarViagensPlanilhaService.test.ts src/utils/periodoCicloContrato.test.ts src/utils/baselineDia.test.ts src/utils/projecaoCiclo.test.ts src/services/viagensPorRotaService.test.ts src/services/validacaoViagemService.test.ts src/services/jornadaTrechosService.test.ts src/services/rotaCicloService.test.ts",
+    "diagnostico:dashboards": "ts-node --transpile-only scripts/diagnostico-dashboards.ts",
+    "migrar:contratos": "ts-node --transpile-only src/scripts/migrar-bancos-por-contrato.ts"
   },
   "keywords": [],
   "author": "",

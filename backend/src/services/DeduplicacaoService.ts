@@ -127,14 +127,16 @@ const CAMPOS_COMPARACAO: (keyof ColetaData)[] = [
  * 4. Na importação, aplica a estratégia escolhida pelo usuário
  */
 export class DeduplicacaoService {
-  private coletaRepo: Repository<ColetaData>;
-  private uploadRepo: Repository<PlanilhaUpload>;
-  private servicoRepo: Repository<Servico>;
+  private get coletaRepo(): Repository<ColetaData> {
+    return AppDataSource.getRepository(ColetaData);
+  }
 
-  constructor() {
-    this.coletaRepo = AppDataSource.getRepository(ColetaData);
-    this.uploadRepo = AppDataSource.getRepository(PlanilhaUpload);
-    this.servicoRepo = AppDataSource.getRepository(Servico);
+  private get uploadRepo(): Repository<PlanilhaUpload> {
+    return AppDataSource.getRepository(PlanilhaUpload);
+  }
+
+  private get servicoRepo(): Repository<Servico> {
+    return AppDataSource.getRepository(Servico);
   }
 
   private async obterDiaInicioCicloServico(servicoId?: string): Promise<number> {

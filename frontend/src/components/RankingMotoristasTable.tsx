@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { FiSearch, FiDownload, FiChevronUp, FiChevronDown, FiChevronsUp } from 'react-icons/fi';
+import { FiSearch, FiDownload, FiChevronUp, FiChevronDown } from 'react-icons/fi';
 import type { MotoristaKpi } from '../services/dashboardExecutivoService';
 
 interface Props {

@@ -19,7 +19,7 @@ import {
   FiAlertCircle, FiCheck, FiX,
   FiDatabase, FiBarChart2, FiRefreshCw,
   FiClock, FiSettings, FiFolder,
-  FiUpload, FiDollarSign, FiTruck, FiUsers,
+  FiUpload, FiDollarSign, FiTruck, FiUsers, FiMessageSquare,
 } from 'react-icons/fi';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
@@ -912,6 +912,14 @@ export default function ContratoDetalhe() {
           <span className={'status-badge ' + contrato.status}>{contrato.status}</span>
           <button type="button" className="btn btn-sm btn-ghost" onClick={() => void carregarDados()} title="Recarregar">
             <FiRefreshCw size={12} />
+          </button>
+          <button
+            type="button"
+            className="btn btn-sm btn-ghost"
+            onClick={() => navigate('/whatsapp-grupos')}
+            title="WhatsApp desta unidade"
+          >
+            <FiMessageSquare size={12} /> WhatsApp
           </button>
         </div>
         <div className="contrato-page-meta">

@@ -5,19 +5,18 @@
    URL: /graficos-padrao
    ============================================ */
 
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  FiPlus, FiEdit2, FiTrash2, FiCopy, FiArrowLeft,
-  FiSearch, FiInfo, FiToggleLeft, FiToggleRight,
+  FiPlus, FiEdit2, FiTrash2, FiArrowLeft,
+  FiSearch, FiToggleLeft, FiToggleRight,
   FiBarChart2, FiStar, FiGrid, FiSave, FiX,
-  FiCheck, FiChevronDown, FiPower, FiRefreshCw,
+  FiCheck, FiPower, FiRefreshCw,
 } from 'react-icons/fi';
-import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import graficosPadraoService from '../services/graficosPadraoService';
 import type { GraficoPadraoConfig } from '../services/graficosPadraoService';
-import { TIPOS_SERVICO_LABELS, TIPOS_SERVICO_META, type TipoServico } from '../types';
+import { TIPOS_SERVICO_LABELS, TIPOS_SERVICO_META } from '../types';
 import '../styles/ContratoDetalhe.css';
 
 // ─── Helpers ───
@@ -52,7 +51,6 @@ const TIPOS_GRAFICO = ['barra', 'linha', 'pizza', 'area', 'donut'] as const;
 
 export default function BibliotecaGraficosPadrao() {
   const navigate = useNavigate();
-  const { token } = useAuth();
   const { adicionarToast } = useToast();
 
   // ─── Estado de navegação entre telas ───

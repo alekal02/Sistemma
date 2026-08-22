@@ -1,0 +1,7 @@
+* text=auto
+
+# Scripts executados dentro de imagens Linux: CRLF quebra o shebang
+# ("exec /entrypoint.sh: no such file or directory")
+*.sh text eol=lf
+entrypoint.sh text eol=lf
+Dockerfile text eol=lf

@@ -10,6 +10,7 @@ import EmptyState from '../components/EmptyState';
 import SkeletonLoader from '../components/SkeletonLoader';
 import CicloDateSelector from '../components/CicloDateSelector';
 import MapeamentoOperacionalPainel from '../components/MapeamentoOperacionalPainel';
+import RotasCicloPainel from '../components/RotasCicloPainel';
 import ServicoMiniFlow from '../components/ServicoMiniFlow';
 import VerificacaoViagensPanel, { type VerificacaoViagensData } from '../components/VerificacaoViagensPanel';
 import type { ColunaDetectada } from '../components/KpiEditor/KpiEditorTypes';
@@ -347,12 +348,20 @@ export default function ServicoVisao() {
           onCicloFechado={() => carregarDados({ silencioso: true })}
         />
         {ehColeta && contractId && servicoId && (
-          <MapeamentoOperacionalPainel
-            contractId={contractId}
-            servicoId={servicoId}
-            dataInicio={cicloSelecionado?.dataInicio ?? null}
-            dataFim={cicloSelecionado?.dataFim ?? null}
-          />
+          <>
+            <MapeamentoOperacionalPainel
+              contractId={contractId}
+              servicoId={servicoId}
+              dataInicio={cicloSelecionado?.dataInicio ?? null}
+              dataFim={cicloSelecionado?.dataFim ?? null}
+            />
+            <RotasCicloPainel
+              contractId={contractId}
+              servicoId={servicoId}
+              dataInicio={cicloSelecionado?.dataInicio ?? null}
+              dataFim={cicloSelecionado?.dataFim ?? null}
+            />
+          </>
         )}
       </div>
     );

@@ -131,6 +131,25 @@ const ESTILOS = `
   .layout2-tbl { width: 100%; border-collapse: separate; border-spacing: 8px; margin-bottom: 4px; }
   .layout2-tbl > tbody > tr > td { width: 50%; vertical-align: top; }
   .footer { text-align: center; font-size: 6px; color: #94a3b8; margin-top: 10px; padding-top: 8px; border-top: 1px solid #e2e8f0; }
+
+  /* Paginação: nenhum bloco de dados pode ser cortado ao meio pela quebra de página */
+  .bloco, .chart-box, .insight-box, .card, .kpi-card, .vg-item, .hero-dark, .banner, .tarifas {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  /* Título/cabeçalho nunca fica sozinho no pé da página */
+  .sec, .bloco-hd, .bloco-hd-tbl {
+    break-after: avoid;
+    page-break-after: avoid;
+  }
+  /* Barra e sua legenda de valores andam juntas */
+  .bar-row { break-inside: avoid; page-break-inside: avoid; break-after: avoid; page-break-after: avoid; }
+  .bar-detail { break-before: avoid; page-break-before: avoid; break-inside: avoid; page-break-inside: avoid; }
+  /* Linha de tabela inteira, com cabeçalho repetido nas páginas seguintes */
+  table.data tr, .ref-tbl tr, .pizza-leg tr { break-inside: avoid; page-break-inside: avoid; }
+  table.data thead, .ref-tbl thead { display: table-header-group; }
+  table.data tbody, .ref-tbl tbody { break-before: avoid; page-break-before: avoid; }
+
   @media print { * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; } body { padding: 10px; } }
 `;
 

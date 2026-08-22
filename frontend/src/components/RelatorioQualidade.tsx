@@ -116,7 +116,6 @@ export default function RelatorioQualidade({ uploadId, servicoId, aberto, onFech
   const [carregando, setCarregando] = useState(false);
   const [relatorio, setRelatorio] = useState<RelatorioData | null>(null);
   const [erro, setErro] = useState<string | null>(null);
-  const [problemaExpandido, setProblemaExpandido] = useState<string | null>(null);
   const [exportandoPdf, setExportandoPdf] = useState(false);
   const relatorioRef = useRef<HTMLDivElement>(null);
 
@@ -504,7 +503,7 @@ function ResumoCard({ icon, label, valor, cor }: { icon: React.ReactNode; label:
       flexDirection: 'column',
       gap: '0.25rem',
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', color }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', color: cor }}>
         {icon}
         <span style={{ fontSize: '0.7rem', fontWeight: 500, color: '#64748b' }}>{label}</span>
       </div>

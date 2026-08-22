@@ -1,7 +1,7 @@
 import { memo, useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   FiTrash2, FiRefreshCw, FiCopy, FiDatabase, FiBarChart2, FiSave,
-  FiZap, FiDownload, FiBook, FiInfo, FiDollarSign,
+  FiZap, FiCheck, FiBook, FiInfo, FiDollarSign,
 } from 'react-icons/fi';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';

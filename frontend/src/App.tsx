@@ -1,5 +1,6 @@
 import { BrowserRouter as Router, Routes, Route, Navigate, useParams } from 'react-router-dom'
-import { AuthProvider } from './contexts/AuthContext'
+import { AuthProvider, useAuth } from './contexts/AuthContext'
+import { homePath } from './utils/homePath'
 import { ToastProvider } from './contexts/ToastContext'
 import { BreadcrumbProvider } from './contexts/BreadcrumbContext'
 import ToastContainer from './components/Toast'
@@ -16,7 +17,6 @@ import ConfiguracaoServico from './pages/ConfiguracaoServico'
 import BibliotecaKpisUniversais from './pages/BibliotecaKpisUniversais'
 import DashboardExecutivo from './pages/DashboardExecutivo'
 import BibliotecaGraficosPadrao from './pages/BibliotecaGraficosPadrao'
-import Usuarios from './pages/Usuarios'
 import WhatsappGrupos from './pages/WhatsappGrupos'
 
 import './App.css'
@@ -25,6 +25,12 @@ import './App.css'
 function RedirectServico() {
   const { contractId, servicoId } = useParams();
   return <Navigate to={`/contratos/${contractId}/servicos/${servicoId}`} replace />;
+}
+
+function HomeRedirect() {
+  const { user, loading } = useAuth()
+  if (loading) return null
+  return <Navigate to={homePath(user)} replace />
 }
 
 function App() {
@@ -41,7 +47,7 @@ function App() {
       {/* Rotas protegidas com Layout (sidebar + logout) */}
           <Route
             path="/"
-            element={<Navigate to="/visao-geral" replace />}
+            element={<HomeRedirect />}
           />
           <Route
             path="/visao-geral"
@@ -53,6 +59,7 @@ function App() {
               </ProtectedRoute>
             }
           />
+          <Route path="/visao-gestor" element={<Navigate to="/visao-geral" replace />} />
 
           <Route
             path="/contratos"
@@ -141,18 +148,6 @@ function App() {
             }
           />
           <Route
-            path="/usuarios"
-            element={
-              <ProtectedRoute>
-                <AdminRoute>
-                  <Layout>
-                    <Usuarios />
-                  </Layout>
-                </AdminRoute>
-              </ProtectedRoute>
-            }
-          />
-          <Route
             path="/whatsapp-grupos"
             element={
               <ProtectedRoute>
@@ -181,6 +176,8 @@ function App() {
             path="/contratos/:contractId/servicos/:servicoId/detalhes"
             element={<RedirectServico />}
           />
+
+          <Route path="*" element={<HomeRedirect />} />
         </Routes>
           </BreadcrumbProvider>
       </Router>

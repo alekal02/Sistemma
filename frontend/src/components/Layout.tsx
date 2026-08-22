@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import type { ReactNode } from 'react'
-import { Link, useLocation } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
+import { ehGestor } from '../utils/homePath'
 import { useBreadcrumbs } from '../contexts/BreadcrumbContext'
 import { HiChevronLeft, HiChevronRight } from 'react-icons/hi2'
 import {
@@ -9,10 +10,10 @@ import {
   FiChevronRight as FiChevronRightSmall,
   FiBarChart2,
   FiActivity,
-  FiUsers,
   FiPieChart,
   FiLogOut,
   FiMessageSquare,
+  FiColumns,
 } from 'react-icons/fi'
 import './Layout.css'
 import { useAppVersion } from '../hooks/useAppVersion'
@@ -22,11 +23,10 @@ interface LayoutProps {
 }
 
 const MAPA_TITULOS: Record<string, string> = {
-  '/visao-geral': 'Visão geral',
+  '/visao-geral': 'Gestor',
   '/contratos': 'Contratos',
   '/kpis-universais': 'Biblioteca de KPIs',
   '/graficos-padrao': 'Gráficos padrão',
-  '/usuarios': 'Usuários',
   '/whatsapp-grupos': 'Grupos WhatsApp',
   '/dashboard/executivo': 'Relatórios executivos',
 }
@@ -42,8 +42,15 @@ function getInitials(nome: string): string {
 }
 
 function Layout({ children }: LayoutProps) {
-  const { user, logout, isAdmin } = useAuth()
+  const { user, logout, sairContrato } = useAuth()
+  const gestor = ehGestor(user)
+  const hubGestor = gestor && !user?.contractId
+  const naUnidade = Boolean(user?.contractId)
+  const home = user?.contractId
+    ? `/contratos/${user.contractId}`
+    : (gestor ? '/visao-geral' : '/contratos')
   const location = useLocation()
+  const navigate = useNavigate()
   const [sidebarAberta, setSidebarAberta] = useState(true)
   const { breadcrumbs } = useBreadcrumbs()
   const versaoLabel = useAppVersion()
@@ -67,16 +74,14 @@ function Layout({ children }: LayoutProps) {
       if (parts.length === 2) {
         titulo = 'Detalhe do contrato'
         breadcrumbElements = [
-          { label: 'Visão geral', href: '/visao-geral' },
-          { label: 'Contratos', href: '/contratos' },
+          { label: 'Contratos', href: home },
           { label: titulo },
         ]
       } else if (parts.length >= 4) {
         const isConfig = parts.includes('configurar')
         titulo = isConfig ? 'Configuração do serviço' : 'Relatório do serviço'
         breadcrumbElements = [
-          { label: 'Visão geral', href: '/visao-geral' },
-          { label: 'Contratos', href: '/contratos' },
+          { label: 'Contratos', href: home },
           { label: titulo },
         ]
       } else {
@@ -122,81 +127,82 @@ function Layout({ children }: LayoutProps) {
         </div>
 
         <nav className="sidebar-nav" aria-label="Navegação principal">
-          <div className={`sidebar-section-label ${sidebarAberta ? '' : 'hidden-text'}`}>
-            Relatórios
-          </div>
-
-          <Link
-            to="/visao-geral"
-            className={`sidebar-link ${location.pathname === '/visao-geral' ? 'active' : ''}`}
-            onClick={fecharSidebarMobile}
-          >
-            <span className="sidebar-icon"><FiActivity size={20} /></span>
-            <span className={sidebarAberta ? '' : 'hidden-text'}>Visão geral</span>
-          </Link>
-
-          <Link
-            to="/dashboard/executivo"
-            className={`sidebar-link ${location.pathname === '/dashboard/executivo' ? 'active' : ''}`}
-            onClick={fecharSidebarMobile}
-          >
-            <span className="sidebar-icon"><FiPieChart size={20} /></span>
-            <span className={sidebarAberta ? '' : 'hidden-text'}>Executivo</span>
-          </Link>
-
-          <div className={`sidebar-section-label ${sidebarAberta ? '' : 'hidden-text'}`}>
-            Dados
-          </div>
-
-          <Link
-            to="/contratos"
-            className={`sidebar-link ${location.pathname.startsWith('/contratos') ? 'active' : ''}`}
-            onClick={fecharSidebarMobile}
-          >
-            <span className="sidebar-icon"><FiDatabase size={20} /></span>
-            <span className={sidebarAberta ? '' : 'hidden-text'}>Contratos</span>
-          </Link>
-
-          {isAdmin && (
+          {hubGestor && (
             <>
               <div className={`sidebar-section-label ${sidebarAberta ? '' : 'hidden-text'}`}>
-                Administração
+                Gestor
               </div>
-
               <Link
-                to="/kpis-universais"
-                className={`sidebar-link ${location.pathname === '/kpis-universais' ? 'active' : ''}`}
+                to="/visao-geral"
+                className={`sidebar-link ${location.pathname === '/visao-geral' ? 'active' : ''}`}
                 onClick={fecharSidebarMobile}
               >
-                <span className="sidebar-icon"><FiBarChart2 size={18} /></span>
-                <span className={sidebarAberta ? '' : 'hidden-text'}>KPIs universais</span>
+                <span className="sidebar-icon"><FiActivity size={20} /></span>
+                <span className={sidebarAberta ? '' : 'hidden-text'}>Comparativo</span>
               </Link>
-
               <Link
-                to="/graficos-padrao"
-                className={`sidebar-link ${location.pathname === '/graficos-padrao' ? 'active' : ''}`}
+                to="/contratos"
+                className={`sidebar-link ${location.pathname.startsWith('/contratos') ? 'active' : ''}`}
                 onClick={fecharSidebarMobile}
               >
-                <span className="sidebar-icon"><FiBarChart2 size={18} /></span>
-                <span className={sidebarAberta ? '' : 'hidden-text'}>Gráficos padrão</span>
+                <span className="sidebar-icon"><FiDatabase size={20} /></span>
+                <span className={sidebarAberta ? '' : 'hidden-text'}>Contratos</span>
               </Link>
+            </>
+          )}
 
+          {naUnidade && (
+            <>
+              <div className={`sidebar-section-label ${sidebarAberta ? '' : 'hidden-text'}`}>
+                Unidade
+              </div>
               <Link
-                to="/usuarios"
-                className={`sidebar-link ${location.pathname === '/usuarios' ? 'active' : ''}`}
+                to={home}
+                className={`sidebar-link ${location.pathname.startsWith('/contratos') ? 'active' : ''}`}
                 onClick={fecharSidebarMobile}
               >
-                <span className="sidebar-icon"><FiUsers size={18} /></span>
-                <span className={sidebarAberta ? '' : 'hidden-text'}>Usuários</span>
+                <span className="sidebar-icon"><FiDatabase size={20} /></span>
+                <span className={sidebarAberta ? '' : 'hidden-text'}>Meu contrato</span>
               </Link>
-
+              <Link
+                to="/dashboard/executivo"
+                className={`sidebar-link ${location.pathname === '/dashboard/executivo' ? 'active' : ''}`}
+                onClick={fecharSidebarMobile}
+              >
+                <span className="sidebar-icon"><FiPieChart size={20} /></span>
+                <span className={sidebarAberta ? '' : 'hidden-text'}>Executivo</span>
+              </Link>
               <Link
                 to="/whatsapp-grupos"
                 className={`sidebar-link ${location.pathname === '/whatsapp-grupos' ? 'active' : ''}`}
                 onClick={fecharSidebarMobile}
               >
-                <span className="sidebar-icon"><FiMessageSquare size={18} /></span>
-                <span className={sidebarAberta ? '' : 'hidden-text'}>Grupos WhatsApp</span>
+                <span className="sidebar-icon"><FiMessageSquare size={20} /></span>
+                <span className={sidebarAberta ? '' : 'hidden-text'}>WhatsApp</span>
+              </Link>
+            </>
+          )}
+
+          {!hubGestor && !naUnidade && (
+            <>
+              <div className={`sidebar-section-label ${sidebarAberta ? '' : 'hidden-text'}`}>
+                Relatórios
+              </div>
+              <Link
+                to="/visao-geral"
+                className={`sidebar-link ${location.pathname === '/visao-geral' ? 'active' : ''}`}
+                onClick={fecharSidebarMobile}
+              >
+                <span className="sidebar-icon"><FiColumns size={20} /></span>
+                <span className={sidebarAberta ? '' : 'hidden-text'}>Visão geral</span>
+              </Link>
+              <Link
+                to={home}
+                className={`sidebar-link ${location.pathname.startsWith('/contratos') ? 'active' : ''}`}
+                onClick={fecharSidebarMobile}
+              >
+                <span className="sidebar-icon"><FiDatabase size={20} /></span>
+                <span className={sidebarAberta ? '' : 'hidden-text'}>Contratos</span>
               </Link>
             </>
           )}
@@ -241,15 +247,25 @@ function Layout({ children }: LayoutProps) {
           </div>
 
           <div className="header-user">
+            {gestor && user?.contractId && (
+              <button
+                type="button"
+                className="btn-logout-header"
+                onClick={() => { void sairContrato().then(() => navigate('/visao-geral')) }}
+                title="Voltar à comparação de todos os contratos"
+              >
+                <span>Todos os contratos</span>
+              </button>
+            )}
             <div className="header-user-chip">
-              <div className="header-user-avatar" title={user?.nome || 'Usuário'}>
-                {getInitials(user?.nome || 'U')}
+              <div className="header-user-avatar" title={hubGestor ? 'Gestor' : 'Unidade'}>
+                {getInitials(hubGestor ? 'Gestor' : 'Unidade')}
               </div>
-              <span className="header-user-name">{user?.nome || 'Usuário'}</span>
+              <span className="header-user-name">{hubGestor ? 'Gestor' : 'Unidade'}</span>
             </div>
-            <button type="button" className="btn-logout-header" onClick={logout} title="Sair">
+            <button type="button" className="btn-logout-header" onClick={logout} title="Trocar área">
               <FiLogOut size={16} />
-              <span>Sair</span>
+              <span>Trocar área</span>
             </button>
           </div>
         </header>

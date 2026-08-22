@@ -4,9 +4,9 @@
    URL: /kpis-universais
    ============================================ */
 
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { FiPlus, FiEdit2, FiTrash2, FiCopy, FiArrowLeft, FiSearch, FiInfo, FiChevronDown, FiCheck, FiFolder, FiGrid, FiBarChart2, FiToggleLeft, FiToggleRight, FiStar } from 'react-icons/fi';
+import { FiPlus, FiEdit2, FiTrash2, FiCopy, FiArrowLeft, FiSearch, FiInfo, FiFolder, FiGrid, FiBarChart2, FiToggleLeft, FiToggleRight, FiStar } from 'react-icons/fi';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import kpiUniversalService from '../services/kpiUniversalService';
@@ -16,7 +16,7 @@ import servicoService from '../services/servicoService';
 import { isRequestAborted } from '../services/abortableRequest';
 import type { KpiUniversal } from '../services/kpiUniversalService';
 import type { GraficoPadraoConfig } from '../services/graficosPadraoService';
-import { TIPOS_SERVICO_LABELS, TIPOS_SERVICO_META, type TipoServico } from '../types';
+import { TIPOS_SERVICO_LABELS, TIPOS_SERVICO_META } from '../types';
 import {
   BibliotecaKpiMediaChart,
   BibliotecaKpiTotalChart,

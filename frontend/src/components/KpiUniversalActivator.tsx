@@ -12,7 +12,6 @@ interface Props {
   tipoServico: string;
   servicoId: string;
   servicoNome: string;
-  token: string;
   onClose: () => void;
   onConfirm: (kpisAtivados: any[]) => void;
   /** IDs dos KPIs universais já ativos neste serviço (para pré-selecionar) */
@@ -25,7 +24,6 @@ export default function KpiUniversalActivator({
   tipoServico,
   servicoId,
   servicoNome,
-  token,
   onClose,
   onConfirm,
   kpisJaAtivos,

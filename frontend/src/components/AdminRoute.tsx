@@ -1,5 +1,6 @@
 import { Navigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
+import { ehGestor, homePath } from '../utils/homePath'
 import type { ReactNode } from 'react'
 
 interface AdminRouteProps {
@@ -24,6 +25,10 @@ export default function AdminRoute({ children }: AdminRouteProps) {
   }
 
   if (!isAdmin) {
+    return <Navigate to={homePath(user)} replace />
+  }
+
+  if (ehGestor(user) && !user.contractId) {
     return <Navigate to="/visao-geral" replace />
   }
 

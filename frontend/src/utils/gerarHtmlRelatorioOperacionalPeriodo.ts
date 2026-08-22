@@ -32,6 +32,14 @@ import {
   type MapaLimiteCaminhao,
   type NotaIdealViagem,
 } from './limitesCaminhaoContrato';
+import type {
+  DirecaoTendenciaRota,
+  FichaRotasCicloResponse,
+} from '../services/servicoService';
+import type { ProjecaoCiclo } from '@sistemma/shared';
+
+/** Dispersão do KM diário acima disto = rota não está se repetindo (%). */
+const CV_KM_INSTAVEL = 30;
 
 function esc(s: string): string {
   return s
@@ -814,6 +822,141 @@ function periodoLongo(tipo: PeriodoOperacional['tipo']): boolean {
   return tipo === 'quinzenal' || tipo === 'ciclo';
 }
 
+const COR_TENDENCIA_ROTA: Record<DirecaoTendenciaRota, string> = {
+  melhorando: '#15803d',
+  estavel: '#64748b',
+  piorando: '#b91c1c',
+};
+
+/**
+ * Fechamento projetado do ciclo e ritmo diário necessário para bater o
+ * ciclo anterior — no ciclo em andamento, o ritmo importa mais que o total.
+ */
+function projecaoFechamentoHtml(projecao: ProjecaoCiclo | null | undefined): string {
+  if (!projecao) return '';
+  const metricas = projecao.metricas.filter((m) => m.realizado > 0);
+  if (!metricas.length) return '';
+
+  const rows = metricas.map((m) => {
+    const cor = m.noRumo == null ? '#64748b' : m.noRumo ? '#0f766e' : '#b91c1c';
+    const necessario = m.ritmoNecessario != null
+      ? `${m.sentido === 'conter' ? 'até ' : ''}${fmtNum(m.ritmoNecessario, m.casas + 1)}`
+      : '—';
+    return `
+      <tr>
+        <td>${esc(m.label)}</td>
+        <td class="r">${fmtNum(m.realizado, m.casas)}</td>
+        <td class="r">${fmtNum(m.ritmoAtual, m.casas + 1)}</td>
+        <td class="r" style="color:${cor};font-weight:700">
+          ${fmtNum(m.projecao, m.casas)}${m.pctProjecao != null ? ` (${fmtNum(m.pctProjecao, 0)}%)` : ''}
+        </td>
+        <td class="r">${m.alvo != null ? fmtNum(m.alvo, m.casas) : '—'}</td>
+        <td class="r" style="color:${m.noRumo === false ? '#b91c1c' : '#0f766e'};font-weight:700">
+          ${necessario}
+        </td>
+      </tr>`;
+  }).join('');
+
+  return `
+    <div class="secao">
+      <div class="sec">Como o ciclo deve fechar</div>
+      <div class="bloco">
+        <div class="banner" style="background:#eef2ff;border-color:#c7d2fe;color:#3730a3">
+          ${esc(projecao.leitura)}
+        </div>
+        <div class="nota" style="margin-bottom:4px">
+          Projeção = realizado + ritmo dos ${projecao.diasDecorridos} dias decorridos aplicado
+          aos ${projecao.diasRestantes} que faltam. Alvo = ciclo anterior fechado.
+          Em KM o ritmo necessário é teto diário, não meta.
+        </div>
+        <table class="data">
+          <thead><tr>
+            <th>Indicador</th><th class="r">Realizado</th><th class="r">Ritmo/dia</th>
+            <th class="r">Projeção</th><th class="r">Ciclo anterior</th>
+            <th class="r">Ritmo necessário</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+/**
+ * Consistência das rotas no período: mediana do dia, variação do KM diário e
+ * tendência da carga por viagem. Revela rota instável e rota em degradação,
+ * que o estudo de um dia isolado não mostra.
+ */
+function consistenciaRotasHtml(ficha: FichaRotasCicloResponse | null | undefined): string {
+  const rotas = ficha?.rotas || [];
+  if (!rotas.length) return '';
+
+  const comAlerta = rotas.filter((r) => r.alertas.length > 0);
+  const lista = (comAlerta.length ? comAlerta : rotas).slice(0, 14);
+  const resumo = ficha?.resumo;
+
+  const rows = lista.map((r) => {
+    const tend = r.tendencia;
+    const corTend = tend ? COR_TENDENCIA_ROTA[tend.direcao] : '#94a3b8';
+    const textoTend = tend
+      ? (tend.direcao === 'estavel'
+        ? 'estável'
+        : `${tend.variacaoPct > 0 ? '+' : ''}${fmtNum(tend.variacaoPct, 0)}%`)
+      : '—';
+    return `
+      <tr>
+        <td>${esc(r.rota)}${r.tipoPredominante ? ` <span style="color:#64748b">(${esc(r.tipoPredominante)})</span>` : ''}</td>
+        <td class="c">${fmtNum(r.diasComOperacao, 0)}</td>
+        <td class="r">${r.medianaViagensDia != null ? fmtNum(r.medianaViagensDia, 1) : '—'}</td>
+        <td class="r">${r.medianaTonPorViagem != null ? fmtNum(r.medianaTonPorViagem, 2) : '—'}</td>
+        <td class="r">${r.medianaKmDia != null ? fmtNum(r.medianaKmDia, 0) : '—'}</td>
+        <td class="r" style="${r.instavelKm ? 'color:#b45309;font-weight:700' : ''}">
+          ${r.cvKmDia != null ? `${fmtNum(r.cvKmDia, 0)}%` : '—'}
+        </td>
+        <td class="r" style="color:${corTend};font-weight:700">${textoTend}</td>
+        <td style="font-size:5.5px;color:#9a3412">${esc(r.alertas[0] || '')}</td>
+      </tr>`;
+  }).join('');
+
+  const chips = resumo ? `
+    <table class="tbl-layout" style="margin-bottom:5px">
+      <tr>
+        <td>
+          <span class="badge">${fmtNum(resumo.rotas, 0)} rota(s) no período</span>
+          <span class="badge">${fmtNum(resumo.rotasInstaveis, 0)} instável(is)</span>
+          <span class="badge">${fmtNum(resumo.rotasPiorando, 0)} piorando</span>
+          <span class="badge">${fmtNum(resumo.rotasMelhorando, 0)} melhorando</span>
+        </td>
+      </tr>
+    </table>` : '';
+
+  return `
+    <div class="secao">
+      <div class="sec">Consistência das rotas no período</div>
+      <div class="bloco">
+        ${chips}
+        <div class="nota" style="margin-bottom:4px">
+          Mediana = comportamento normal da rota, sem distorção de um dia atípico.
+          Variação KM = dispersão do KM diário; acima de ${CV_KM_INSTAVEL}% a rota não está
+          se repetindo. Tendência compara a carga por viagem da primeira metade do período
+          com a da segunda.${comAlerta.length ? ' Exibindo as rotas com alerta.' : ''}
+        </div>
+        <table class="data">
+          <colgroup>
+            <col style="width:17%"/><col style="width:6%"/><col style="width:9%"/>
+            <col style="width:9%"/><col style="width:8%"/><col style="width:9%"/>
+            <col style="width:9%"/><col style="width:33%"/>
+          </colgroup>
+          <thead><tr>
+            <th>Rota</th><th class="c">Dias</th><th class="r">Viag./dia</th>
+            <th class="r">t/viagem</th><th class="r">KM/dia</th><th class="r">Var. KM</th>
+            <th class="r">Tend.</th><th>Alerta</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
 function tabelaDiariaHtml(dias: DadoDiario[], diasComDados: number, tipo: PeriodoOperacional['tipo']): string {
   const ativos = dias.filter((d) => d.viagens > 0);
   if (!ativos.length) return '';
@@ -1001,6 +1144,8 @@ export function gerarHtmlRelatorioOperacionalPeriodo(opts: {
   densidadeResiduoKgL?: number | null;
   densidadeKgL?: MapaLimiteCaminhao | null;
   densidadeKgLPorPlaca?: Record<string, number> | null;
+  fichaRotas?: FichaRotasCicloResponse | null;
+  projecao?: ProjecaoCiclo | null;
   geradoEm?: Date;
 }): string {
   const {
@@ -1114,7 +1259,9 @@ export function gerarHtmlRelatorioOperacionalPeriodo(opts: {
   ${rankingMelhoresHtml(operacao, capacidade, periodo.tipo)}
   ${detalheViagensCicloHtml(capacidade, periodo.tipo)}
   ${insightsHtml(insights)}
+  ${projecaoFechamentoHtml(opts.projecao)}
   ${tabelaDiariaHtml(dias, diasComDados, periodo.tipo)}
+  ${consistenciaRotasHtml(opts.fichaRotas)}
   ${graficosDimHtml(operacao, periodo.tipo)}
   ${tabelaPlacasHtml(operacao, periodo.tipo, placasReserva, limOpts)}
 

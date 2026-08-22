@@ -21,11 +21,29 @@ function problemaEhTratamentoHodometro(pl: string): boolean {
     || pl.includes('km chegada');
 }
 
+function fmtTon(n: number): string {
+  return n.toLocaleString('pt-BR', { maximumFractionDigits: 2, minimumFractionDigits: 1 });
+}
+
 function fmtPesoTon(kg: unknown): string {
   if (kg == null || kg === '') return '—';
   const n = Number(kg);
   if (Number.isNaN(n)) return '—';
-  return (n / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 2, minimumFractionDigits: 1 });
+  return fmtTon(n / 1000);
+}
+
+/**
+ * A linha da planilha pode somar várias pesagens (PESO 1–5). Mostrar só o total
+ * faz uma linha de 2 viagens parecer uma pesagem impossível, então detalhamos.
+ */
+function celulaPesoLinha(v: ResultadoAnaliseViagens['viagens'][number]): string {
+  if (v.pesoTotal == null) return '—';
+  const total = fmtPesoTon(v.pesoTotal);
+  const pesagens = v.pesagensKg || [];
+  if (pesagens.length <= 1) return total;
+  const detalhe = pesagens.map((p) => fmtTon(p / 1000)).join(' + ');
+  return `${total}<br/><span style="font-size:8px;color:#64748b">`
+    + `${pesagens.length} pesagens: ${esc(detalhe)}</span>`;
 }
 
 export function gerarHtmlSaudeDadosServer(opts: {
@@ -39,6 +57,7 @@ export function gerarHtmlSaudeDadosServer(opts: {
   const inconsistentes = relatorio.viagensInconsistentesTotal ?? relatorio.viagensIncompletas ?? 0;
   const validas = relatorio.viagensValidasDashboard ?? relatorio.viagensCompletas ?? 0;
   const descartadas = relatorio.linhasDescartadasSemDados ?? 0;
+  const emBranco = relatorio.linhasEmBrancoIgnoradas ?? 0;
   const corrigidasHodometro = relatorio.viagensCorrigidasHodometro ?? 0;
   const pesagensAltas = relatorio.pesagensAltas ?? 0;
   const linhasPesagemAlta = relatorio.linhasComPesagemAlta ?? 0;
@@ -101,7 +120,7 @@ export function gerarHtmlSaudeDadosServer(opts: {
         <td>${esc(v.motorista || '—')}</td>
         <td style="text-align:center;font-weight:700;color:${v.foraDashboard || v.descartada ? '#dc2626' : '#16a34a'}">${esc(v.contadorViagens ?? '—')}</td>
         <td>${kmCell}</td>
-        <td style="${v.alertaPesagemAlta ? 'font-weight:700;color:#9a3412' : ''}">${fmtPesoTon(v.pesoTotal)}${v.alertaPesagemAlta && v.pesoAlertaKg != null
+        <td style="${v.alertaPesagemAlta ? 'font-weight:700;color:#9a3412' : ''}">${celulaPesoLinha(v)}${v.alertaPesagemAlta && v.pesoAlertaKg != null
           ? ` <span style="font-size:8px">(máx viagem ${Number(v.pesoAlertaKg).toLocaleString('pt-BR', { maximumFractionDigits: 0 })} kg)</span>`
           : ''}</td>
         <td style="color:${corProb};font-size:9px">${statusHtml}</td>
@@ -174,6 +193,9 @@ export function gerarHtmlSaudeDadosServer(opts: {
     ${descartadas > 0
       ? `<div class="card"><div class="num">${esc(descartadas)}</div><div class="label">Linhas ignoradas</div></div>`
       : ''}
+    ${emBranco > 0
+      ? `<div class="card"><div class="num">${esc(emBranco)}</div><div class="label">Linhas em branco</div></div>`
+      : ''}
     <div class="card"><div class="num">${esc(relatorio.percentualCompleto || 0)}%</div><div class="label">% Linhas válidas</div></div>
   </div>
 
@@ -194,6 +216,7 @@ export function gerarHtmlSaudeDadosServer(opts: {
       ? `${esc(pesagensAltas)} pesagem(ns) &gt; 15.000 kg/viagem — alerta informativo. `
       : ''}
     ${descartadas > 0 ? `${esc(descartadas)} linha(s) sem placa, KM Total e Peso Total foram ignoradas. ` : ''}
+    ${emBranco > 0 ? `${esc(emBranco)} linha(s) em branco da planilha foram ignoradas (não contam como problema). ` : ''}
     Regras: KM máx. 300, peso &gt; 0, sem negativos, horas com ":". Hodômetro quebrado e pesagem alta não travam a subida.
   </div>
 
@@ -216,12 +239,16 @@ export function gerarHtmlSaudeDadosServer(opts: {
     <thead>
       <tr>
         <th>Linha</th><th>Data</th><th>Placa</th><th>Motorista</th><th>Contador</th>
-        <th>KM Total</th><th>Peso (t)</th><th>Status / Problemas</th>
+        <th>KM Total</th><th>Peso da linha (t)</th><th>Status / Problemas</th>
       </tr>
     </thead>
     <tbody>${linhasTabela}</tbody>
   </table>
-  <div class="obs">* Contador = coluna CONTADOR DE VIAGENS. Peso em toneladas (kg ÷ 1000). Linhas FORA DO DASH não entram na coluna Toneladas do ciclo.</div>
+  <div class="obs">
+    * Contador = coluna CONTADOR DE VIAGENS. O peso é o total da linha em toneladas (kg ÷ 1000) —
+    quando a linha tem mais de uma viagem, cada pesagem (PESO 1–5) aparece detalhada abaixo do total.
+    Linhas FORA DO DASH não entram na coluna Toneladas do ciclo.
+  </div>
   ` : ''}
 
   <div class="footer">

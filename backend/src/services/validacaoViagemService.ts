@@ -1162,12 +1162,12 @@ export interface ResumoInconsistenciasViagem {
 }
 
 export class ValidacaoViagemService {
-  private coletaRepo: Repository<ColetaData>;
-  private uploadRepo: Repository<PlanilhaUpload>;
+  private get coletaRepo(): Repository<ColetaData> {
+    return AppDataSource.getRepository(ColetaData);
+  }
 
-  constructor() {
-    this.coletaRepo = AppDataSource.getRepository(ColetaData);
-    this.uploadRepo = AppDataSource.getRepository(PlanilhaUpload);
+  private get uploadRepo(): Repository<PlanilhaUpload> {
+    return AppDataSource.getRepository(PlanilhaUpload);
   }
 
   private async getUploadIdsPorServico(servicoId: string): Promise<number[]> {

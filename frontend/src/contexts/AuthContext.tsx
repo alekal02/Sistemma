@@ -22,11 +22,18 @@ interface AuthContextType {
   /** Se está carregando o auto-login */
   loading: boolean
   /** Fazer login com email + senha */
-  login: (email: string, senha: string) => Promise<void>
+  login: (email: string, senha: string) => Promise<UserData>
+  /** Local: entra como gestor ou numa unidade, sem senha */
+  entrarLocal: (modo: 'gestor' | 'contrato', contractId?: string) => Promise<UserData>
+  /** Super-admin entra no banco de um contrato */
+  entrarContrato: (contractId: string) => Promise<void>
+  /** Super-admin volta ao hub */
+  sairContrato: () => Promise<void>
   /** Encerrar sessão */
   logout: () => void
-  /** Se o usuário logado é admin */
+  /** Se o usuário logado é admin ou super-admin */
   isAdmin: boolean
+  isSuperadmin: boolean
 }
 
 // ---------- Criação do contexto ----------
@@ -125,6 +132,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     setToken(newToken)
     setUser(userData)
+    return userData
+  }
+
+  const entrarLocal = async (modo: 'gestor' | 'contrato', contractId?: string) => {
+    const response = await api.post<AuthResponse>('/auth/acesso-local', { modo, contractId })
+    const { token: newToken, refreshToken, user: userData } = response.data
+    gravarSessao(newToken, userData, refreshToken)
+    setToken(newToken)
+    setUser(userData)
+    return userData
+  }
+
+  const entrarContrato = async (contractId: string) => {
+    const response = await api.post<AuthResponse>('/auth/entrar-contrato', { contractId })
+    const { token: newToken, refreshToken, user: userData } = response.data
+    gravarSessao(newToken, userData, refreshToken)
+    setToken(newToken)
+    setUser(userData)
+  }
+
+  const sairContrato = async () => {
+    const response = await api.post<AuthResponse>('/auth/sair-contrato')
+    const { token: newToken, refreshToken, user: userData } = response.data
+    gravarSessao(newToken, userData, refreshToken)
+    setToken(newToken)
+    setUser(userData)
   }
 
   /* ── Logout ── */
@@ -132,11 +165,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     limparSessao()
   }
 
-  /* ── Helper: isAdmin ── */
-  const isAdmin = user?.role === 'admin'
+  const isSuperadmin = user?.role === 'superadmin'
+  const isAdmin = user?.role === 'admin' || isSuperadmin
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, logout, isAdmin }}>
+    <AuthContext.Provider value={{
+      user, token, loading, login, entrarLocal, entrarContrato, sairContrato, logout, isAdmin, isSuperadmin,
+    }}>
       {children}
     </AuthContext.Provider>
   )

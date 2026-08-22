@@ -1,9 +1,11 @@
 import { Router } from 'express';
 import { ServicoController } from '../controllers/ServicoController';
 import { authenticate } from '../middlewares/authMiddleware';
+import { tenantGuard } from '../middlewares/tenantGuard';
 
 const router = Router({ mergeParams: true }); // mergeParams para acessar :contractId
 const controller = new ServicoController();
+router.use(authenticate, tenantGuard);
 
 // GET /api/contracts/:contractId/servicos
 router.get('/', authenticate, (req, res) => controller.listar(req, res));
@@ -43,6 +45,9 @@ router.get('/:id/coleta/agregacao', authenticate, (req, res) => controller.getCo
 
 // GET /api/contracts/:contractId/servicos/:id/mapeamento-operacional
 router.get('/:id/mapeamento-operacional', authenticate, (req, res) => controller.getMapeamentoOperacional(req, res));
+
+// GET /api/contracts/:contractId/servicos/:id/rotas-ciclo
+router.get('/:id/rotas-ciclo', authenticate, (req, res) => controller.getRotasCiclo(req, res));
 
 // GET /api/contracts/:contractId/servicos/:id/inconsistencias-viagens
 router.get('/:id/inconsistencias-viagens', authenticate, (req, res) => controller.getInconsistenciasViagens(req, res));

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
   FiAlertTriangle, FiCheckCircle, FiXCircle, FiAlertCircle,
-  FiChevronDown, FiChevronUp, FiInfo, FiBarChart2, FiFileText
+  FiChevronDown, FiChevronUp, FiInfo
 } from 'react-icons/fi';
 
 /* ─── TIPOS ─── */

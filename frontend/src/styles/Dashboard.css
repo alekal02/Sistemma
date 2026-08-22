@@ -965,6 +965,27 @@
   margin-bottom: 0.85rem;
 }
 
+.vg-grupo-header-btn {
+  width: 100%;
+  border: none;
+  background: transparent;
+  padding: 0.35rem 0.15rem;
+  cursor: pointer;
+  border-radius: 8px;
+}
+
+.vg-grupo-header-btn:hover {
+  background: rgba(26, 115, 232, 0.06);
+}
+
+.vg-grupo-abrir {
+  margin-left: auto;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #1a73e8;
+  letter-spacing: 0.02em;
+}
+
 .vg-grupo-indicator {
   width: 4px;
   height: 22px;
@@ -1751,6 +1772,25 @@
   font-size: 0.72rem;
   line-height: 1.4;
   color: #64748b;
+}
+
+.vg-peso-aviso-tipo {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+  margin: 0 0 0.75rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid #fed7aa;
+  border-radius: 8px;
+  background: #fff7ed;
+  color: #9a3412;
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
+.vg-peso-aviso-tipo ul {
+  margin: 0.2rem 0 0;
+  padding-left: 1rem;
 }
 
 

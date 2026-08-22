@@ -2,10 +2,10 @@ import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   FiPlus, FiEdit2, FiSave, FiAlertCircle, FiArrowRight, FiTrash2,
-  FiCheckCircle, FiAlertTriangle, FiBarChart2, FiDatabase, FiClock, FiRefreshCw,
-  FiDownload,
+  FiAlertTriangle, FiClock, FiRefreshCw, FiDownload,
 } from 'react-icons/fi';
 import { useAuth } from '../contexts/AuthContext';
+import { ehGestor } from '../utils/homePath';
 import { useToast } from '../contexts/ToastContext';
 import contractService, { type ContratoSaude } from '../services/contractService';
 import coletaService from '../services/coletaService';
@@ -31,7 +31,8 @@ function hojeIsoSp(): string {
 
 export default function Contratos() {
   const navigate = useNavigate();
-  const { user, isAdmin } = useAuth();
+  const { user, isAdmin, entrarContrato } = useAuth();
+  const gestorHub = ehGestor(user) && !user?.contractId;
   const { adicionarToast } = useToast();
 
   const [contratos, setContratos] = useState<ContratoSaude[]>([]);
@@ -60,8 +61,26 @@ export default function Contratos() {
   }, [adicionarToast]);
 
   useEffect(() => {
+    if (user?.contractId) {
+      navigate(`/contratos/${user.contractId}`, { replace: true });
+    }
+  }, [user, navigate]);
+
+  useEffect(() => {
     carregarContratos();
   }, [carregarContratos]);
+
+  async function abrirContrato(id: string) {
+    try {
+      if (ehGestor(user) && user?.contractId !== id) {
+        await entrarContrato(id);
+      }
+      navigate('/contratos/' + id);
+    } catch (error: unknown) {
+      const msg = (error as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      adicionarToast(msg || 'Erro ao abrir contrato', 'error');
+    }
+  }
 
   // Ao voltar da tela do contrato (após upload), atualiza a contagem
   useEffect(() => {
@@ -220,14 +239,16 @@ export default function Contratos() {
   return (
     <div className="contratos-container">
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.15rem' }}>
-        <h2 style={{ margin: 0 }}>Meus Contratos</h2>
+        <h2 style={{ margin: 0 }}>{gestorHub ? 'Contratos' : 'Meus Contratos'}</h2>
         <button className="btn btn-sm btn-ghost" onClick={carregarContratos} title="Recarregar">
           <FiRefreshCw size={13} />
         </button>
       </div>
-      <p className="subtitle">Gerencie seus contratos e serviços</p>
+      <p className="subtitle">
+        {gestorHub ? 'Cadastro e acesso às unidades. Os números operacionais ficam no Gestor.' : 'Gerencie seus contratos e serviços'}
+      </p>
 
-      {/* ═══ KPIs do topo ═══ */}
+      {!gestorHub && (
       <div style={{
         display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))',
         gap: '0.75rem', marginBottom: '1.25rem',
@@ -269,9 +290,9 @@ export default function Contratos() {
           <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#0f172a' }}>{totalKpis}</div>
         </div>
       </div>
+      )}
 
-      {/* ═══ Alerta de contratos com problemas ═══ */}
-      {contratosComProblemas > 0 && (
+      {!gestorHub && contratosComProblemas > 0 && (
         <div style={{
           display: 'flex', alignItems: 'center', gap: '0.5rem',
           padding: '0.55rem 0.85rem', borderRadius: '8px',
@@ -333,14 +354,14 @@ export default function Contratos() {
         <table className="tabela-contratos">
           <thead>
             <tr>
-              <th style={{ width: '24px' }}></th>
+              {!gestorHub && <th style={{ width: '24px' }}></th>}
               <th>Contrato</th>
               <th>Status</th>
-              <th>Tipos</th>
-              <th>Serviços</th>
-              <th>Registros</th>
-              <th>KPIs</th>
-              <th>Último Upload</th>
+              {!gestorHub && <th>Tipos</th>}
+              {!gestorHub && <th>Serviços</th>}
+              {!gestorHub && <th>Registros</th>}
+              {!gestorHub && <th>KPIs</th>}
+              {!gestorHub && <th>Último Upload</th>}
               <th>Ações</th>
             </tr>
           </thead>
@@ -353,10 +374,10 @@ export default function Contratos() {
                 <tr
                   key={contrato.id}
                   className="contrato-row-clickable"
-                  onClick={() => navigate('/contratos/' + contrato.id)}
+                  onClick={() => { void abrirContrato(contrato.id); }}
                   style={{ opacity: contrato.status === 'encerrado' ? 0.6 : 1 }}
                 >
-                  {/* ═══ Indicador de saúde ═══ */}
+                  {!gestorHub && (
                   <td style={{ textAlign: 'center', padding: '0.5rem' }}>
                     <div style={{
                       width: '10px', height: '10px', borderRadius: '50%',
@@ -364,6 +385,7 @@ export default function Contratos() {
                       boxShadow: `0 0 6px ${sd.cor}44`,
                     }} title={sd.label} />
                   </td>
+                  )}
 
                   <td>
                     <strong>{contrato.numeroContrato}</strong>
@@ -380,7 +402,8 @@ export default function Contratos() {
                     </span>
                   </td>
 
-                  {/* ═══ Badges de tipo ═══ */}
+                  {!gestorHub && (
+                    <>
                   <td>
                     <div style={{ display: 'flex', gap: '0.2rem', flexWrap: 'wrap' }}>
                       {contrato.tiposServico.slice(0, 3).map(t => (
@@ -400,8 +423,6 @@ export default function Contratos() {
                       )}
                     </div>
                   </td>
-
-                  {/* ═══ Serviços ═══ */}
                   <td>
                     <span style={{ fontWeight: 600, color: '#1e293b' }}>
                       {contrato.totalServicos}
@@ -416,22 +437,16 @@ export default function Contratos() {
                       </span>
                     )}
                   </td>
-
-                  {/* ═══ Registros ═══ */}
                   <td>
                     <span style={{ fontWeight: 600, color: '#1e293b' }}>
                       {contrato.totalRegistros.toLocaleString('pt-BR')}
                     </span>
                   </td>
-
-                  {/* ═══ KPIs ═══ */}
                   <td>
                     <span style={{ fontWeight: 600, color: contrato.totalKpisAtivos > 0 ? '#8b5cf6' : '#94a3b8' }}>
                       {contrato.totalKpisAtivos > 0 ? contrato.totalKpisAtivos : '-'}
                     </span>
                   </td>
-
-                  {/* ═══ Último Upload ═══ */}
                   <td>
                     <span style={{
                       fontSize: '0.75rem',
@@ -442,6 +457,8 @@ export default function Contratos() {
                       {formatarUltimoUpload(contrato.ultimoUpload)}
                     </span>
                   </td>
+                    </>
+                  )}
 
                   {/* ═══ Ações ═══ */}
                   <td>
@@ -463,7 +480,7 @@ export default function Contratos() {
                     )}
                     <button
                       className="acao-btn acao-btn-dashboard"
-                      onClick={(e) => { e.stopPropagation(); navigate('/contratos/' + contrato.id); }}
+                      onClick={(e) => { e.stopPropagation(); void abrirContrato(contrato.id); }}
                       title="Ver detalhes do contrato"
                     >
                       <FiArrowRight size={13} />

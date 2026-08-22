@@ -60,6 +60,7 @@ interface CompararPorTipoTvProps {
   servicosCatalogo?: ServicoCatalogo[];
   selecaoInicial?: string[];
   onSelecaoConsumida?: () => void;
+  onAbrirContrato?: (contratoId: string) => void;
 }
 
 function labelTipo(tipo: string): string {
@@ -125,6 +126,7 @@ export default function CompararPorTipoTv({
   servicosCatalogo = [],
   selecaoInicial,
   onSelecaoConsumida,
+  onAbrirContrato,
 }: CompararPorTipoTvProps) {
   const [modoAnalitico, setModoAnalitico] = useState(false);
   const [tipoServico, setTipoServico] = useState('');
@@ -588,7 +590,20 @@ export default function CompararPorTipoTv({
               const a = s.analisePeso;
               const f = resumoFaixas(a);
               return (
-                <div key={s.id} className="vg-tv-peso-card">
+                <div
+                  key={s.id}
+                  className={'vg-tv-peso-card' + (onAbrirContrato && s.contratoId ? ' clicavel' : '')}
+                  role={onAbrirContrato && s.contratoId ? 'button' : undefined}
+                  tabIndex={onAbrirContrato && s.contratoId ? 0 : undefined}
+                  onClick={() => { if (s.contratoId) onAbrirContrato?.(s.contratoId); }}
+                  onKeyDown={(e) => {
+                    if ((e.key === 'Enter' || e.key === ' ') && s.contratoId) {
+                      e.preventDefault();
+                      onAbrirContrato?.(s.contratoId);
+                    }
+                  }}
+                  title={onAbrirContrato ? 'Abrir somente esta unidade' : undefined}
+                >
                   <div className="vg-tv-peso-card-head">
                     <span className="vg-tv-peso-card-contrato">{s.contratoNome || '—'}</span>
                     <span className="vg-tv-peso-card-servico">{s.nome}</span>

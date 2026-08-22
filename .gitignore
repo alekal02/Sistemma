@@ -7,10 +7,16 @@ build/
 frontend/dist/
 backend/dist/
 
-# Artefatos Docker / planilhas de teste
+# Artefatos Docker / pacotes de deploy / planilhas de teste
 *.tar
+*.zip
 *.xlsx
 *.xls
+
+# Notas locais de analise (nao fazem parte do produto)
+PROJETO.md
+REVISAO_CODIGO.md
+CORRECAO_CACHE.MD
 
 # Ambiente e secrets
 .env

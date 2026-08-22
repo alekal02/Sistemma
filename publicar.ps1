@@ -18,6 +18,12 @@ Copy-Item docker-compose.yml $DeployDir
 Copy-Item env.docker.example $DeployDir
 Copy-Item env.nexus.example $DeployDir
 Copy-Item INSTRUCOES-WHATSAPP.txt $DeployDir
+New-Item -ItemType Directory -Path (Join-Path $DeployDir "scripts") -Force | Out-Null
+Copy-Item scripts\backup-destino.ps1 (Join-Path $DeployDir "scripts")
+Copy-Item scripts\cutover-destino.ps1 (Join-Path $DeployDir "scripts")
+Copy-Item scripts\ativar-acesso-livre.ps1 (Join-Path $DeployDir "scripts")
+# Atalhos .cmd: a maquina destino bloqueia .ps1 nao assinado (politica AllSigned)
+Copy-Item scripts\*.cmd (Join-Path $DeployDir "scripts")
 
 $envFile = Join-Path $DeployDir "env.docker.example"
 (Get-Content $envFile -Raw) -replace '(?m)^TAG=.*', "TAG=$Tag" | Set-Content $envFile -NoNewline

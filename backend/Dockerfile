@@ -55,9 +55,9 @@ COPY --from=builder /workspace/backend/node_modules ./node_modules
 COPY --from=builder /workspace/backend/package.json ./
 COPY --from=builder /workspace/packages/shared /packages/shared
 
-# Copia entrypoint
+# Copia entrypoint — remove CR de checkout Windows, senão o shebang não resolve
 COPY backend/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh && sh -n /entrypoint.sh
 
 # Expõe a porta
 EXPOSE 3200

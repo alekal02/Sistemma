@@ -39,6 +39,53 @@ docker login nexus.neurai-platform.com -u admin -p "senha"
 docker compose up -d
 ```
 
+### Entrar sem senha (botões Gestor e Contratos)
+
+A tela inicial só abre direto nas áreas quando o acesso livre está ligado. Em
+`development` já vem ligado; em produção exige `ACESSO_LIVRE=true` no `.env`.
+Sem isso o clique em **Contratos** cai no formulário de email e senha.
+
+```powershell
+cd C:\Sistemma
+.\scripts\ativar-acesso-livre.cmd            # -Desligar volta a exigir senha
+```
+
+O script recusa rodar se o `docker-compose.yml` da máquina for antigo, porque é
+ele que repassa a variável ao container.
+
+Conferir: `docker exec sistemma-backend printenv ACESSO_LIVRE` e
+`Invoke-RestMethod http://localhost:3200/api/auth/acesso-local` (`habilitado: true`).
+
+### Isolamento por contrato (sem perder dados)
+
+Na destino os dados ficam no volume `postgres_data`, não na imagem. **Nunca** rode `docker compose down -v`.
+
+A ordem importa: a migração roda **com a imagem nova**, ainda em banco único, e o
+multi-banco só liga depois que ela termina.
+
+```powershell
+cd C:\Sistemma
+.\scripts\backup-destino.cmd
+.\scripts\cutover-destino.cmd -TagNova 3.1.0 -TagAnterior 3.0.0 -AcessoLivre
+```
+
+O `cutover` sobe a imagem nova em banco único, espera o `/health`, copia
+`abastecimento` → `sistemma_control` + `contrato_*` (origem intacta), e só então
+grava `MULTI_TENANT=true` e recria o backend. Para fazer à mão, a migração é
+`docker exec sistemma-backend node dist/scripts/migrar-bancos-por-contrato.js`
+(em dev: `cd backend && npm run migrar:contratos`).
+
+Rollback: `MULTI_TENANT=false`, comente `CONTROL_DATABASE_NAME`, TAG anterior se
+quiser voltar a imagem. O banco `abastecimento` continua lá.
+
+No modo multi-banco a área do Gestor consulta os contratos em paralelo e junta os
+números; o dashboard executivo pede que se escolha um contrato, em vez de somar
+bancos diferentes.
+
+Os `.cmd` são atalhos para os `.ps1`: a destino costuma bloquear script não
+assinado. Equivalente manual:
+`powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\<nome>.ps1`
+
 ### Toda atualização
 
 ```powershell
@@ -66,6 +113,9 @@ Build local na dev usa override: `docker compose -f docker-compose.yml -f docker
 | `publicar.ps1` | Dev: build + push + pacote deploy |
 | `subir.ps1` / `subir.sh` | Destino: pull + up |
 | `corrigir-kpis.ps1` | Destino: corrige KPIs universais no banco |
+| `scripts/backup-destino.*` | Destino: dump do banco antes de migrar |
+| `scripts/cutover-destino.*` | Destino: imagem nova → migração → multi-banco |
+| `scripts/ativar-acesso-livre.*` | Destino: liga/desliga entrada sem senha |
 
 **Nunca copie** `.env.docker` nem `.env.nexus` entre máquinas com senhas reais — configure uma vez em cada lugar.
 

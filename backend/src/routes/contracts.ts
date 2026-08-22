@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { ContractController } from '../controllers/ContractController';
 import { authenticate, authorize } from '../middlewares/authMiddleware';
+import { tenantGuard } from '../middlewares/tenantGuard';
 
 const router = Router();
 const controller = new ContractController();
@@ -9,16 +10,16 @@ const adminOnly = authorize('admin');
 // ⚠️ Rotas fixas DEVEM vir antes de rotas com parâmetro :id
 
 // Listar todos os contratos
-router.get('/', authenticate, (req, res) => controller.listar(req, res));
+router.get('/', authenticate, tenantGuard, (req, res) => controller.listar(req, res));
 
 // ⭐ Saúde consolidada (NÃO mover para depois de /:id)
-router.get('/saude', authenticate, (req, res) => controller.saudeLista(req, res));
+router.get('/saude', authenticate, tenantGuard, (req, res) => controller.saudeLista(req, res));
 
 // Criar novo contrato
 router.post('/', authenticate, (req, res) => controller.criar(req, res));
 
 // Buscar um contrato específico
-router.get('/:id', authenticate, (req, res) => controller.buscarUm(req, res));
+router.get('/:id', authenticate, tenantGuard, (req, res) => controller.buscarUm(req, res));
 
 // Atualizar contrato
 router.put('/:id', authenticate, (req, res) => controller.atualizar(req, res));

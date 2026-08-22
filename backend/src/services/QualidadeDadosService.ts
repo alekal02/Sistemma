@@ -54,12 +54,12 @@ interface RelatorioQualidade {
 }
 
 export class QualidadeDadosService {
-  private coletaRepo: Repository<ColetaData>;
-  private uploadRepo: Repository<PlanilhaUpload>;
+  private get coletaRepo(): Repository<ColetaData> {
+    return AppDataSource.getRepository(ColetaData);
+  }
 
-  constructor() {
-    this.coletaRepo = AppDataSource.getRepository(ColetaData);
-    this.uploadRepo = AppDataSource.getRepository(PlanilhaUpload);
+  private get uploadRepo(): Repository<PlanilhaUpload> {
+    return AppDataSource.getRepository(PlanilhaUpload);
   }
 
   /**

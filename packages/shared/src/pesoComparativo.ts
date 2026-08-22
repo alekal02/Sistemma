@@ -22,6 +22,37 @@ export interface AnalisePesoComparativo {
   densidadeOtima: number;
   mediaIdealKg: number;
   perdaTon: number;
+  /** Origem do tipo de caminhão — ausente em análises antigas em cache. */
+  frotaTipoDeduzido?: {
+    placas: number;
+    porTipo: { MINI: number; TOCO: number; BASCULANTE: number; TRUCK: number };
+    placasLista: string[];
+    placasDeclaradas: number;
+    placasSemTipo: number;
+  } | null;
+  viagensTipoDeduzido?: number;
+}
+
+/**
+ * Aviso para o relatório quando a contagem por tipo não saiu inteira da planilha.
+ * Retorna null quando todo tipo veio da coluna TIPO DE CAMINHÃO.
+ */
+export function avisoTipoCaminhaoDeduzido(
+  a: Pick<AnalisePesoComparativo, 'frotaTipoDeduzido'>,
+): string | null {
+  const d = a.frotaTipoDeduzido;
+  if (!d || d.placas <= 0) return null;
+
+  const porTipo = (['MINI', 'TOCO', 'BASCULANTE', 'TRUCK'] as const)
+    .filter((t) => d.porTipo[t] > 0)
+    .map((t) => `${d.porTipo[t]} ${t}`)
+    .join(', ');
+  const placas = d.placasLista.slice(0, 6).join(', ');
+  const resto = d.placasLista.length > 6 ? ` e outras ${d.placasLista.length - 6}` : '';
+
+  return `${d.placas} placa(s) sem TIPO DE CAMINHÃO na planilha tiveram o tipo deduzido pelo peso`
+    + `${porTipo ? ` (${porTipo})` : ''}: ${placas}${resto}. `
+    + 'Preencha a coluna na planilha para a contagem por tipo sair 100% da origem.';
 }
 
 const FAIXA_CORES = ['vermelho', 'amarelo', 'verde', 'laranja'] as const;
@@ -169,6 +200,18 @@ function tituloFaixa(idx: number) {
   };
 }
 
+/** Diz de onde veio a contagem daquele tipo: coluna da planilha ou dedução por peso. */
+function tituloOrigemTipo(tipo: 'MINI' | 'TOCO' | 'BASCULANTE' | 'TRUCK') {
+  return (a: AnalisePesoComparativo): string | undefined => {
+    const total = a.tiposCaminhao[tipo];
+    if (!total) return undefined;
+    const deduzidas = a.frotaTipoDeduzido?.porTipo?.[tipo] || 0;
+    if (deduzidas <= 0) return `${total} placa(s) — tipo lido da coluna TIPO DE CAMINHÃO.`;
+    return `${total} placa(s), das quais ${deduzidas} com tipo deduzido pelo peso `
+      + '(a planilha não declarou o tipo dessas placas).';
+  };
+}
+
 export const METRICAS_PESO: LinhaMetricaPeso[] = [
   { secao: 'operacao', label: 'NÚMERO DE VIAGENS', tipo: 'int', getValor: (a) => a.numeroViagens },
   { secao: 'operacao', label: 'PESO MÉDIO', tipo: 'num', getValor: (a) => a.pesoMedioKg },
@@ -190,9 +233,10 @@ export const METRICAS_PESO: LinhaMetricaPeso[] = [
   { secao: 'faixa', label: 'RUIM (50–90% do ideal)', tipo: 'faixa', faixaIdx: 1, getTitulo: tituloFaixa(1) },
   { secao: 'faixa', label: 'ÓTIMO (90–110% do ideal)', tipo: 'faixa', faixaIdx: 2, getTitulo: tituloFaixa(2) },
   { secao: 'faixa', label: 'EXCEDIDO (> 110% do ideal)', tipo: 'faixa', faixaIdx: 3, getTitulo: tituloFaixa(3) },
-  { secao: 'frota', label: 'MINI', tipo: 'int', getValor: (a) => a.tiposCaminhao.MINI },
-  { secao: 'frota', label: 'TOCO', tipo: 'int', getValor: (a) => a.tiposCaminhao.TOCO },
-  { secao: 'frota', label: 'TRUCK', tipo: 'int', getValor: (a) => a.tiposCaminhao.TRUCK },
+  { secao: 'frota', label: 'MINI', tipo: 'int', getValor: (a) => a.tiposCaminhao.MINI, getTitulo: tituloOrigemTipo('MINI') },
+  { secao: 'frota', label: 'TOCO', tipo: 'int', getValor: (a) => a.tiposCaminhao.TOCO, getTitulo: tituloOrigemTipo('TOCO') },
+  { secao: 'frota', label: 'BASCULANTE', tipo: 'int', getValor: (a) => a.tiposCaminhao.BASCULANTE, getTitulo: tituloOrigemTipo('BASCULANTE') },
+  { secao: 'frota', label: 'TRUCK', tipo: 'int', getValor: (a) => a.tiposCaminhao.TRUCK, getTitulo: tituloOrigemTipo('TRUCK') },
   { secao: 'frota', label: 'SOMA', tipo: 'int', getValor: (a) => a.tiposCaminhao.soma },
   { secao: 'frota', label: 'Caminhões (placas únicas)', tipo: 'int', getValor: (a) => a.caminhoesUnicos },
   { secao: 'cenario', label: 'CAIXA MÉDIA (L)', tipo: 'num', getValor: (a) => a.caixaMediaKg },

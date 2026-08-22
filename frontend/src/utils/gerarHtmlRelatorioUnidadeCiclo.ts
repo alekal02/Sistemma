@@ -88,6 +88,14 @@ const ESTILOS = `
     text-align: center; font-size: 5.5px; color: #94a3b8;
     margin-top: 8px; padding-top: 6px; border-top: 1px solid #e2e8f0;
   }
+
+  /* Paginação: nenhum bloco de dados pode ser cortado ao meio pela quebra de página */
+  .card, .hero-dark, .banner { break-inside: avoid; page-break-inside: avoid; }
+  .sec { break-after: avoid; page-break-after: avoid; }
+  table.data tr { break-inside: avoid; page-break-inside: avoid; }
+  table.data thead { display: table-header-group; }
+  table.data tbody { break-before: avoid; page-break-before: avoid; }
+
   @media print {
     * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
   }

@@ -1,6 +1,12 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { UserRole } from '../entities/User';
+import {
+  getOrCreateTenantDataSource,
+  isMultiTenant,
+  runWithTenantSync,
+} from '../database/data-source';
+import { bancoDoContrato } from '../services/tenantDatabaseService';
 
 function resolveJwtSecret(): string {
   if (process.env.JWT_SECRET) return process.env.JWT_SECRET;
@@ -21,6 +27,106 @@ export interface TokenPayload {
   email: string;
   nome: string;
   role: UserRole;
+  contractId?: string | null;
+  tenantDb?: string | null;
+}
+
+export function isSuperadmin(usuario?: TokenPayload | null): boolean {
+  return usuario?.role === 'superadmin';
+}
+
+export function isAdminOuSuper(usuario?: TokenPayload | null): boolean {
+  return usuario?.role === 'admin' || usuario?.role === 'superadmin';
+}
+
+/** Enxerga todos os contratos: super-admin, ou admin que não está preso a um contrato. */
+export function ehGestorGlobal(usuario?: TokenPayload | null): boolean {
+  if (!usuario) return false;
+  if (usuario.role === 'superadmin') return true;
+  return usuario.role === 'admin' && !usuario.contractId;
+}
+
+export function payloadDoJwt(decoded: TokenPayload): TokenPayload {
+  return {
+    id: decoded.id,
+    email: decoded.email,
+    nome: decoded.nome,
+    role: decoded.role,
+    contractId: decoded.contractId ?? null,
+    tenantDb: decoded.tenantDb ?? null,
+  };
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** contractId pedido na rota, na query ou no corpo — usado pelo gestor no hub. */
+function contractIdDaRequisicao(req: Request): string | null {
+  // Em /api/contracts/:id o parâmetro se chama "id" e é o contrato.
+  const idDeContrato = /\/contracts$/.test(req.baseUrl || '') ? req.params?.id : undefined;
+  const candidatos = [
+    req.params?.contractId,
+    idDeContrato,
+    req.query?.contractId,
+    (req.body && typeof req.body === 'object' ? (req.body as any).contractId : undefined),
+  ];
+  for (const c of candidatos) {
+    const valor = typeof c === 'string' ? c.trim() : '';
+    if (UUID_RE.test(valor)) return valor;
+  }
+  return null;
+}
+
+function abrirBanco(req: Request, res: Response, next: NextFunction, db: string): void {
+  getOrCreateTenantDataSource(db)
+    .then((ds) => {
+      runWithTenantSync(ds, db, () => next());
+    })
+    .catch((err) => {
+      console.error('[tenant] falha ao abrir banco', db, err);
+      res.status(503).json({ error: 'Banco do contrato indisponível' });
+    });
+}
+
+/**
+ * Escolhe o banco da requisição quando cada contrato tem o seu:
+ * usuário preso a um contrato usa o banco do token; o gestor no hub usa o banco
+ * do contrato que a requisição pediu e, sem contrato, fica no banco de controle.
+ */
+function ativarTenantDoToken(req: Request, res: Response, next: NextFunction): void {
+  if (!isMultiTenant()) {
+    next();
+    return;
+  }
+
+  const doToken = req.usuario?.tenantDb;
+  if (doToken) {
+    abrirBanco(req, res, next, doToken);
+    return;
+  }
+
+  if (!ehGestorGlobal(req.usuario)) {
+    next();
+    return;
+  }
+
+  const contractId = contractIdDaRequisicao(req);
+  if (!contractId) {
+    next();
+    return;
+  }
+
+  bancoDoContrato(contractId)
+    .then((db) => {
+      if (!db) {
+        next();
+        return;
+      }
+      abrirBanco(req, res, next, db);
+    })
+    .catch((err) => {
+      console.error('[tenant] falha ao resolver contrato', contractId, err);
+      next();
+    });
 }
 
 // Extende a tipagem do Request para incluir o usuário
@@ -64,7 +170,7 @@ export function verificarTokenRenovacao(token: string): TokenPayload | null {
   try {
     const decoded = jwt.verify(token, JWT_REFRESH_SECRET) as JwtComExp;
     if (decoded?.id && decoded.typ === 'refresh') {
-      return { id: decoded.id, email: decoded.email, nome: decoded.nome, role: decoded.role };
+      return payloadDoJwt(decoded);
     }
   } catch {
     /* tenta access token abaixo */
@@ -77,7 +183,7 @@ export function verificarTokenRenovacao(token: string): TokenPayload | null {
       const expiradoHa = Date.now() - decoded.exp * 1000;
       if (expiradoHa > REFRESH_GRACE_MS) return null;
     }
-    return { id: decoded.id, email: decoded.email, nome: decoded.nome, role: decoded.role };
+    return payloadDoJwt(decoded);
   } catch {
     return null;
   }
@@ -106,8 +212,8 @@ export function authenticate(
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET) as TokenPayload;
-    req.usuario = decoded;
-    next();
+    req.usuario = payloadDoJwt(decoded);
+    ativarTenantDoToken(req, res, next);
   } catch (err) {
     if (err instanceof jwt.TokenExpiredError) {
       res.status(401).json({ error: 'Token expirado' });
@@ -127,7 +233,9 @@ export function authorize(...roles: UserRole[]) {
       return;
     }
 
-    if (!roles.includes(req.usuario.role)) {
+    const permitido = roles.includes(req.usuario.role)
+      || (roles.includes('admin') && req.usuario.role === 'superadmin');
+    if (!permitido) {
       res.status(403).json({
         error: 'Acesso negado: você não tem permissão para esta ação',
       });

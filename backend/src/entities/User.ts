@@ -10,7 +10,7 @@ import {
 } from 'typeorm';
 import bcrypt from 'bcryptjs';
 
-export type UserRole = 'admin' | 'user';
+export type UserRole = 'superadmin' | 'admin' | 'user';
 
 @Entity('users')
 @Index(['email'], { unique: true })
@@ -29,6 +29,10 @@ export class User {
 
   @Column('varchar', { length: 20, default: 'user' })
   role!: UserRole;
+
+  /** Nulo = super-admin (vê todos). Preenchido = usuário só daquele contrato. */
+  @Column('uuid', { nullable: true })
+  contractId!: string | null;
 
   @Column('boolean', { default: true })
   ativo!: boolean;

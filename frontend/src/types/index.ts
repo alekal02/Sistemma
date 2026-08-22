@@ -3,7 +3,7 @@
    ============================================ */
 
 /** Perfis de usuário */
-export type UserRole = 'admin' | 'user';
+export type UserRole = 'superadmin' | 'admin' | 'user';
 
 /** Dados do usuário autenticado */
 export interface UserData {
@@ -12,6 +12,10 @@ export interface UserData {
   email: string
   role: UserRole
   ativo: boolean
+  contractId?: string | null
+  tenantDb?: string | null
+  /** true se o usuário vê todos os contratos (mesmo após abrir uma unidade) */
+  gestor?: boolean
 }
 
 /** Payload retornado pelo login/register */

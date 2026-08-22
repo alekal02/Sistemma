@@ -22,6 +22,7 @@ import {
   differenceInDays,
 } from 'date-fns';
 import AppDataSource from '../database/data-source';
+import { ehHubDeContratos, escopoCacheTenant } from '../services/tenantFanout';
 import { ColetaData } from '../entities/ColetaData';
 import { Abastecimento } from '../entities/Abastecimento';
 import { Servico } from '../entities/Servico';
@@ -535,6 +536,14 @@ export class DashboardExecutivoController {
       const modoCiclo = periodo === 'ciclo';
 
       // ═══ VERIFICAR CACHE ═══
+      if (ehHubDeContratos(req.usuario) && !contractId) {
+        res.status(409).json({
+          error: 'Cada contrato está no seu próprio banco: escolha um contrato para abrir o executivo.',
+          precisaEscolherContrato: true,
+        });
+        return;
+      }
+
       const paramsCache = {
         periodo: periodo!,
         dataInicio,
@@ -543,6 +552,7 @@ export class DashboardExecutivoController {
         servicoId,
         mesReferencia,
         anoReferencia,
+        escopo: escopoCacheTenant(),
       };
       const ignorarCache = req.query.refresh === '1' || req.query.nocache === '1';
       const cacheHit = ignorarCache ? null : dashboardCache.obter(paramsCache);
@@ -2226,6 +2236,13 @@ export class DashboardExecutivoController {
   async diagnostico(req: Request, res: Response): Promise<void> {
     try {
       const { contractId, servicoId } = req.query as Record<string, string | undefined>;
+      if (ehHubDeContratos(req.usuario) && !contractId) {
+        res.status(409).json({
+          error: 'Cada contrato está no seu próprio banco: escolha um contrato para o diagnóstico.',
+          precisaEscolherContrato: true,
+        });
+        return;
+      }
       const resultado = await diagnosticarDashboards({ contractId, servicoId });
       res.json(resultado);
     } catch (error: any) {
@@ -2255,9 +2272,20 @@ export class DashboardExecutivoController {
       const mesReferencia = mesReferenciaBody != null ? parseInt(String(mesReferenciaBody), 10) : undefined;
       const anoReferencia = anoReferenciaBody != null ? parseInt(String(anoReferenciaBody), 10) : undefined;
 
+      if (ehHubDeContratos(req.usuario) && !contractId) {
+        res.status(409).json({
+          error: 'Cada contrato está no seu próprio banco: escolha um contrato para gerar o PDF executivo.',
+          precisaEscolherContrato: true,
+        });
+        return;
+      }
+
       // Gerar chave de cache
       const cacheKey = crypto.createHash('md5').update(
-        JSON.stringify({ periodo, dataInicio, dataFim, contractId, servicoId, mesReferencia, anoReferencia, secoes })
+        JSON.stringify({
+          escopo: escopoCacheTenant(),
+          periodo, dataInicio, dataFim, contractId, servicoId, mesReferencia, anoReferencia, secoes,
+        })
       ).digest('hex');
 
       // Verificar cache

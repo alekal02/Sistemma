@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
-  FiSettings, FiDatabase, FiBarChart2,
+  FiSettings, FiDatabase,
   FiArrowLeft, FiRefreshCw, FiTrash2,
   FiZap, FiPlus,
 } from 'react-icons/fi';
@@ -13,8 +13,6 @@ import type { KpiConfig, GraficoConfig, ColunaDetectada } from '../components/Kp
 import servicoService from '../services/servicoService';
 import { isAxiosError } from 'axios';
 import '../styles/ContratoDetalhe.css';
-
-const CORES = ['#059669', '#22c55e', '#f59e0b', '#a855f7', '#ef4444', '#14b8a6', '#3b82f6', '#ec4899', '#84cc16', '#06b6d4'];
 
 export default function ConfiguracaoServico() {
   const { contractId, servicoId } = useParams<{ contractId: string; servicoId: string }>();

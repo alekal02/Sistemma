@@ -46,7 +46,9 @@ import {
   gerarNomePdfRelatorioHodometroSaude,
   gerarNomePdfRelatorioMelhoriaCicloOperacao,
 } from '../utils/gerarNomePdf';
-import servicoService from '../services/servicoService';
+import servicoService, { type FichaRotasCicloResponse } from '../services/servicoService';
+import ProjecaoCicloPainel from './ProjecaoCicloPainel';
+import { montarProjecaoCiclo, type TotaisCicloProjecao } from '@sistemma/shared';
 
 type ExportandoPdf = TipoPeriodoOperacional | 'hodometro' | 'melhoria' | null;
 type PdfRelatorioId = 'melhoria' | 'ciclo' | 'semanal' | 'quinzenal' | 'hodometro';
@@ -171,7 +173,7 @@ export default function CicloDateSelector({
   const [anoRef, setAnoRef] = useState(refInicial.ano);
   const cicloInicializadoRef = useRef(false);
   const [relatorioApi, setRelatorioApi] = useState<ReturnType<typeof agruparCicloPorDiaFromApi> | null>(null);
-  const [carregandoResumo, setCarregandoResumo] = useState(false);
+  const [totaisCicloAnterior, setTotaisCicloAnterior] = useState<TotaisCicloProjecao | null>(null);
   const [rocadaSplit, setRocadaSplit] = useState<{
     areaManualM2: number;
     areaMecanizadaM2: number;
@@ -232,7 +234,6 @@ export default function CicloDateSelector({
       return;
     }
     let cancelado = false;
-    setCarregandoResumo(true);
     const promises: Promise<unknown>[] = [
       servicoService.getResumoCicloPorDia(contractId, servicoId, {
         dataInicio: ciclo.dataInicio,
@@ -278,11 +279,38 @@ export default function CicloDateSelector({
     }
     Promise.all(promises).catch(() => {
       if (!cancelado) setRelatorioApi(null);
-    }).finally(() => {
-      if (!cancelado) setCarregandoResumo(false);
     });
     return () => { cancelado = true; };
   }, [contractId, servicoId, ciclo.dataInicio, ciclo.dataFim, tarifas, ehRocada, modoCiclo, tipoServico, configFaturamento?.valorM2]);
+
+  /** Alvo da projeção: o ciclo anterior fechado inteiro. */
+  useEffect(() => {
+    if (!contractId || !servicoId || ehPorUnidade) {
+      setTotaisCicloAnterior(null);
+      return;
+    }
+    const prev = deslocarMesReferencia(mesRef, anoRef, -1);
+    const anterior = calcularCicloMensalContrato(prev.ano, prev.mes, diaInicioCiclo);
+    let cancelado = false;
+    servicoService.getResumoCicloPorDia(
+      contractId,
+      servicoId,
+      { dataInicio: anterior.dataInicio, dataFim: anterior.dataFim },
+      { abortKey: 'servico:getResumoCicloPorDia:projecao-anterior' },
+    ).then((resp) => {
+      if (cancelado) return;
+      const t = resp.totais;
+      setTotaisCicloAnterior({
+        viagens: Number(t?.viagens || 0),
+        rotas: Number(t?.rotas || 0),
+        toneladas: Number(t?.pesoTotalTon ?? (Number(t?.pesoTotalKg || 0) / 1000)),
+        km: Number(t?.kmTotal || 0),
+      });
+    }).catch(() => {
+      if (!cancelado) setTotaisCicloAnterior(null);
+    });
+    return () => { cancelado = true; };
+  }, [contractId, servicoId, mesRef, anoRef, diaInicioCiclo, ehPorUnidade]);
 
   const relatorioVazio = useMemo(
     () => agruparCicloPorDiaFromApi(
@@ -382,11 +410,6 @@ export default function CicloDateSelector({
 
   const hoje = hojeISO();
   const tabelaOculta = Boolean(dataSelecionada && onOpenDia);
-  const diaAtivo = useMemo(
-    () => (dataSelecionada ? dias.find((d) => d.data === dataSelecionada) : undefined),
-    [dias, dataSelecionada],
-  );
-
   const diaTemOperacao = useCallback((d: DadoDiario) => (
     ehPorUnidade
       ? ((d.metricaUnidade || 0) > 0 || d.rotas > 0 || (d.areaM2 || 0) > 0)
@@ -416,6 +439,24 @@ export default function CicloDateSelector({
     () => inferirReferenciaPeriodoOperacional(ciclo, dias),
     [ciclo, dias],
   );
+
+  const projecaoCiclo = useMemo(() => {
+    if (ehPorUnidade) return null;
+    return montarProjecaoCiclo({
+      totaisAtual: {
+        viagens: totais.viagens,
+        rotas: totais.rotas,
+        toneladas: totais.toneladas,
+        km: totais.km,
+      },
+      totaisAnterior: totaisCicloAnterior,
+      diasDecorridos,
+      diasCicloCompleto,
+    });
+  }, [
+    ehPorUnidade, totais.viagens, totais.rotas, totais.toneladas, totais.km,
+    totaisCicloAnterior, diasDecorridos, diasCicloCompleto,
+  ]);
 
   const opcoesPdf = useMemo((): OpcaoPdfCiclo[] => {
     const periodo = `${formatarIsoParaBr(ciclo.dataInicio)} a ${formatarIsoParaBr(ciclo.dataFim)}`;
@@ -738,6 +779,17 @@ export default function CicloDateSelector({
           `[PDF operacional] Divergência de viagens: detalhe=${operacao.resumo.viagens} SQL=${relatorioPeriodo.totais.viagens}`,
         );
       }
+      // Consistência das rotas no período — falha não impede o PDF
+      let fichaRotas: FichaRotasCicloResponse | null = null;
+      try {
+        fichaRotas = await servicoService.getRotasCiclo(contractId, servicoId, {
+          dataInicio: periodo.dataInicio,
+          dataFim: periodo.dataFim,
+        });
+      } catch (errRotas) {
+        console.warn('[PDF operacional] Ficha de rotas indisponível:', errRotas);
+      }
+
       const html = gerarHtmlRelatorioOperacionalPeriodo({
         servicoNome: servicoNome || 'Serviço',
         periodo,
@@ -747,6 +799,9 @@ export default function CicloDateSelector({
         totais: relatorioPeriodo.totais,
         placasReserva,
         capacidade,
+        fichaRotas,
+        // Projeção só faz sentido no recorte do ciclo; semanal/quinzenal não fecham ciclo.
+        projecao: tipo === 'ciclo' ? projecaoCiclo : null,
         ...limOpts,
       });
       const nomeArquivo = gerarNomePdfRelatorioOperacionalPeriodo({
@@ -768,7 +823,7 @@ export default function CicloDateSelector({
   }, [
     adicionarToast, servicoNome, ciclo, dias, tarifas, ehRocada, ehUnidadeNaoRocada,
     contractId, servicoId, placasReserva, limitesPesoKg, volumeL, densidadeResiduoKgL, densidadeKgL,
-    exportarRelatorioRocadaCiclo, exportarRelatorioUnidadeCiclo,
+    exportarRelatorioRocadaCiclo, exportarRelatorioUnidadeCiclo, projecaoCiclo,
   ]);
 
   const exportarRelatorioHodometroSaude = useCallback(async () => {
@@ -1229,6 +1284,8 @@ export default function CicloDateSelector({
           )}
         </div>
       )}
+
+      <ProjecaoCicloPainel projecao={projecaoCiclo} />
 
       {/* Instrução */}
       <div style={{

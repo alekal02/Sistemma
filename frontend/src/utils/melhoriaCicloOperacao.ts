@@ -2,6 +2,16 @@ import type { DadoDiario } from './relatorioDiario';
 import { fmtNum } from './relatorioDiario';
 import { formatarMetricaUnidade } from './unidadeServico';
 
+import { alinharPorOcorrenciaDiaSemana, rotuloOcorrenciaDiaSemana } from '@sistemma/shared';
+
+export {
+  DIAS_SEMANA_CURTO,
+  diaSemanaIso,
+  rotuloOcorrenciaDiaSemana,
+  alinharPorOcorrenciaDiaSemana,
+} from '@sistemma/shared';
+export type { ParDiaSemanaCiclo } from '@sistemma/shared';
+
 export type ModoMelhoriaOperacao = 'coleta' | 'unidade';
 
 export interface TotaisMelhoriaCiclo {
@@ -24,8 +34,6 @@ export interface TotaisMelhoriaCiclo {
   mediaMetricaPorDia: number;
 }
 
-export const DIAS_SEMANA_CURTO = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'] as const;
-
 export interface DiaComparadoOperacao {
   ordem: number;
   ant: DadoDiario | null;
@@ -34,67 +42,6 @@ export interface DiaComparadoOperacao {
   diaSemana: number;
   /** 1ª, 2ª… ocorrência desse dia da semana no ciclo */
   ocorrencia: number;
-}
-
-export function diaSemanaIso(iso: string): number {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return -1;
-  const [y, m, d] = iso.split('-').map(Number);
-  return new Date(y, m - 1, d).getDay();
-}
-
-/** Ex.: 1ª qua, 2º sáb — mesma ocorrência do dia da semana nos dois ciclos. */
-export function rotuloOcorrenciaDiaSemana(diaSemana: number, ocorrencia: number): string {
-  if (diaSemana < 0 || diaSemana > 6 || ocorrencia < 1) return '—';
-  const nome = DIAS_SEMANA_CURTO[diaSemana];
-  const ord = diaSemana === 0 || diaSemana === 6 ? `${ocorrencia}º` : `${ocorrencia}ª`;
-  return `${ord} ${nome}`;
-}
-
-export interface ParDiaSemanaCiclo<T extends { data: string }> {
-  ordem: number;
-  ant: T | null;
-  atual: T | null;
-  diaSemana: number;
-  ocorrencia: number;
-}
-
-/**
- * Emparelha a N-ésima segunda do ciclo anterior com a N-ésima segunda do atual
- * (terça com terça, domingo com domingo…). Evita cruzar dia útil com fim de semana
- * quando os ciclos começam em dias diferentes.
- * A ordem segue o calendário do ciclo atual (dias decorridos).
- */
-export function alinharPorOcorrenciaDiaSemana<T extends { data: string }>(
-  anterior: T[],
-  atual: T[],
-): ParDiaSemanaCiclo<T>[] {
-  const ant = [...anterior].filter((d) => d?.data).sort((a, b) => a.data.localeCompare(b.data));
-  const atu = [...atual].filter((d) => d?.data).sort((a, b) => a.data.localeCompare(b.data));
-
-  const mapaAnt = new Map<string, T>();
-  const contAnt = [0, 0, 0, 0, 0, 0, 0];
-  for (const d of ant) {
-    const w = diaSemanaIso(d.data);
-    if (w < 0) continue;
-    contAnt[w] += 1;
-    mapaAnt.set(`${w}:${contAnt[w]}`, d);
-  }
-
-  const linhas: ParDiaSemanaCiclo<T>[] = [];
-  const contAtu = [0, 0, 0, 0, 0, 0, 0];
-  for (const d of atu) {
-    const w = diaSemanaIso(d.data);
-    if (w < 0) continue;
-    contAtu[w] += 1;
-    linhas.push({
-      ordem: linhas.length + 1,
-      ant: mapaAnt.get(`${w}:${contAtu[w]}`) ?? null,
-      atual: d,
-      diaSemana: w,
-      ocorrencia: contAtu[w],
-    });
-  }
-  return linhas;
 }
 
 export interface VariacaoNum {

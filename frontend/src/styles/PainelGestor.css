@@ -1,0 +1,63 @@
+.painel-gestor {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.painel-gestor-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.painel-gestor-kicker {
+  margin: 0 0 0.2rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.painel-gestor-header h2 {
+  margin: 0 0 0.35rem;
+  font-size: 1.35rem;
+  font-weight: 750;
+  color: #0f172a;
+}
+
+.painel-gestor-header p {
+  margin: 0;
+  max-width: 42rem;
+  font-size: 0.88rem;
+  line-height: 1.45;
+  color: #64748b;
+}
+
+.painel-gestor-erro,
+.painel-gestor-vazio {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #fff;
+  color: #475569;
+  font-size: 0.88rem;
+}
+
+.painel-gestor-vazio {
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.vg-tv-peso-card.clicavel {
+  cursor: pointer;
+}
+
+.vg-tv-peso-card.clicavel:hover {
+  outline: 2px solid #1a73e8;
+  outline-offset: 1px;
+}

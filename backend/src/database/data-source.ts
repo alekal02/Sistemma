@@ -1,35 +1,100 @@
 import 'reflect-metadata';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { DataSource } from 'typeorm';
-import { Abastecimento } from '../entities/Abastecimento';
-import { User } from '../entities/User';
-import { Caminhao } from '../entities/Caminhao';
-import { AbastecimentoLog } from '../entities/AbastecimentoLog';
-import { ColetaData } from '../entities/ColetaData';
-import { PlanilhaUpload } from '../entities/PlanilhaUpload';
-import { Servico } from '../entities/Servico';
-import { Contract } from '../entities/Contract';
-import { KpiUniversal } from '../entities/KpiUniversal';
-import { GraficoPadraoConfig } from '../entities/GraficoPadraoConfig';
-import { WhatsappGrupoMapa } from '../entities/WhatsappGrupoMapa';
-const AppDataSource = new DataSource({
-  type: 'postgres',
-  host: process.env.DATABASE_HOST || 'localhost',
-  port: parseInt(process.env.DATABASE_PORT || '5432'),
-  username: process.env.DATABASE_USER || 'neurai',
-  password: process.env.DATABASE_PASSWORD || '',
-  database: process.env.DATABASE_NAME || 'abastecimento',
-  // synchronize: true mantém compatibilidade com deploy sem migrations formais.
-  // Em produção estável: TYPEORM_SYNCHRONIZE=false
-  synchronize: process.env.TYPEORM_SYNCHRONIZE !== 'false',
-  migrationsRun: false,
-  logging: process.env.NODE_ENV === 'development',
-  entities: [Abastecimento, User, Caminhao, AbastecimentoLog, ColetaData, PlanilhaUpload, Contract, Servico, KpiUniversal, GraficoPadraoConfig, WhatsappGrupoMapa],
-  extra: {
-    max: parseInt(process.env.DB_POOL_MAX || '8', 10),
-    idleTimeoutMillis: parseInt(process.env.DB_POOL_IDLE_MS || '10000', 10),
-    connectionTimeoutMillis: parseInt(process.env.DB_POOL_CONNECT_MS || '20000', 10),
-    options: `-c statement_timeout=${parseInt(process.env.DB_STATEMENT_TIMEOUT_MS || '120000', 10)}`,
+import { CONTROL_ENTITIES, TENANT_ENTITIES } from './entities';
+
+type TenantStore = { ds: DataSource; databaseName: string };
+
+const als = new AsyncLocalStorage<TenantStore>();
+const tenantCache = new Map<string, DataSource>();
+
+export function isMultiTenant(): boolean {
+  return process.env.MULTI_TENANT === 'true' || Boolean(process.env.CONTROL_DATABASE_NAME);
+}
+
+export function controlDatabaseName(): string {
+  if (isMultiTenant()) {
+    return process.env.CONTROL_DATABASE_NAME || 'sistemma_control';
+  }
+  return process.env.DATABASE_NAME || 'abastecimento';
+}
+
+export function origemDatabaseName(): string {
+  return process.env.DATABASE_NAME || 'abastecimento';
+}
+
+function postgresBase() {
+  return {
+    type: 'postgres' as const,
+    host: process.env.DATABASE_HOST || 'localhost',
+    port: parseInt(process.env.DATABASE_PORT || '5432', 10),
+    username: process.env.DATABASE_USER || 'neurai',
+    password: process.env.DATABASE_PASSWORD || '',
+    synchronize: process.env.TYPEORM_SYNCHRONIZE !== 'false',
+    migrationsRun: false,
+    logging: process.env.NODE_ENV === 'development',
+    extra: {
+      max: parseInt(process.env.DB_POOL_MAX || '8', 10),
+      idleTimeoutMillis: parseInt(process.env.DB_POOL_IDLE_MS || '10000', 10),
+      connectionTimeoutMillis: parseInt(process.env.DB_POOL_CONNECT_MS || '20000', 10),
+      options: `-c statement_timeout=${parseInt(process.env.DB_STATEMENT_TIMEOUT_MS || '120000', 10)}`,
+    },
+  };
+}
+
+export function criarDataSource(database: string, modo: 'control' | 'tenant'): DataSource {
+  return new DataSource({
+    ...postgresBase(),
+    database,
+    entities: modo === 'control' && isMultiTenant() ? CONTROL_ENTITIES : TENANT_ENTITIES,
+  });
+}
+
+const ControlDataSource = criarDataSource(
+  controlDatabaseName(),
+  isMultiTenant() ? 'control' : 'tenant',
+);
+
+export function getControlDataSource(): DataSource {
+  return ControlDataSource;
+}
+
+export function getCurrentTenantDb(): string | null {
+  return als.getStore()?.databaseName ?? null;
+}
+
+function activeDataSource(): DataSource {
+  return als.getStore()?.ds ?? ControlDataSource;
+}
+
+export async function getOrCreateTenantDataSource(databaseName: string): Promise<DataSource> {
+  const cached = tenantCache.get(databaseName);
+  if (cached?.isInitialized) return cached;
+
+  const ds = cached ?? criarDataSource(databaseName, 'tenant');
+  if (!ds.isInitialized) {
+    await ds.initialize();
+  }
+  tenantCache.set(databaseName, ds);
+  return ds;
+}
+
+export async function runWithTenant<T>(databaseName: string, fn: () => Promise<T> | T): Promise<T> {
+  const ds = await getOrCreateTenantDataSource(databaseName);
+  return als.run({ ds, databaseName }, fn);
+}
+
+export function runWithTenantSync<T>(ds: DataSource, databaseName: string, fn: () => T): T {
+  return als.run({ ds, databaseName }, fn);
+}
+
+const AppDataSource = new Proxy(ControlDataSource, {
+  get(_target, prop) {
+    const ds = activeDataSource();
+    const value = Reflect.get(ds, prop, ds);
+    if (typeof value === 'function') return value.bind(ds);
+    return value;
   },
-});
+}) as DataSource;
 
 export default AppDataSource;

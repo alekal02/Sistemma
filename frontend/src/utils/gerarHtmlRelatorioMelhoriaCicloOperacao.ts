@@ -561,7 +561,11 @@ const CSS_MELHORIA_CICLO = `
     table.dia th { font-size: 6.5px; }
     table.dia td { font-size: 7.5px; white-space: nowrap; }
     table.dia tr.off td { color: #cbd5e1; }
-    .header, .kpi { page-break-inside: avoid; }
+    .header, .kpi, .per, .leitura { page-break-inside: avoid; break-inside: avoid; }
+    tr { page-break-inside: avoid; break-inside: avoid; }
+    thead { display: table-header-group; }
+    tbody { page-break-before: avoid; break-before: avoid; }
+    h2, h3, .nota { page-break-after: avoid; break-after: avoid; }
     tfoot td { background: #eef2ff; color: #0f172a; font-weight: 800; }
     .footer { margin-top: 12px; font-size: 7px; color: #94a3b8; text-align: center; }
     .quebra-pagina { page-break-before: always; }

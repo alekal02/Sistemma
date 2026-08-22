@@ -134,12 +134,12 @@ function corDaCategoria(categoria: string): string {
    ============================================================ */
 
 export class AutoIndicatorService {
-  private servicoRepo: Repository<Servico>;
-  private contractRepo: Repository<Contract>;
+  private get servicoRepo(): Repository<Servico> {
+    return AppDataSource.getRepository(Servico);
+  }
 
-  constructor() {
-    this.servicoRepo = AppDataSource.getRepository(Servico);
-    this.contractRepo = AppDataSource.getRepository(Contract);
+  private get contractRepo(): Repository<Contract> {
+    return AppDataSource.getRepository(Contract);
   }
 
   async analisar(

@@ -3,6 +3,9 @@ import {
   FiCheckCircle, FiAlertTriangle, FiPlus, FiEdit2, FiTrash2,
   FiRefreshCw, FiMessageSquare, FiX, FiWifi, FiWifiOff,
 } from 'react-icons/fi'
+import { Navigate } from 'react-router-dom'
+import { useAuth } from '../contexts/AuthContext'
+import { ehGestor, homePath } from '../utils/homePath'
 import { useToast } from '../contexts/ToastContext'
 import wuzapiService, {
   type WhatsappGrupoMapaItem,
@@ -46,7 +49,9 @@ const ESTRATEGIAS = [
 ]
 
 export default function WhatsappGrupos() {
+  const { user } = useAuth()
   const { adicionarToast } = useToast()
+  const contratoAtual = user?.contractId || ''
   const [status, setStatus] = useState<WuzapiStatus | null>(null)
   const [grupos, setGrupos] = useState<WhatsappGrupoMapaItem[]>([])
   const [servicos, setServicos] = useState<ServicoOpcao[]>([])
@@ -84,11 +89,14 @@ export default function WhatsappGrupos() {
         contractService.listar(),
       ])
       setStatus(st)
-      setGrupos(lista)
+
+      const contratosAlvo = contratoAtual
+        ? contratos.filter((c) => c.id === contratoAtual)
+        : contratos
 
       const opcoes: ServicoOpcao[] = []
       await Promise.all(
-        contratos.map(async (c) => {
+        contratosAlvo.map(async (c) => {
           try {
             const svs = await servicoService.listarServicosContrato(c.id)
             for (const s of svs) {
@@ -96,12 +104,14 @@ export default function WhatsappGrupos() {
                 id: s.id,
                 contratoId: c.id,
                 nome: s.nome,
-                label: `${c.numeroContrato} · ${s.nome}`,
+                label: s.nome,
               })
             }
           } catch { /* ignora */ }
         }),
       )
+      const servicoIdsUnidade = new Set(opcoes.map((s) => s.id))
+      setGrupos(lista.filter((g) => servicoIdsUnidade.has(g.servicoId)))
       opcoes.sort((a, b) => a.label.localeCompare(b.label, 'pt-BR'))
       setServicos(opcoes)
     } catch (error: unknown) {
@@ -110,7 +120,7 @@ export default function WhatsappGrupos() {
     } finally {
       setCarregando(false)
     }
-  }, [adicionarToast])
+  }, [adicionarToast, contratoAtual])
 
   useEffect(() => { carregar() }, [carregar])
 
@@ -305,14 +315,18 @@ export default function WhatsappGrupos() {
   const aguardandoQr = !!(status?.configurado && conectado && !logado && !wuzapiOffline)
   const qrCode = status?.qrCode || null
 
+  if (!contratoAtual) {
+    return <Navigate to={ehGestor(user) ? '/visao-geral' : homePath(user)} replace />
+  }
+
   return (
     <div className="wa-grupos-container">
       <div className="wa-grupos-top">
         <div>
-          <h2>Grupos WhatsApp</h2>
+          <h2>WhatsApp desta unidade</h2>
           <p className="wa-subtitle">
-            Conecte o WhatsApp pelo QR e mapeie o grupo a um serviço do contrato.
-            A planilha é classificada automaticamente (Coleta / Roçada / Capina…) e o relatório do último dia é enviado ao grupo.
+            Conecte o WhatsApp e mapeie o grupo a um serviço deste contrato.
+            A planilha entra só nesta unidade.
           </p>
         </div>
         <div className="wa-grupos-actions">

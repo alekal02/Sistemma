@@ -477,13 +477,25 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
     const inconsistentes = (relatorio.viagensInconsistentesTotal ?? relatorio.viagensIncompletas) || 0;
     const validas = relatorio.viagensValidasDashboard ?? relatorio.viagensCompletas ?? 0;
     const descartadas = relatorio.linhasDescartadasSemDados ?? 0;
+    const emBranco = relatorio.linhasEmBrancoIgnoradas ?? 0;
     const tDash = (Number(relatorio.pesoKgDashboard || 0) / 1000);
     const tFora = (Number(relatorio.pesoKgForaDashboard || 0) / 1000);
+    const fmtTon = (n: number) => n.toLocaleString('pt-BR', { maximumFractionDigits: 2, minimumFractionDigits: 1 });
     const fmtPesoTon = (kg: unknown) => {
       if (kg == null || kg === '') return '—';
       const n = Number(kg);
       if (Number.isNaN(n)) return '—';
-      return (n / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 2, minimumFractionDigits: 1 });
+      return fmtTon(n / 1000);
+    };
+    // A linha da planilha pode ter várias pesagens (PESO 1–5). O total sozinho
+    // parece uma pesagem absurda, então detalhamos cada carga da linha.
+    const celulaPeso = (v: any) => {
+      if (v.pesoTotal == null) return '—';
+      const total = fmtPesoTon(v.pesoTotal);
+      const pesagens: number[] = Array.isArray(v.pesagensKg) ? v.pesagensKg : [];
+      if (pesagens.length <= 1) return total;
+      const detalhe = pesagens.map((p) => fmtTon(p / 1000)).join(' + ');
+      return `${total}<br/><span style="font-size:8px;color:#64748b">${pesagens.length} pesagens: ${detalhe}</span>`;
     };
     const dataRelatorio = formatarDataArquivoPdf();
     const tipoLabel = labelTipoServicoArquivo(tipoServico, TIPOS_SERVICO_LABELS as Record<string, string>);
@@ -508,7 +520,7 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
         <td>${v.motorista || '—'}</td>
         <td style="text-align:center;font-weight:700;color:${fora ? '#dc2626' : '#16a34a'}">${v.contadorViagens ?? '—'}</td>
         <td>${v.kmTotal != null ? v.kmTotal.toLocaleString('pt-BR', { maximumFractionDigits: 1 }) : (v.kmTotalCalculado != null ? v.kmTotalCalculado.toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + '*' : '—')}</td>
-        <td>${v.pesoTotal != null ? fmtPesoTon(v.pesoTotal) : '—'}</td>
+        <td>${celulaPeso(v)}</td>
         <td style="color:${fora ? '#dc2626' : '#b45309'}; font-size:9px">${status}</td>
       </tr>
     `;
@@ -570,7 +582,10 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
     <div class="card"><div class="num">${relatorio.somaContadorViagens ?? relatorio.totalViagens ?? 0}</div><div class="label">CONTADOR planilha</div></div>
     <div class="card completas"><div class="num">${relatorio.somaContadorNoDashboard ?? validas}</div><div class="label">CONTADOR no dashboard</div></div>
     <div class="card incompletas"><div class="num">${relatorio.somaContadorForaDashboard ?? inconsistentes}</div><div class="label">CONTADOR fora do dash</div></div>
+    ${tDash > 0 ? `<div class="card completas"><div class="num">${fmtTon(tDash)}</div><div class="label">t no ciclo/dashboard</div></div>` : ''}
+    ${tFora > 0 ? `<div class="card incompletas"><div class="num">${fmtTon(tFora)}</div><div class="label">t FORA do ciclo</div></div>` : ''}
     ${descartadas > 0 ? `<div class="card"><div class="num">${descartadas}</div><div class="label">Linhas ignoradas</div></div>` : ''}
+    ${emBranco > 0 ? `<div class="card"><div class="num">${emBranco}</div><div class="label">Linhas em branco</div></div>` : ''}
     <div class="card"><div class="num">${relatorio.percentualCompleto || 0}%</div><div class="label">% Linhas válidas</div></div>
   </div>
 
@@ -579,11 +594,14 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
     Entram no dashboard: <strong>${relatorio.somaContadorNoDashboard ?? validas}</strong>.
     Ficam fora: <strong>${relatorio.somaContadorForaDashboard ?? 0}</strong>
     (${inconsistentes} linha(s) inconsistente(s)${descartadas > 0 ? ` + ${descartadas} ignorada(s)` : ''}).
+    ${tDash > 0
+      ? `A coluna Toneladas do ciclo soma só as viagens válidas: <strong>${fmtTon(tDash)} t</strong>. `
+      : ''}
     ${tFora > 0
-      ? `A coluna Toneladas do ciclo soma só as viagens válidas: <strong>${tDash.toLocaleString('pt-BR', { maximumFractionDigits: 1 })} t</strong>. `
-        + `<strong>${tFora.toLocaleString('pt-BR', { maximumFractionDigits: 1 })} t</strong> ficaram FORA DO DASH e não entram no total. Planilha ≈ ciclo + toneladas fora. `
+      ? `<strong>${fmtTon(tFora)} t</strong> ficaram FORA DO DASH e não entram no total. Planilha ≈ ciclo + toneladas fora. `
       : ''}
     ${descartadas > 0 ? `${descartadas} linha(s) sem placa, KM Total e Peso Total foram ignoradas. ` : ''}
+    ${emBranco > 0 ? `${emBranco} linha(s) em branco da planilha foram ignoradas (não contam como problema). ` : ''}
     Regras: KM máx. 300, peso &gt; 0, sem negativos, horas com ":" (não ";").
   </div>
 
@@ -607,14 +625,18 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
     <thead>
       <tr>
         <th>Linha</th><th>Data</th><th>Placa</th><th>Motorista</th><th>Contador</th>
-        <th>KM Total</th><th>Peso (t)</th><th>Status / Problemas</th>
+        <th>KM Total</th><th>Peso da linha (t)</th><th>Status / Problemas</th>
       </tr>
     </thead>
     <tbody>
       ${linhasTabela}
     </tbody>
   </table>
-  <div class="obs">* Contador = CONTADOR DE VIAGENS. Peso em toneladas (kg ÷ 1000). Linhas FORA DO DASH não entram na coluna Toneladas do ciclo.</div>
+  <div class="obs">
+    * Contador = CONTADOR DE VIAGENS. O peso é o total da linha em toneladas (kg ÷ 1000) —
+    quando a linha tem mais de uma viagem, cada pesagem (PESO 1–5) aparece detalhada abaixo do total.
+    Linhas FORA DO DASH não entram na coluna Toneladas do ciclo.
+  </div>
   ` : ''}
 
   <div class="footer">

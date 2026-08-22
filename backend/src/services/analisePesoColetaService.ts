@@ -5,6 +5,7 @@ import { parseDataPlanilha } from '../utils/formatarDataPlanilha';
 import { dateUtcParaIso } from '../utils/dateColumnTransformer';
 import {
   TIPOS_CAMINHAO_ORDEM,
+  criarContagemZeraTipos,
   normalizarTipoCaminhaoPeso,
   resolverLimitesPesoKg,
   resolverLimitesVolumeL,
@@ -124,6 +125,21 @@ export interface AnalisePesoDia {
   pesoMedioKg: number;
 }
 
+/**
+ * Rastro de origem do tipo de caminhão. A planilha manda; a dedução por peso
+ * é só o último recurso, e o relatório precisa dizer quando ela foi usada.
+ */
+export interface FrotaTipoDeduzido {
+  /** Placas cujo tipo o sistema deduziu pelo peso, sem a planilha declarar. */
+  placas: number;
+  porTipo: Record<TipoCaminhaoPeso, number>;
+  placasLista: string[];
+  /** Placas com tipo lido da coluna TIPO DE CAMINHÃO. */
+  placasDeclaradas: number;
+  /** Placas sem tipo e sem peso — ficam fora da contagem por tipo. */
+  placasSemTipo: number;
+}
+
 export interface AnalisePesoColeta {
   numeroViagens: number;
   pesoMedioKg: number;
@@ -136,6 +152,10 @@ export interface AnalisePesoColeta {
   tiposCaminhao: { MINI: number; TOCO: number; BASCULANTE: number; TRUCK: number; soma: number };
   /** Total de placas distintas no período */
   caminhoesUnicos: number;
+  /** Quanto da contagem por tipo veio da planilha e quanto foi deduzido. */
+  frotaTipoDeduzido: FrotaTipoDeduzido;
+  /** Viagens classificadas nas faixas usando tipo deduzido pelo peso. */
+  viagensTipoDeduzido: number;
   /** Caixa média da frota em litros (média ponderada dos volumes por tipo) */
   caixaMediaKg: number;
   densidadeOtima: number;
@@ -250,13 +270,19 @@ function obterPlacaRegistro(reg: Record<string, unknown>, colPlacaDetectada?: st
   return '';
 }
 
-/** Tipo dominante da placa — só considera votos com tipo declarado na planilha. */
-function resolverTipoPlacaPorDeclaracao(
+export type OrigemTipoPlaca = 'planilha' | 'deduzido';
+
+/**
+ * Tipo dominante da placa. Prioriza o tipo declarado na planilha; só quando a
+ * planilha não declara nada é que o tipo é deduzido pelo peso máximo da placa.
+ * A origem volta junto para o relatório poder sinalizar o que foi dedução.
+ */
+function resolverTipoPlaca(
   placa: string,
   votosExplicitos: Map<string, Map<TipoCaminhaoPeso, number>>,
   maxPesoPorPlaca: Map<string, number>,
   limites: LimitesPesoKg,
-): TipoCaminhaoPeso | null {
+): { tipo: TipoCaminhaoPeso; origem: OrigemTipoPlaca } | null {
   const m = votosExplicitos.get(placa);
   if (m && m.size > 0) {
     let best: TipoCaminhaoPeso | null = null;
@@ -267,12 +293,12 @@ function resolverTipoPlacaPorDeclaracao(
         best = t;
       }
     }
-    if (best) return best;
+    if (best) return { tipo: best, origem: 'planilha' };
   }
 
   const pesoMax = maxPesoPorPlaca.get(placa) || 0;
   if (pesoMax <= 0) return null;
-  return inferirTipoPorPeso(pesoMax, limites);
+  return { tipo: inferirTipoPorPeso(pesoMax, limites), origem: 'deduzido' };
 }
 
 /**
@@ -288,6 +314,7 @@ export function contarFrotaPorTipoCaminhao(
 ): {
   tiposCaminhao: { MINI: number; TOCO: number; BASCULANTE: number; TRUCK: number; soma: number };
   caminhoesUnicos: number;
+  tipoDeduzido: FrotaTipoDeduzido;
 } {
   const placasPorTipo: Record<TipoCaminhaoPeso, Set<string>> = {
     MINI: new Set(),
@@ -295,6 +322,9 @@ export function contarFrotaPorTipoCaminhao(
     BASCULANTE: new Set(),
     TRUCK: new Set(),
   };
+  const deduzidasPorTipo = criarContagemZeraTipos();
+  const placasDeduzidas: string[] = [];
+  let placasDeclaradas = 0;
   const votosExplicitos = new Map<string, Map<TipoCaminhaoPeso, number>>();
   const maxPesoPorPlaca = new Map<string, number>();
   const placasUnicas = new Set<string>();
@@ -320,8 +350,15 @@ export function contarFrotaPorTipoCaminhao(
   }
 
   for (const placa of placasUnicas) {
-    const tipo = resolverTipoPlacaPorDeclaracao(placa, votosExplicitos, maxPesoPorPlaca, limites);
-    if (tipo) placasPorTipo[tipo].add(placa);
+    const resolvido = resolverTipoPlaca(placa, votosExplicitos, maxPesoPorPlaca, limites);
+    if (!resolvido) continue;
+    placasPorTipo[resolvido.tipo].add(placa);
+    if (resolvido.origem === 'deduzido') {
+      deduzidasPorTipo[resolvido.tipo] += 1;
+      placasDeduzidas.push(placa);
+    } else {
+      placasDeclaradas += 1;
+    }
   }
 
   const tiposCaminhao = {
@@ -336,7 +373,17 @@ export function contarFrotaPorTipoCaminhao(
       + placasPorTipo.TRUCK.size,
   };
 
-  return { tiposCaminhao, caminhoesUnicos: placasUnicas.size };
+  return {
+    tiposCaminhao,
+    caminhoesUnicos: placasUnicas.size,
+    tipoDeduzido: {
+      placas: placasDeduzidas.length,
+      porTipo: deduzidasPorTipo,
+      placasLista: placasDeduzidas.sort(),
+      placasDeclaradas,
+      placasSemTipo: placasUnicas.size - placasDeclaradas - placasDeduzidas.length,
+    },
+  };
 }
 
 /**
@@ -451,17 +498,18 @@ function registrarFaixaVsIdeal(
   densidades: Record<TipoCaminhaoPeso, number>,
   limites: LimitesPesoKg,
   densPlaca?: number | null,
-): 'classificado' | 'sem_ideal' | 'ignorado' {
-  if (!(peso > 0)) return 'ignorado';
+): { status: 'classificado' | 'sem_ideal' | 'ignorado'; tipoDeduzido: boolean } {
+  if (!(peso > 0)) return { status: 'ignorado', tipoDeduzido: false };
+  const tipoDeduzido = tipo == null;
   const tipoEfetivo = tipo ?? inferirTipoPorPeso(peso, limites);
   const dens = (densPlaca != null && densPlaca > 0) ? densPlaca : densidades[tipoEfetivo];
   const vol = volumes[tipoEfetivo];
   const ideal = (vol > 0 && dens > 0) ? Math.round(vol * dens * 100) / 100 : 0;
-  if (!(ideal > 0)) return 'sem_ideal';
+  if (!(ideal > 0)) return { status: 'sem_ideal', tipoDeduzido };
   const pctIdeal = (peso / ideal) * 100;
   const idx = idxFaixaPorId(classificarFaixaVsIdeal(pctIdeal));
   if (idx >= 0) faixaContagem[idx]++;
-  return 'classificado';
+  return { status: 'classificado', tipoDeduzido };
 }
 
 function isoDataRegistro(reg: Record<string, unknown>, colData: string): string | null {
@@ -541,6 +589,7 @@ export function analisarPesoColeta(
   const colTipo = opts?.colunaTipoCaminhao?.trim() || cols.colTipo || '';
 
   let totalPesoKg = 0;
+  let viagensTipoDeduzido = 0;
   const faixaContagem = FAIXAS_PESO.map(() => 0);
 
   const colRota = detectarColunaRankingRotas(dados);
@@ -566,7 +615,10 @@ export function analisarPesoColeta(
     );
     const densPlaca = placaReg ? densPorPlaca[placaReg] : undefined;
     for (const p of pesosViagem) {
-      registrarFaixaVsIdeal(faixaContagem, p, tipoReg, volumes, densidades, limites, densPlaca);
+      const r = registrarFaixaVsIdeal(
+        faixaContagem, p, tipoReg, volumes, densidades, limites, densPlaca,
+      );
+      if (r.status === 'classificado' && r.tipoDeduzido) viagensTipoDeduzido += 1;
     }
   }
 
@@ -576,7 +628,7 @@ export function analisarPesoColeta(
   const pesoMedioKg = totalPesoKg > 0 ? totalPesoKg / totalViagens : 0;
   const { rotaMinima, rotaMaxima } = calcularExtremosViagens(dados, colPeso, colRota);
 
-  const { tiposCaminhao, caminhoesUnicos } = contarFrotaPorTipoCaminhao(
+  const { tiposCaminhao, caminhoesUnicos, tipoDeduzido } = contarFrotaPorTipoCaminhao(
     dados,
     cols.colPlaca,
     colTipo,
@@ -610,6 +662,8 @@ export function analisarPesoColeta(
     faixas,
     tiposCaminhao,
     caminhoesUnicos,
+    frotaTipoDeduzido: tipoDeduzido,
+    viagensTipoDeduzido,
     caixaMediaKg,
     densidadeOtima,
     mediaIdealKg,

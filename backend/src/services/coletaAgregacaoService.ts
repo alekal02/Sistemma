@@ -10,7 +10,7 @@ import { normalizarTipoCaminhaoPeso } from '../config/pesoMaximoCaminhao';
 import { aplicarFiltroViagensValidasDashboard } from './validacaoViagemService';
 import { separarMelhoresPiores } from './rankingOperacionalService';
 import { sqlSumViagens, sqlSumPesoEfetivoKg, sqlExprPesoEfetivoKg, contarViagensPorRotaRegistro } from './viagensPorRotaService';
-import { calcularHorasProdutivaImprodutivaRegistro } from './horasProdutivasService';
+import { decomporJornadaRegistro, type JornadaDecomposta } from './jornadaTrechosService';
 import { calcularPesoIdealViagem, densidadeOptsToInput } from './relatorioDia/escalaIdealPeso';
 import { montarViagensPesoDoRegistro, type ViagemPesoRotaItem } from './viagemPesoRotaService';
 import {
@@ -312,6 +312,43 @@ export interface LinhaMapeamentoOperacional {
   tonPorHora: number;
   /** % do tempo total que foi produtivo (0–100) */
   percentualProdutivo: number;
+  /** Base → primeira rota */
+  horasDeslocamentoInicial: number;
+  /** Saída de uma rota → chegada na próxima (inclui descarga/aterro) */
+  horasEntreRotas: number;
+  /** Saída da última rota → base */
+  horasRetornoFinal: number;
+  /** Improdutiva que a planilha não permitiu atribuir a um trecho */
+  horasImprodutivasNaoDetalhadas: number;
+  /** KM rodado dentro das rotas */
+  kmProdutivo: number;
+  /** KM rodado fora das rotas (deslocamento) */
+  kmImprodutivo: number;
+  kmDeslocamentoInicial: number;
+  kmEntreRotas: number;
+  kmRetornoFinal: number;
+}
+
+/** Onde a hora e o KM improdutivos foram gastos, por placa / motorista / rota. */
+export interface TrechosJornadaDimensao {
+  chave: string;
+  viagens: number;
+  horasTotais: number;
+  horasProdutivas: number;
+  horasImprodutivas: number;
+  horasDeslocamentoInicial: number;
+  horasEntreRotas: number;
+  horasRetornoFinal: number;
+  horasImprodutivasNaoDetalhadas: number;
+  kmTotal: number;
+  kmProdutivo: number;
+  kmImprodutivo: number;
+  kmDeslocamentoInicial: number;
+  kmEntreRotas: number;
+  kmRetornoFinal: number;
+  percentualProdutivo: number;
+  horasImprodutivasPorViagem: number | null;
+  kmImprodutivoPorViagem: number | null;
 }
 
 export interface MapeamentoOperacionalResult {
@@ -328,7 +365,23 @@ export interface MapeamentoOperacionalResult {
     horasImprodutivas: number;
     percentualProdutivo: number;
     tonelagem: number;
+    horasDeslocamentoInicial: number;
+    horasEntreRotas: number;
+    horasRetornoFinal: number;
+    horasImprodutivasNaoDetalhadas: number;
+    kmProdutivo: number;
+    kmImprodutivo: number;
+    kmDeslocamentoInicial: number;
+    kmEntreRotas: number;
+    kmRetornoFinal: number;
+    /** Registros com horário suficiente para detalhar os trechos */
+    registrosComTrecho: number;
+    registros: number;
   };
+  /** Ranking de improdutividade por dimensão (maior hora improdutiva primeiro) */
+  trechosPorPlaca: TrechosJornadaDimensao[];
+  trechosPorMotorista: TrechosJornadaDimensao[];
+  trechosPorRota: TrechosJornadaDimensao[];
   /** Cruzamento rota × motorista × placa, ordenado por horas produtivas desc */
   linhas: LinhaMapeamentoOperacional[];
   /**
@@ -366,6 +419,110 @@ export interface TopRotaProdutividadeEncher {
 
 const MAPEAMENTO_MAX_LINHAS = 5000;
 const MAPEAMENTO_MAX_REGISTROS = 25000;
+/** Tamanho dos rankings de improdutividade por dimensão. */
+const MAPEAMENTO_MAX_RANKING_TRECHOS = 30;
+
+type AccTrechos = {
+  viagens: number;
+  horasTotais: number;
+  horasProdutivas: number;
+  horasImprodutivas: number;
+  horasDeslocamentoInicial: number;
+  horasEntreRotas: number;
+  horasRetornoFinal: number;
+  horasImprodutivasNaoDetalhadas: number;
+  kmTotal: number;
+  kmProdutivo: number;
+  kmImprodutivo: number;
+  kmDeslocamentoInicial: number;
+  kmEntreRotas: number;
+  kmRetornoFinal: number;
+};
+
+function novoAccTrechos(): AccTrechos {
+  return {
+    viagens: 0,
+    horasTotais: 0,
+    horasProdutivas: 0,
+    horasImprodutivas: 0,
+    horasDeslocamentoInicial: 0,
+    horasEntreRotas: 0,
+    horasRetornoFinal: 0,
+    horasImprodutivasNaoDetalhadas: 0,
+    kmTotal: 0,
+    kmProdutivo: 0,
+    kmImprodutivo: 0,
+    kmDeslocamentoInicial: 0,
+    kmEntreRotas: 0,
+    kmRetornoFinal: 0,
+  };
+}
+
+function somarTrechos(acc: AccTrechos, j: JornadaDecomposta, viagens: number): void {
+  acc.viagens += viagens;
+  acc.horasTotais += j.horasTotais;
+  acc.horasProdutivas += j.horasProdutivas;
+  acc.horasImprodutivas += j.horasImprodutivas;
+  acc.horasDeslocamentoInicial += j.horasDeslocamentoInicial;
+  acc.horasEntreRotas += j.horasEntreRotas;
+  acc.horasRetornoFinal += j.horasRetornoFinal;
+  acc.horasImprodutivasNaoDetalhadas += j.horasImprodutivasNaoDetalhadas;
+  acc.kmTotal += j.kmTotal;
+  acc.kmProdutivo += j.kmProdutivo;
+  acc.kmImprodutivo += j.kmImprodutivo;
+  acc.kmDeslocamentoInicial += j.kmDeslocamentoInicial;
+  acc.kmEntreRotas += j.kmEntreRotas;
+  acc.kmRetornoFinal += j.kmRetornoFinal;
+}
+
+function acumularEmMapa(
+  mapa: Map<string, AccTrechos>,
+  chave: string,
+  j: JornadaDecomposta,
+  viagens: number,
+): void {
+  let acc = mapa.get(chave);
+  if (!acc) {
+    acc = novoAccTrechos();
+    mapa.set(chave, acc);
+  }
+  somarTrechos(acc, j, viagens);
+}
+
+function finalizarTrechos(chave: string, acc: AccTrechos): TrechosJornadaDimensao {
+  return {
+    chave,
+    viagens: acc.viagens,
+    horasTotais: round2(acc.horasTotais),
+    horasProdutivas: round2(acc.horasProdutivas),
+    horasImprodutivas: round2(acc.horasImprodutivas),
+    horasDeslocamentoInicial: round2(acc.horasDeslocamentoInicial),
+    horasEntreRotas: round2(acc.horasEntreRotas),
+    horasRetornoFinal: round2(acc.horasRetornoFinal),
+    horasImprodutivasNaoDetalhadas: round2(acc.horasImprodutivasNaoDetalhadas),
+    kmTotal: round2(acc.kmTotal),
+    kmProdutivo: round2(acc.kmProdutivo),
+    kmImprodutivo: round2(acc.kmImprodutivo),
+    kmDeslocamentoInicial: round2(acc.kmDeslocamentoInicial),
+    kmEntreRotas: round2(acc.kmEntreRotas),
+    kmRetornoFinal: round2(acc.kmRetornoFinal),
+    percentualProdutivo: acc.horasTotais > 0
+      ? round2((acc.horasProdutivas / acc.horasTotais) * 100)
+      : 0,
+    horasImprodutivasPorViagem: acc.viagens > 0
+      ? round2(acc.horasImprodutivas / acc.viagens)
+      : null,
+    kmImprodutivoPorViagem: acc.viagens > 0 ? round2(acc.kmImprodutivo / acc.viagens) : null,
+  };
+}
+
+function rankearTrechos(mapa: Map<string, AccTrechos>): TrechosJornadaDimensao[] {
+  return [...mapa.entries()]
+    .map(([chave, acc]) => finalizarTrechos(chave, acc))
+    .filter((d) => d.horasImprodutivas > 0 || d.kmImprodutivo > 0)
+    .sort((a, b) => b.horasImprodutivas - a.horasImprodutivas)
+    .slice(0, MAPEAMENTO_MAX_RANKING_TRECHOS);
+}
 
 /**
  * Mapeamento operacional do ciclo: rota × motorista × placa com tempo e km.
@@ -382,7 +539,14 @@ export async function getMapeamentoOperacional(
       linhas: 0, truncado: false, rotas: 0, motoristas: 0, placas: 0,
       viagens: 0, kmTotal: 0, horasTotais: 0, horasProdutivas: 0,
       horasImprodutivas: 0, percentualProdutivo: 0, tonelagem: 0,
+      horasDeslocamentoInicial: 0, horasEntreRotas: 0, horasRetornoFinal: 0,
+      horasImprodutivasNaoDetalhadas: 0, kmProdutivo: 0, kmImprodutivo: 0,
+      kmDeslocamentoInicial: 0, kmEntreRotas: 0, kmRetornoFinal: 0,
+      registrosComTrecho: 0, registros: 0,
     },
+    trechosPorPlaca: [],
+    trechosPorMotorista: [],
+    trechosPorRota: [],
     linhas: [],
     topRotasLentas: [],
     viagensPesoRota: [],
@@ -447,9 +611,15 @@ export async function getMapeamentoOperacional(
     horasTotais: number;
     horasProdutivas: number;
     horasImprodutivas: number;
+    trechos: AccTrechos;
   };
 
   const mapa = new Map<string, Acc>();
+  const trechosPlaca = new Map<string, AccTrechos>();
+  const trechosMotorista = new Map<string, AccTrechos>();
+  const trechosRota = new Map<string, AccTrechos>();
+  const trechosGeral = novoAccTrechos();
+  let registrosComTrecho = 0;
   const porRota = new Map<string, {
     viagens: number;
     kmTotal: number;
@@ -486,11 +656,17 @@ export async function getMapeamentoOperacional(
       tempoForaUnidade: reg.tempoForaUnidade,
       dados: reg.dados,
     };
-    const horas = calcularHorasProdutivaImprodutivaRegistro(obj);
+    const jornada = decomporJornadaRegistro(obj);
     const viagens = contarViagensPorRotaRegistro(reg);
     const km = Number(reg.kmTotal) || 0;
     const peso = Number(reg.pesoTotal) || 0;
     const dia = toIsoDate(reg.dataSaida);
+
+    somarTrechos(trechosGeral, jornada, viagens);
+    acumularEmMapa(trechosPlaca, placa, jornada, viagens);
+    acumularEmMapa(trechosMotorista, motorista, jornada, viagens);
+    acumularEmMapa(trechosRota, rota, jornada, viagens);
+    if (jornada.trechos.length > 0) registrosComTrecho++;
 
     let acc = mapa.get(chave);
     if (!acc) {
@@ -506,15 +682,17 @@ export async function getMapeamentoOperacional(
         horasTotais: 0,
         horasProdutivas: 0,
         horasImprodutivas: 0,
+        trechos: novoAccTrechos(),
       };
       mapa.set(chave, acc);
     }
+    somarTrechos(acc.trechos, jornada, viagens);
     acc.viagens += viagens;
     acc.pesoKg += peso;
     acc.kmTotal += km;
-    acc.horasTotais += horas.horasTotais;
-    acc.horasProdutivas += horas.horasProdutivas;
-    acc.horasImprodutivas += horas.horasImprodutivas;
+    acc.horasTotais += jornada.horasTotais;
+    acc.horasProdutivas += jornada.horasProdutivas;
+    acc.horasImprodutivas += jornada.horasImprodutivas;
     if (dia) acc.dias.add(dia);
     const tipo = (reg.tipoCaminhao || '').trim();
     if (tipo) acc.tipoCounts.set(tipo, (acc.tipoCounts.get(tipo) || 0) + viagens);
@@ -529,9 +707,9 @@ export async function getMapeamentoOperacional(
     }
     rAcc.viagens += viagens;
     rAcc.kmTotal += km;
-    rAcc.horasTotais += horas.horasTotais;
-    rAcc.horasProdutivas += horas.horasProdutivas;
-    rAcc.horasImprodutivas += horas.horasImprodutivas;
+    rAcc.horasTotais += jornada.horasTotais;
+    rAcc.horasProdutivas += jornada.horasProdutivas;
+    rAcc.horasImprodutivas += jornada.horasImprodutivas;
     rAcc.pesoKg += peso;
     const tipoNorm = normalizarTipoCaminhaoPeso(reg.tipoCaminhao);
     if (tipoNorm) rAcc.tipoCounts.set(tipoNorm, (rAcc.tipoCounts.get(tipoNorm) || 0) + viagens);
@@ -539,9 +717,9 @@ export async function getMapeamentoOperacional(
     sumViagens += viagens;
     sumKm += km;
     sumPeso += peso;
-    sumTotais += horas.horasTotais;
-    sumProd += horas.horasProdutivas;
-    sumImprod += horas.horasImprodutivas;
+    sumTotais += jornada.horasTotais;
+    sumProd += jornada.horasProdutivas;
+    sumImprod += jornada.horasImprodutivas;
     setRotas.add(rota);
     setMotoristas.add(motorista);
     setPlacas.add(placa);
@@ -600,6 +778,15 @@ export async function getMapeamentoOperacional(
       kmPorViagem: viagens > 0 ? round2(kmTotal / viagens) : 0,
       tonPorHora: horasProdutivas > 0 ? round2(tonelagem / horasProdutivas) : 0,
       percentualProdutivo: horasTotais > 0 ? round2((horasProdutivas / horasTotais) * 100) : 0,
+      horasDeslocamentoInicial: round2(acc.trechos.horasDeslocamentoInicial),
+      horasEntreRotas: round2(acc.trechos.horasEntreRotas),
+      horasRetornoFinal: round2(acc.trechos.horasRetornoFinal),
+      horasImprodutivasNaoDetalhadas: round2(acc.trechos.horasImprodutivasNaoDetalhadas),
+      kmProdutivo: round2(acc.trechos.kmProdutivo),
+      kmImprodutivo: round2(acc.trechos.kmImprodutivo),
+      kmDeslocamentoInicial: round2(acc.trechos.kmDeslocamentoInicial),
+      kmEntreRotas: round2(acc.trechos.kmEntreRotas),
+      kmRetornoFinal: round2(acc.trechos.kmRetornoFinal),
     };
   });
 
@@ -697,7 +884,21 @@ export async function getMapeamentoOperacional(
       horasImprodutivas,
       percentualProdutivo: horasTotais > 0 ? round2((horasProdutivas / horasTotais) * 100) : 0,
       tonelagem: round2(sumPeso / 1000),
+      horasDeslocamentoInicial: round2(trechosGeral.horasDeslocamentoInicial),
+      horasEntreRotas: round2(trechosGeral.horasEntreRotas),
+      horasRetornoFinal: round2(trechosGeral.horasRetornoFinal),
+      horasImprodutivasNaoDetalhadas: round2(trechosGeral.horasImprodutivasNaoDetalhadas),
+      kmProdutivo: round2(trechosGeral.kmProdutivo),
+      kmImprodutivo: round2(trechosGeral.kmImprodutivo),
+      kmDeslocamentoInicial: round2(trechosGeral.kmDeslocamentoInicial),
+      kmEntreRotas: round2(trechosGeral.kmEntreRotas),
+      kmRetornoFinal: round2(trechosGeral.kmRetornoFinal),
+      registrosComTrecho,
+      registros: lista.length,
     },
+    trechosPorPlaca: rankearTrechos(trechosPlaca),
+    trechosPorMotorista: rankearTrechos(trechosMotorista),
+    trechosPorRota: rankearTrechos(trechosRota),
     linhas,
     topRotasLentas,
     viagensPesoRota,

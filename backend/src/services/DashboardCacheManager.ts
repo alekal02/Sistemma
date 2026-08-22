@@ -25,6 +25,8 @@ export interface ExecutivoCacheParams {
   servicoId?: string;
   mesReferencia?: number;
   anoReferencia?: number;
+  /** Banco em uso: separa o cache de contratos diferentes no modo multi-banco. */
+  escopo?: string;
 }
 
 interface CacheEntry {
@@ -68,6 +70,7 @@ class DashboardCacheManager {
       servicoId: params.servicoId || null,
       mesReferencia: params.mesReferencia ?? null,
       anoReferencia: params.anoReferencia ?? null,
+      escopo: params.escopo || null,
     });
   }
 

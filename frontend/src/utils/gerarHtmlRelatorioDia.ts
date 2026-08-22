@@ -30,6 +30,12 @@ import {
   statusPorPctIdeal,
   type StatusRankingViagem,
 } from './rankingViagensTipo';
+import { montarDistribuicaoImprodutiva, montarLeituraTrechos } from './trechosImprodutivos';
+import {
+  referenciaPrincipalBaseline,
+  type BaselineDia,
+  type ComparativoBaseline,
+} from '@sistemma/shared';
 
 export type AbaRelatorioDia = 'operacao' | 'receita';
 
@@ -174,6 +180,26 @@ const ESTILOS = `
   .vg-legenda { font-size: 6px; color: #64748b; margin: 0 0 6px; }
   .vg-dot { display: inline-block; width: 7px; height: 7px; border-radius: 2px; margin-right: 3px; vertical-align: -1px; }
   .footer { text-align: center; font-size: 6px; color: #94a3b8; margin-top: 10px; padding-top: 8px; border-top: 1px solid #e2e8f0; }
+
+  /* Paginação: nenhum bloco de dados pode ser cortado ao meio pela quebra de página */
+  .bloco, .chart-box, .diag-box, .insight-box, .destaque, .card, .kpi-card,
+  .vg-item, .vg-card, .hero-dark, .banner, .tarifas {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  /* Título/cabeçalho nunca fica sozinho no pé da página */
+  .sec, .bloco-hd, .bloco-hd-tbl, .estudo-nota, .vg-legenda, .diag-veredito {
+    break-after: avoid;
+    page-break-after: avoid;
+  }
+  /* Barra e sua legenda de valores andam juntas */
+  .bar-row { break-inside: avoid; page-break-inside: avoid; break-after: avoid; page-break-after: avoid; }
+  .bar-detail { break-before: avoid; page-break-before: avoid; break-inside: avoid; page-break-inside: avoid; }
+  /* Linha de tabela inteira, com cabeçalho repetido nas páginas seguintes */
+  table.data tr, .ref-tbl tr, .pizza-leg tr { break-inside: avoid; page-break-inside: avoid; }
+  table.data thead, .ref-tbl thead { display: table-header-group; }
+  table.data tbody, .ref-tbl tbody { break-before: avoid; page-break-before: avoid; }
+
   @media print { * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; } body { padding: 10px; } }
 `;
 
@@ -282,6 +308,30 @@ export interface ResumoMapeamentoPdf {
   horasProdutivas: number;
   horasImprodutivas: number;
   percentualProdutivo: number;
+  horasDeslocamentoInicial?: number;
+  horasEntreRotas?: number;
+  horasRetornoFinal?: number;
+  horasImprodutivasNaoDetalhadas?: number;
+  kmProdutivo?: number;
+  kmImprodutivo?: number;
+  kmDeslocamentoInicial?: number;
+  kmEntreRotas?: number;
+  kmRetornoFinal?: number;
+  registrosComTrecho?: number;
+  registros?: number;
+}
+
+export interface TrechosDimensaoPdf {
+  chave: string;
+  viagens: number;
+  horasImprodutivas: number;
+  horasDeslocamentoInicial: number;
+  horasEntreRotas: number;
+  horasRetornoFinal: number;
+  horasImprodutivasNaoDetalhadas: number;
+  kmImprodutivo: number;
+  percentualProdutivo: number;
+  horasImprodutivasPorViagem: number | null;
 }
 
 export interface LinhaMapeamentoPdf {
@@ -510,10 +560,194 @@ function blocoMapeamentoTempoKmHtml(opts: {
   ${tabelaMap}`;
 }
 
-function statusBadge(status: 'bom' | 'medio' | 'ruim'): string {
-  const map = { bom: ['st-bom', 'OK'], medio: ['st-medio', 'Atenção'], ruim: ['st-ruim', 'Gargalo'] };
-  const [cls, lbl] = map[status];
-  return `<span class="${cls}">${lbl}</span>`;
+/**
+ * Régua temporal: o dia contra o mesmo dia da semana no ciclo, a mediana do
+ * ciclo e o dia equivalente do ciclo anterior.
+ */
+function blocoReguaTemporalHtml(baseline?: BaselineDia | null): string {
+  if (!baseline) return '';
+  const metricas = baseline.metricas.filter((m) => m.valor != null);
+  if (!metricas.length) return '';
+
+  const nomeDiaSemana = baseline.rotuloOcorrencia.split(' ')[1] || 'dia igual';
+
+  const celula = (c: ComparativoBaseline, casas: number) => {
+    if (c.referencia == null) return '<td class="r" style="color:#cbd5e1">—</td>';
+    const cor = c.melhor == null ? '#64748b' : c.melhor ? '#0f766e' : '#b91c1c';
+    const sinal = (c.delta ?? 0) > 0 ? '+' : '';
+    const variacao = c.pct != null ? `${fmtNum(c.pct, 0)}%` : fmtNum(c.delta ?? 0, casas);
+    return `<td class="r">${fmtNum(c.referencia, casas)}
+      <strong style="color:${cor}">${sinal}${variacao}</strong></td>`;
+  };
+
+  const cards = metricas.slice(0, 6).map((m) => {
+    const ref = referenciaPrincipalBaseline(m);
+    const cor = ref?.comparativo.melhor == null
+      ? '#64748b'
+      : ref.comparativo.melhor ? '#0f766e' : '#b91c1c';
+    const variacao = ref?.comparativo.pct != null
+      ? `${(ref.comparativo.delta ?? 0) > 0 ? '+' : '−'}${fmtNum(Math.abs(ref.comparativo.pct), 0)}% vs normal`
+      : 'sem referência';
+    return `
+    <td class="kpi-card" style="border-top:3px solid ${cor}">
+      <div class="kpi-lbl">${esc(m.label)}</div>
+      <div class="kpi-val">${fmtNum(m.valor as number, m.casas)}${esc(m.sufixo)}</div>
+      <div style="font-size:7px;color:${cor};margin-top:1px;font-weight:700">${esc(variacao)}</div>
+    </td>`;
+  }).join('');
+
+  const contexto = baseline.diasMesmoDiaSemana > 0
+    ? `${baseline.diasMesmoDiaSemana} outro(s) ${nomeDiaSemana} no ciclo entraram na mediana.`
+    : 'Sem outro dia igual no ciclo: a régua usa a mediana do ciclo.';
+
+  return `
+  <div class="sec">O dia comparado com o padrão do ciclo — ${esc(baseline.rotuloOcorrencia)} do ciclo</div>
+  <div style="font-size:8px;color:#64748b;margin-bottom:5px;line-height:1.45">
+    Referência = mediana dos outros dias, para que um dia atípico não distorça a régua.
+    ${esc(contexto)}
+  </div>
+  <div class="banner" style="background:#f0fdfa;border-color:#99f6e4;color:#0f766e">
+    ${esc(baseline.leitura)}
+  </div>
+  <table class="mini-tbl" style="margin-bottom:6px"><tr>${cards}</tr></table>
+  <table class="data">
+    <thead>
+      <tr>
+        <th>Indicador</th>
+        <th class="r">No dia</th>
+        <th class="r">Mediana ${esc(nomeDiaSemana)}</th>
+        <th class="r">Mediana do ciclo</th>
+        <th class="r">Ciclo anterior</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${metricas.map((m) => `
+      <tr>
+        <td>${esc(m.label)}</td>
+        <td class="r" style="font-weight:700">${fmtNum(m.valor as number, m.casas)}</td>
+        ${celula(m.mesmoDiaSemana, m.casas)}
+        ${celula(m.medianaCiclo, m.casas)}
+        ${celula(m.cicloAnterior, m.casas)}
+      </tr>`).join('')}
+    </tbody>
+  </table>
+  <div style="font-size:7px;color:#94a3b8;margin-bottom:6px;line-height:1.45">
+    Cada coluna traz a referência e a variação do dia sobre ela. Verde = melhor;
+    vermelho = pior. Em KM e KM por viagem, subir conta como pior.${
+    baseline.temCicloAnterior
+      ? ' Ciclo anterior = dia equivalente (mesma ocorrência do dia da semana).'
+      : ' Sem dia equivalente no ciclo anterior.'
+  }
+  </div>`;
+}
+
+/**
+ * Onde a hora improdutiva foi gasta: deslocamento inicial, entre rotas
+ * (descarga/aterro) e retorno à base, com ranking por placa e por rota.
+ */
+function blocoTrechosImprodutivosHtml(opts: {
+  resumo?: ResumoMapeamentoPdf | null;
+  porPlaca?: TrechosDimensaoPdf[] | null;
+  porRota?: TrechosDimensaoPdf[] | null;
+}): string {
+  const resumo = opts.resumo;
+  const fatias = montarDistribuicaoImprodutiva(resumo);
+  if (!resumo || !fatias.length) return '';
+
+  const leitura = montarLeituraTrechos(resumo);
+  const totalImprod = resumo.horasImprodutivas || 0;
+
+  const barra = `
+  <table style="width:100%;border-collapse:collapse;table-layout:fixed;margin-bottom:6px">
+    <tr>
+      ${fatias.map((f) => `
+        <td style="width:${Math.max(f.pct, 2)}%;background:${f.cor};height:16px;
+                   color:#fff;font-size:7.5px;font-weight:800;text-align:center;
+                   border:0;padding:0">
+          ${f.pct >= 12 ? `${fmtNum(f.pct, 0)}%` : ''}
+        </td>`).join('')}
+    </tr>
+  </table>`;
+
+  const cards = `
+  <table class="mini-tbl" style="margin-bottom:6px">
+    <tr>
+      ${fatias.map((f) => `
+        <td class="kpi-card" style="border-top:3px solid ${f.cor}">
+          <div class="kpi-lbl">${esc(f.label)}</div>
+          <div class="kpi-val" style="color:${f.cor}">${fmtNum(f.horas, 1)} h</div>
+          <div style="font-size:7px;color:#64748b;margin-top:1px">
+            ${fmtNum(f.pct, 0)}% do improdutivo${f.km > 0 ? ` · ${fmtNum(f.km, 0)} km` : ''}
+          </div>
+        </td>`).join('')}
+    </tr>
+  </table>`;
+
+  const kmProdutivo = resumo.kmProdutivo || 0;
+  const kmImprodutivo = resumo.kmImprodutivo || 0;
+  const linhaKm = kmProdutivo + kmImprodutivo > 0 ? `
+  <div style="font-size:8px;color:#334155;margin-bottom:6px">
+    KM dentro das rotas: <strong style="color:#0f766e">${fmtNum(kmProdutivo, 0)} km</strong>
+    · KM fora das rotas: <strong style="color:#c2410c">${fmtNum(kmImprodutivo, 0)} km</strong>${
+    leitura.pctKmImprodutivo != null ? ` (${fmtNum(leitura.pctKmImprodutivo, 0)}%)` : ''
+  }
+  </div>` : '';
+
+  const leituraHtml = leitura.texto ? `
+  <div class="banner" style="background:#fff7ed;border-color:#fed7aa;color:#9a3412">
+    ${esc(leitura.texto)}
+  </div>` : '';
+
+  const tabelaRanking = (titulo: string, itens: TrechosDimensaoPdf[] | null | undefined, rotulo: string) => {
+    const lista = (itens || []).filter((i) => i.horasImprodutivas > 0).slice(0, 8);
+    if (!lista.length) return '';
+    return `
+    <div class="sec">${esc(titulo)}</div>
+    <table class="data">
+      <thead>
+        <tr>
+          <th>${esc(rotulo)}</th>
+          <th class="r">Improdutivas</th>
+          <th class="r">Inicial</th>
+          <th class="r">Entre rotas</th>
+          <th class="r">Retorno</th>
+          <th class="r">h/viagem</th>
+          <th class="r">KM fora</th>
+          <th class="r">% Prod</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${lista.map((i) => `
+        <tr>
+          <td>${esc(i.chave)}</td>
+          <td class="r" style="color:#c2410c;font-weight:700">${fmtNum(i.horasImprodutivas, 1)}</td>
+          <td class="r">${fmtNum(i.horasDeslocamentoInicial, 1)}</td>
+          <td class="r">${fmtNum(i.horasEntreRotas, 1)}</td>
+          <td class="r">${fmtNum(i.horasRetornoFinal, 1)}</td>
+          <td class="r">${i.horasImprodutivasPorViagem != null ? fmtNum(i.horasImprodutivasPorViagem, 2) : '—'}</td>
+          <td class="r">${fmtNum(i.kmImprodutivo, 0)}</td>
+          <td class="r">${fmtNum(i.percentualProdutivo, 0)}%</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>`;
+  };
+
+  const cobertura = leitura.coberturaPct != null && leitura.coberturaPct < 100
+    ? ` Horários suficientes em ${leitura.coberturaPct}% dos registros.`
+    : '';
+
+  return `
+  <div class="sec">Onde a hora improdutiva foi gasta — ${fmtNum(totalImprod, 1)} h fora da rota</div>
+  <div style="font-size:8px;color:#64748b;margin-bottom:5px;line-height:1.45">
+    Tempo fora da rota separado por trecho, a partir dos horários de base e de cada
+    rota na planilha.${cobertura}
+  </div>
+  ${leituraHtml}
+  ${barra}
+  ${cards}
+  ${linhaKm}
+  ${tabelaRanking('Improdutividade por placa', opts.porPlaca, 'Placa')}
+  ${tabelaRanking('Improdutividade por rota', opts.porRota, 'Rota')}`;
 }
 
 type LinhaTipoEstudo = {
@@ -805,40 +1039,6 @@ function blocoEstudoProducaoHtml(estudo?: EstudoRotasDia | null): string {
   </table>`;
 }
 
-/** Só rotas com gargalo — visão gerencial enxuta. */
-function blocoRotasPorTipoHtml(estudo?: EstudoRotasDia | null): string {
-  if (!estudo?.rotas?.length) return '';
-
-  const criticas = estudo.rotas
-    .filter((r) => r.viagens > 0 && r.tipoPredominante && r.status === 'ruim')
-    .sort((a, b) => (a.pctIdeal ?? a.pctMediaTonViag) - (b.pctIdeal ?? b.pctMediaTonViag))
-    .slice(0, 5);
-
-  if (!criticas.length) return '';
-
-  return `
-  <div class="sec">Rotas com gargalo (por tipo)</div>
-  <table class="data">
-    <thead><tr>
-      <th>Rota</th><th>Tipo</th><th class="c">Viag.</th>
-      <th class="r">Coletado</th><th class="r">Ideal</th><th class="c">%</th>
-    </tr></thead>
-    <tbody>
-      ${criticas.map((r, i) => `
-        <tr style="background:${i % 2 === 0 ? '#fef2f2' : '#fff'}">
-          <td style="font-weight:600">${esc(r.rota)}</td>
-          <td>${esc(r.tipoPredominanteLabel)}</td>
-          <td class="c">${fmtNum(r.viagens, 0)}</td>
-          <td class="r" style="font-weight:700">${fmtNum(r.tonMediaViagem * 1000, 0)} kg</td>
-          <td class="r">${r.pesoIdealKg != null ? `${fmtNum(r.pesoIdealKg, 0)} kg` : '—'}</td>
-          <td class="c" style="font-weight:800;color:#991b1b">
-            ${r.pctIdeal != null ? `${fmtNum(r.pctIdeal, 0)}%` : '—'}
-          </td>
-        </tr>`).join('')}
-    </tbody>
-  </table>`;
-}
-
 function graficoPizzaTipoHtml(linhas: LinhaReceitaGrupo[], faturamentoTotal: number): string {
   const lista = linhas.filter((l) => l.chave && l.chave !== '—' && l.faturamento > 0);
   if (!lista.length) return '';
@@ -969,28 +1169,6 @@ function tabelaReceitaDetalhada(
     </div>`;
 }
 
-function kpisHtml(kpis: KpiValor[], titulo: string) {
-  if (!kpis.length) return '';
-  const rows: string[] = [];
-  for (let i = 0; i < kpis.length; i += 4) {
-    const chunk = kpis.slice(i, i + 4);
-    const cells = chunk.map((k) => `
-      <td class="kpi-card" style="width:25%">
-        <div class="kpi-lbl">${esc(k.nome)}</div>
-        <div class="kpi-val">${esc(k.formatado || '—')}</div>
-      </td>`).join('');
-    const fill = chunk.length < 4
-      ? Array.from({ length: 4 - chunk.length }, () => '<td style="width:25%"></td>').join('')
-      : '';
-    rows.push(`<tr>${cells}${fill}</tr>`);
-  }
-  return `
-    <div class="bloco">
-      <div class="sec">${esc(titulo)}</div>
-      <table class="kpi-grid">${rows.join('')}</table>
-    </div>`;
-}
-
 function blocoOperacao(opts: {
   operacao: OperacaoDiaAnalise;
   dataIso: string;
@@ -1006,6 +1184,9 @@ function blocoOperacao(opts: {
   viagensPesoRota?: ViagemPesoRotaPdf[] | null;
   mapeamentoResumo?: ResumoMapeamentoPdf | null;
   mapeamentoLinhas?: LinhaMapeamentoPdf[] | null;
+  trechosPorPlaca?: TrechosDimensaoPdf[] | null;
+  trechosPorRota?: TrechosDimensaoPdf[] | null;
+  baselineDia?: BaselineDia | null;
 }): string {
   const op = opts.operacao.resumo;
   const limOpts: OptsAnaliseContratoDia = {
@@ -1034,6 +1215,7 @@ function blocoOperacao(opts: {
   </div>
 
   ${blocoIndicadoresDiaHtml(op, opts.cenarioCaixaMedia, opts.densidadeResiduoKgL)}
+  ${blocoReguaTemporalHtml(opts.baselineDia)}
   ${blocoGraficoViagemPorTipoHtml(opts.operacao, limOpts)}
   ${blocoViagensPesoRotaHtml(opts.viagensPesoRota)}
   ${blocoEstudoProducaoHtml(opts.estudoRotas)}
@@ -1041,6 +1223,11 @@ function blocoOperacao(opts: {
     viagensPesoRota: opts.viagensPesoRota,
     resumo: opts.mapeamentoResumo,
     linhas: opts.mapeamentoLinhas,
+  })}
+  ${blocoTrechosImprodutivosHtml({
+    resumo: opts.mapeamentoResumo,
+    porPlaca: opts.trechosPorPlaca,
+    porRota: opts.trechosPorRota,
   })}
   ${blocoGargalosOperacaoHtml({
     tipos,
@@ -1131,9 +1318,12 @@ export function gerarHtmlRelatorioDia(opts: {
   viagensPesoRota?: ViagemPesoRotaPdf[] | null;
   mapeamentoResumo?: ResumoMapeamentoPdf | null;
   mapeamentoLinhas?: LinhaMapeamentoPdf[] | null;
+  trechosPorPlaca?: TrechosDimensaoPdf[] | null;
+  trechosPorRota?: TrechosDimensaoPdf[] | null;
+  baselineDia?: BaselineDia | null;
   geradoEm?: Date;
 }): string {
-  const { aba, servicoNome, dataIso, diaSemana, operacao, receita, linhas = [] } = opts;
+  const { aba, servicoNome, dataIso, diaSemana, operacao, receita } = opts;
   const gerado = opts.geradoEm ?? new Date();
   const stamp = gerado.getTime();
   const dataGeracao = gerado.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' });
@@ -1161,6 +1351,9 @@ export function gerarHtmlRelatorioDia(opts: {
       viagensPesoRota: opts.viagensPesoRota,
       mapeamentoResumo: opts.mapeamentoResumo,
       mapeamentoLinhas: opts.mapeamentoLinhas,
+      trechosPorPlaca: opts.trechosPorPlaca,
+      trechosPorRota: opts.trechosPorRota,
+      baselineDia: opts.baselineDia,
     });
 
   const resumo = ehReceita ? receita!.resumo : operacao.resumo;

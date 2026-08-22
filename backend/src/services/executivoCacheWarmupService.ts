@@ -3,7 +3,12 @@
  * Roda após startup, diariamente e após upload de planilha.
  */
 
-import AppDataSource from '../database/data-source';
+import AppDataSource, {
+  getCurrentTenantDb,
+  isMultiTenant,
+  runWithTenant,
+} from '../database/data-source';
+import { contratosComBanco, escopoCacheTenant } from './tenantFanout';
 import { Contract } from '../entities/Contract';
 import { Servico } from '../entities/Servico';
 import { inferirMesReferenciaAtual } from '../utils/periodoCicloContrato';
@@ -49,6 +54,7 @@ function montarParamsCiclo(
     ...(servicoId ? { servicoId } : {}),
     mesReferencia: mes,
     anoReferencia: ano,
+    escopo: escopoCacheTenant(),
   };
 }
 
@@ -68,6 +74,16 @@ export async function aquecerCacheExecutivo(opts?: {
     return;
   }
   if (!AppDataSource.isInitialized) return;
+
+  // Com um banco por contrato o aquecimento roda dentro de cada banco.
+  if (isMultiTenant() && !getCurrentTenantDb()) {
+    const bancos = await contratosComBanco();
+    for (const tenant of bancos) {
+      if (opts?.contractId && tenant.contractId !== opts.contractId) continue;
+      await runWithTenant(tenant.databaseName, () => aquecerCacheExecutivo(opts));
+    }
+    return;
+  }
 
   aquecendo = true;
   const inicio = Date.now();

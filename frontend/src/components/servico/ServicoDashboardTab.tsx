@@ -104,7 +104,6 @@ const ServicoDashboardTab = memo(function ServicoDashboardTab({
           tipoServico={tipoServico}
           servicoId={servicoId}
           servicoNome={servicoNome}
-          token={token}
           kpisJaAtivos={kpisUniversalIds}
           onClose={() => onSetEtapa('upload')}
           onConfirm={(kpisAtivados) => {

@@ -6,7 +6,7 @@ dotenv.config();
 
 import express, { Express, Request, Response, NextFunction } from 'express';
 import cors from 'cors';
-import AppDataSource from './database/data-source';
+import AppDataSource, { isMultiTenant, runWithTenant } from './database/data-source';
 import { MAX_BODY_BYTES } from './config/limitesRecursos';
 
 const app: Express = express();
@@ -43,6 +43,7 @@ app.get('/health', (req: Request, res: Response) => {
     version: '2.0-minio',
     buildSha: process.env.BUILD_SHA || 'unknown',
     tag: process.env.IMAGE_TAG || process.env.TAG || 'unknown',
+    multiTenant: process.env.MULTI_TENANT === 'true' || Boolean(process.env.CONTROL_DATABASE_NAME),
   });
 });
 
@@ -317,11 +318,8 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   res.status(500).json({ error: err.message || 'Erro interno do servidor' });
 });
 
-// Inicializar banco de dados e iniciar servidor
-AppDataSource.initialize()
-  .then(async () => {
-    console.log('✅ Banco de dados conectado com sucesso');
-
+/** Seeds e migrations de startup no banco que estiver ativo. */
+async function prepararBancoAtivo(): Promise<void> {
     const skipStartup = process.env.SKIP_STARTUP_SEED === 'true';
 
     if (!skipStartup) {
@@ -379,6 +377,30 @@ AppDataSource.initialize()
       }
     } else {
       console.log('⏭️ SKIP_STARTUP_MIGRATIONS=true — migrations automáticas ignoradas');
+    }
+}
+
+// Inicializar banco de dados e iniciar servidor
+AppDataSource.initialize()
+  .then(async () => {
+    console.log('✅ Banco de dados conectado com sucesso');
+
+    if (isMultiTenant()) {
+      // Um banco por contrato: as tabelas de operação vivem em cada contrato,
+      // então seeds e migrations rodam dentro de cada banco.
+      const { contratosComBanco } = await import('./services/tenantFanout');
+      const bancos = await contratosComBanco();
+      console.log(`🗂️ Modo um-banco-por-contrato — ${bancos.length} contrato(s) para preparar`);
+      for (const tenant of bancos) {
+        try {
+          await runWithTenant(tenant.databaseName, () => prepararBancoAtivo());
+          console.log(`   ✔ ${tenant.numeroContrato} (${tenant.databaseName})`);
+        } catch (err) {
+          console.error(`   ✖ ${tenant.numeroContrato} (${tenant.databaseName}):`, err);
+        }
+      }
+    } else {
+      await prepararBancoAtivo();
     }
 
     app.listen(PORT, () => {

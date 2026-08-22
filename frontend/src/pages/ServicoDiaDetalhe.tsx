@@ -6,7 +6,7 @@ import {
 import { useToast } from '../contexts/ToastContext';
 import { useBreadcrumbs } from '../contexts/BreadcrumbContext';
 import { useKpiCalculator } from '../hooks/useKpiCalculator';
-import servicoService from '../services/servicoService';
+import servicoService, { type TrechosJornadaDimensao } from '../services/servicoService';
 import contractService from '../services/contractService';
 import { isRequestAborted } from '../services/abortableRequest';
 import pdfService from '../services/pdfService';
@@ -33,6 +33,8 @@ import { extrairPlacasReservaContrato } from '../utils/placasReserva';
 import type { MapaLimiteCaminhao } from '../utils/limitesCaminhaoContrato';
 import SkeletonLoader from '../components/SkeletonLoader';
 import OperacaoDiaPanel from '../components/OperacaoDiaPanel';
+import ReguaTemporalDiaPainel from '../components/ReguaTemporalDiaPainel';
+import { useReguaDia } from '../hooks/useReguaDia';
 import RocadaDiaPanel, { type BlocoTipoRocadaUi } from '../components/RocadaDiaPanel';
 import ServicoUnidadeDiaPanel from '../components/ServicoUnidadeDiaPanel';
 import VerificacaoViagensPanel, { type VerificacaoViagensData } from '../components/VerificacaoViagensPanel';
@@ -105,6 +107,7 @@ export default function ServicoDiaDetalhe() {
   const [mostrarRegistros, setMostrarRegistros] = useState(false);
   const [exportandoPdf, setExportandoPdf] = useState(false);
   const [verificacaoViagens, setVerificacaoViagens] = useState<VerificacaoViagensData | null>(null);
+  const [diaInicioCiclo, setDiaInicioCiclo] = useState(1);
   const ehRocada = tipoServico === 'rocadeira';
   const ehPorUnidade = ehServicoPorUnidade(tipoServico);
   const unidade = unidadeOperacionalDoTipo(tipoServico);
@@ -168,6 +171,7 @@ export default function ServicoDiaDetalhe() {
       setServicoNome(padrao?.servico?.nome || 'Serviço');
       setTipoServico(tipo);
       setContratoNome((contrato as { nome?: string })?.nome || '');
+      setDiaInicioCiclo(Number((contrato as { diaInicioCiclo?: number })?.diaInicioCiclo) || 1);
       setConfigFaturamento(
         (padrao?.servico as { configFaturamento?: typeof configFaturamento } | undefined)?.configFaturamento
         || null,
@@ -364,6 +368,14 @@ export default function ServicoDiaDetalhe() {
     });
   }, [ehPorUnidade, analiseColeta, registrosDia, volumeL, densidadeResiduoKgL, densidadeKgL]);
 
+  const regua = useReguaDia({
+    contractId,
+    servicoId,
+    dataIso,
+    diaInicioCiclo,
+    ativo: dataValida && !ehPorUnidade,
+  });
+
   const exportarPdfDia = useCallback(async () => {
     if (ehRocada) {
       if (!analiseRocada || analiseRocada.resumo.areaM2 <= 0) {
@@ -487,6 +499,8 @@ export default function ServicoDiaDetalhe() {
       let viagensPesoRota: Awaited<ReturnType<typeof servicoService.getMapeamentoOperacional>>['viagensPesoRota'] = [];
       let mapeamentoResumo: Awaited<ReturnType<typeof servicoService.getMapeamentoOperacional>>['resumo'] | null = null;
       let mapeamentoLinhas: Awaited<ReturnType<typeof servicoService.getMapeamentoOperacional>>['linhas'] = [];
+      let trechosPorPlaca: TrechosJornadaDimensao[] = [];
+      let trechosPorRota: TrechosJornadaDimensao[] = [];
       if (contractId && servicoId) {
         try {
           const mapeamento = await servicoService.getMapeamentoOperacional(contractId, servicoId, {
@@ -497,6 +511,8 @@ export default function ServicoDiaDetalhe() {
           mapeamentoLinhas = (mapeamento.linhas || [])
             .slice()
             .sort((a, b) => (b.horasProdutivas || 0) - (a.horasProdutivas || 0));
+          trechosPorPlaca = mapeamento.trechosPorPlaca || [];
+          trechosPorRota = mapeamento.trechosPorRota || [];
         } catch {
           // PDF segue sem o bloco se o mapeamento falhar
         }
@@ -522,6 +538,9 @@ export default function ServicoDiaDetalhe() {
         viagensPesoRota,
         mapeamentoResumo,
         mapeamentoLinhas,
+        trechosPorPlaca,
+        trechosPorRota,
+        baselineDia: regua.baseline,
       });
       const nomeArquivo = gerarNomePdfRelatorioDia({
         servicoNome,
@@ -540,7 +559,7 @@ export default function ServicoDiaDetalhe() {
     servicoNome, contratoNome, dataIso, diaSemana, kpisOperacao, kpisOperacaoAvancados, placasReserva,
     porTipoRocada, blocoManualRocada, blocoMecanizadaRocada, configFaturamento, limitesPesoKg,
     volumeL, densidadeResiduoKgL, densidadeKgL, densidadeKgLPorPlaca, cenarioCaixaMedia, agregacaoUnidadeDia, totalRegistrosDia, tipoServico,
-    contractId, servicoId,
+    contractId, servicoId, regua.baseline,
   ]);
 
   const carregandoPainel = ehRocada
@@ -692,6 +711,7 @@ export default function ServicoDiaDetalhe() {
           {verificacaoViagens && (
             <VerificacaoViagensPanel dados={verificacaoViagens} compacto />
           )}
+          <ReguaTemporalDiaPainel baseline={regua.baseline} carregando={regua.carregando} />
           <OperacaoDiaPanel
             dataIso={dataIso}
             registros={registrosDia}

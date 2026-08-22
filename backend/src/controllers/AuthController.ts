@@ -1,12 +1,192 @@
 import { Request, Response } from 'express';
-import { Repository } from 'typeorm';
-import AppDataSource from '../database/data-source';
+import { IsNull, Repository } from 'typeorm';
+import { getControlDataSource, isMultiTenant } from '../database/data-source';
 import { User, UserRole } from '../entities/User';
-import { gerarRefreshToken, gerarToken, verificarTokenRenovacao } from '../middlewares/authMiddleware';
+import { Tenant } from '../entities/Tenant';
+import { Contract } from '../entities/Contract';
+import {
+  gerarRefreshToken,
+  gerarToken,
+  isAdminOuSuper,
+  isSuperadmin,
+  TokenPayload,
+  verificarTokenRenovacao,
+} from '../middlewares/authMiddleware';
+
+/** Só no ambiente local/dev. Em produção exige ACESSO_LIVRE=true de propósito. */
+export function acessoLivreHabilitado(): boolean {
+  if (process.env.ACESSO_LIVRE === 'true') return true;
+  if (process.env.ACESSO_LIVRE === 'false') return false;
+  return process.env.NODE_ENV !== 'production';
+}
+
+function payloadUsuario(user: User, tenantDb?: string | null): TokenPayload {
+  return {
+    id: user.id,
+    email: user.email,
+    nome: user.nome,
+    role: user.role,
+    contractId: user.contractId ?? null,
+    tenantDb: tenantDb ?? null,
+  };
+}
+
+/** Admin sem contrato fixo (ou super-admin) vê todos os contratos. */
+function ehGestorPersistente(user: User): boolean {
+  return user.role === 'superadmin' || (user.role === 'admin' && !user.contractId);
+}
+
+function userPublico(user: User, extras: Record<string, unknown> = {}) {
+  return { ...user.toJSON(), gestor: ehGestorPersistente(user), ...extras };
+}
 
 class AuthController {
   private get repository(): Repository<User> {
-    return AppDataSource.getRepository(User);
+    return getControlDataSource().getRepository(User);
+  }
+
+  private recusarSeProducao(res: Response): boolean {
+    if (acessoLivreHabilitado()) return false;
+    res.status(403).json({ error: 'Acesso local sem senha não está disponível neste ambiente' });
+    return true;
+  }
+
+  private emitirSessao(
+    user: User,
+    extras: { contractId?: string | null; tenantDb?: string | null } = {},
+  ) {
+    const contractId = extras.contractId ?? user.contractId ?? null;
+    const tenantDb = extras.tenantDb ?? null;
+    const payload: TokenPayload = {
+      id: user.id,
+      email: user.email,
+      nome: user.nome,
+      role: user.role,
+      contractId,
+      tenantDb,
+    };
+    return {
+      token: gerarToken(payload),
+      refreshToken: gerarRefreshToken(payload),
+      user: userPublico(user, { contractId, tenantDb }),
+    };
+  }
+
+  private async garantirUsuarioLocal(): Promise<User> {
+    const repo = this.repository;
+    const existente =
+      await repo.findOne({ where: { role: 'superadmin', ativo: true } })
+      || await repo.findOne({ where: { role: 'admin', ativo: true, contractId: IsNull() } })
+      || await repo.findOne({ where: { role: 'admin', ativo: true } });
+    if (existente) return existente;
+
+    const user = repo.create({
+      nome: 'Gestor local',
+      email: 'local@sistemma',
+      senha: `local-${Date.now()}`,
+      role: 'superadmin',
+      contractId: null,
+      ativo: true,
+    });
+    return repo.save(user);
+  }
+
+  private async listarContratosAcessoLocal(): Promise<Array<{
+    id: string;
+    numeroContrato: string;
+    status: string;
+  }>> {
+    if (isMultiTenant()) {
+      const tenants = await getControlDataSource().getRepository(Tenant).find({
+        order: { numeroContrato: 'ASC' },
+      });
+      return tenants
+        .filter((t) => t.status !== 'encerrado')
+        .map((t) => ({
+          id: t.contractId,
+          numeroContrato: t.numeroContrato || t.slug,
+          status: t.status,
+        }));
+    }
+
+    const contratos = await getControlDataSource().getRepository(Contract).find({
+      order: { numeroContrato: 'ASC' },
+    });
+    return contratos
+      .filter((c) => c.status !== 'encerrado')
+      .map((c) => ({
+        id: c.id,
+        numeroContrato: c.numeroContrato || c.id,
+        status: c.status,
+      }));
+  }
+
+  /** GET /api/auth/acesso-local — status + lista de contratos (somente local). */
+  async statusAcessoLocal(_req: Request, res: Response): Promise<void> {
+    try {
+      if (!acessoLivreHabilitado()) {
+        res.json({ habilitado: false, contratos: [] });
+        return;
+      }
+      const contratos = await this.listarContratosAcessoLocal();
+      res.json({ habilitado: true, contratos });
+    } catch (error) {
+      console.error('Erro ao consultar acesso local:', error);
+      res.status(500).json({ error: 'Erro ao consultar acesso local' });
+    }
+  }
+
+  /** POST /api/auth/acesso-local — entra como gestor ou numa unidade, sem senha. */
+  async entrarAcessoLocal(req: Request, res: Response): Promise<void> {
+    try {
+      if (this.recusarSeProducao(res)) return;
+
+      const modo = String(req.body?.modo || 'gestor');
+      const user = await this.garantirUsuarioLocal();
+      if (modo !== 'contrato') {
+        res.json(this.emitirSessao(user, { contractId: null, tenantDb: null }));
+        return;
+      }
+
+      const contractId = String(req.body?.contractId || '');
+      if (!contractId) {
+        res.status(400).json({ error: 'Escolha um contrato' });
+        return;
+      }
+
+      let tenantDb: string | null = null;
+      if (isMultiTenant()) {
+        const tenant = await getControlDataSource().getRepository(Tenant).findOne({
+          where: { contractId },
+        });
+        if (!tenant) {
+          res.status(404).json({ error: 'Contrato não encontrado' });
+          return;
+        }
+        tenantDb = tenant.databaseName;
+      } else {
+        const contrato = await getControlDataSource().getRepository(Contract).findOne({
+          where: { id: contractId },
+        });
+        if (!contrato) {
+          res.status(404).json({ error: 'Contrato não encontrado' });
+          return;
+        }
+      }
+
+      res.json(this.emitirSessao(user, { contractId, tenantDb }));
+    } catch (error) {
+      console.error('Erro no acesso local:', error);
+      res.status(500).json({ error: 'Erro ao entrar no acesso local' });
+    }
+  }
+
+  private async tenantDbDoUsuario(user: User): Promise<string | null> {
+    if (!isMultiTenant() || !user.contractId) return null;
+    const tenant = await getControlDataSource().getRepository(Tenant).findOne({
+      where: { contractId: user.contractId },
+    });
+    return tenant?.databaseName ?? null;
   }
 
   /**
@@ -15,7 +195,7 @@ class AuthController {
    */
   async register(req: Request, res: Response): Promise<void> {
     try {
-      const { nome, email, senha, role } = req.body;
+      const { nome, email, senha, role, contractId } = req.body;
 
       // Validações básicas
       if (!nome || !email || !senha) {
@@ -42,27 +222,27 @@ class AuthController {
         return;
       }
 
-      // Se não for admin, força role 'user'
       let roleFinal: UserRole = 'user';
-      if (role === 'admin' && req.usuario?.role === 'admin') {
+      if (role === 'superadmin' && isSuperadmin(req.usuario)) {
+        roleFinal = 'superadmin';
+      } else if (role === 'admin' && (req.usuario?.role === 'admin' || isSuperadmin(req.usuario))) {
         roleFinal = 'admin';
       }
+
+      const contratoDoUser = contractId || req.usuario?.contractId || null;
 
       const user = this.repository.create({
         nome: nome.trim(),
         email: email.toLowerCase().trim(),
         senha,
         role: roleFinal,
+        contractId: roleFinal === 'superadmin' ? null : contratoDoUser,
       });
 
       await this.repository.save(user);
 
-      const payload = {
-        id: user.id,
-        email: user.email,
-        nome: user.nome,
-        role: user.role,
-      };
+      const tenantDb = await this.tenantDbDoUsuario(user);
+      const payload = payloadUsuario(user, tenantDb);
       const token = gerarToken(payload);
       const refreshToken = gerarRefreshToken(payload);
 
@@ -70,7 +250,7 @@ class AuthController {
         message: 'Usuário cadastrado com sucesso',
         token,
         refreshToken,
-        user: user.toJSON(),
+        user: userPublico(user),
       });
     } catch (error) {
       console.error('Erro ao registrar usuário:', error);
@@ -114,12 +294,8 @@ class AuthController {
         return;
       }
 
-      const payload = {
-        id: user.id,
-        email: user.email,
-        nome: user.nome,
-        role: user.role,
-      };
+      const tenantDb = await this.tenantDbDoUsuario(user);
+      const payload = payloadUsuario(user, tenantDb);
       const token = gerarToken(payload);
       const refreshToken = gerarRefreshToken(payload);
 
@@ -127,7 +303,7 @@ class AuthController {
         message: 'Login realizado com sucesso',
         token,
         refreshToken,
-        user: user.toJSON(),
+        user: userPublico(user, { tenantDb }),
       });
     } catch (error) {
       console.error('Erro ao fazer login:', error);
@@ -159,16 +335,23 @@ class AuthController {
         return;
       }
 
-      const novo = {
-        id: user.id,
-        email: user.email,
-        nome: user.nome,
-        role: user.role,
+      const sessionContractId = user.contractId ?? payload.contractId ?? null;
+      let tenantDb = payload.tenantDb ?? await this.tenantDbDoUsuario(user);
+      if (isMultiTenant() && sessionContractId && !tenantDb) {
+        const tenant = await getControlDataSource().getRepository(Tenant).findOne({
+          where: { contractId: sessionContractId },
+        });
+        tenantDb = tenant?.databaseName ?? null;
+      }
+      const novo: TokenPayload = {
+        ...payloadUsuario(user, tenantDb),
+        contractId: sessionContractId,
+        tenantDb,
       };
       res.json({
         token: gerarToken(novo),
         refreshToken: gerarRefreshToken(novo),
-        user: user.toJSON(),
+        user: userPublico(user, { contractId: sessionContractId, tenantDb }),
       });
     } catch (error) {
       console.error('Erro ao renovar sessão:', error);
@@ -191,7 +374,12 @@ class AuthController {
         return;
       }
 
-      res.json({ user: user.toJSON() });
+      res.json({
+        user: userPublico(user, {
+          contractId: req.usuario?.contractId ?? user.contractId,
+          tenantDb: req.usuario?.tenantDb ?? null,
+        }),
+      });
     } catch (error) {
       console.error('Erro ao buscar usuário:', error);
       res.status(500).json({ error: 'Erro interno ao buscar usuário' });
@@ -199,124 +387,83 @@ class AuthController {
   }
 
   /**
-   * PUT /api/auth/profile
-   * Atualiza dados do perfil do usuário autenticado
+   * POST /api/auth/entrar-contrato
+   * Super-admin escolhe um contrato e recebe JWT apontando para o banco dele.
    */
-  async updateProfile(req: Request, res: Response): Promise<void> {
+  async entrarContrato(req: Request, res: Response): Promise<void> {
     try {
-      const { nome, senhaAtual, novaSenha } = req.body;
+      if (!isAdminOuSuper(req.usuario)) {
+        res.status(403).json({ error: 'Apenas o gestor pode entrar em um contrato' });
+        return;
+      }
+      const contractId = String(req.body?.contractId || '');
+      if (!contractId) {
+        res.status(400).json({ error: 'contractId é obrigatório' });
+        return;
+      }
 
-      const user = await this.repository.findOne({
-        where: { id: req.usuario!.id },
-      });
-
+      const user = await this.repository.findOne({ where: { id: req.usuario!.id } });
       if (!user) {
         res.status(404).json({ error: 'Usuário não encontrado' });
         return;
       }
-
-      if (nome) {
-        user.nome = nome.trim();
+      if (user.contractId && user.contractId !== contractId && user.role !== 'superadmin') {
+        res.status(403).json({ error: 'Este usuário já pertence a outro contrato' });
+        return;
       }
 
-      if (novaSenha) {
-        if (!senhaAtual) {
-          res.status(400).json({
-            error: 'Senha atual é obrigatória para alterar a senha',
-          });
+      let tenantDb: string | null = null;
+      if (isMultiTenant()) {
+        const tenant = await getControlDataSource().getRepository(Tenant).findOne({
+          where: { contractId },
+        });
+        if (!tenant) {
+          res.status(404).json({ error: 'Contrato não encontrado no catálogo' });
           return;
         }
-
-        const valida = await user.validarSenha(senhaAtual);
-        if (!valida) {
-          res.status(401).json({ error: 'Senha atual inválida' });
-          return;
-        }
-
-        if (novaSenha.length < 6) {
-          res.status(400).json({
-            error: 'Nova senha deve ter no mínimo 6 caracteres',
-          });
-          return;
-        }
-
-        user.senha = novaSenha;
+        tenantDb = tenant.databaseName;
       }
 
-      await this.repository.save(user);
-
+      const payload: TokenPayload = {
+        id: user.id,
+        email: user.email,
+        nome: user.nome,
+        role: user.role,
+        contractId,
+        tenantDb,
+      };
       res.json({
-        message: 'Perfil atualizado com sucesso',
-        user: user.toJSON(),
+        token: gerarToken(payload),
+        refreshToken: gerarRefreshToken(payload),
+        user: userPublico(user, { contractId, tenantDb }),
       });
     } catch (error) {
-      console.error('Erro ao atualizar perfil:', error);
-      res.status(500).json({ error: 'Erro interno ao atualizar perfil' });
+      console.error('Erro ao entrar no contrato:', error);
+      res.status(500).json({ error: 'Erro interno ao entrar no contrato' });
     }
   }
 
-  /**
-   * GET /api/auth/users
-   * Lista todos os usuários (apenas admin)
-   */
-  async listUsers(req: Request, res: Response): Promise<void> {
+  /** Super-admin sai do contrato e volta ao hub. */
+  async sairContrato(req: Request, res: Response): Promise<void> {
     try {
-      const users = await this.repository.find({
-        select: ['id', 'nome', 'email', 'role', 'ativo', 'criadoEm'],
-        order: { nome: 'ASC' },
-      });
-
-      res.json({ users });
-    } catch (error) {
-      console.error('Erro ao listar usuários:', error);
-      res.status(500).json({ error: 'Erro interno ao listar usuários' });
-    }
-  }
-
-  /**
-   * GET /api/auth/users/simple
-   * Lista id, nome e email dos usuários (qualquer usuário autenticado)
-   * Útil para selects/filtros no frontend
-   */
-  async listSimple(req: Request, res: Response): Promise<void> {
-    try {
-      const users = await this.repository.find({
-        select: ['id', 'nome', 'email'],
-        order: { nome: 'ASC' },
-      });
-
-      res.json({ users });
-    } catch (error) {
-      console.error('Erro ao listar usuários:', error);
-      res.status(500).json({ error: 'Erro interno ao listar usuários' });
-    }
-  }
-
-  /**
-   * PATCH /api/auth/users/:id/toggle-status
-   * Ativa/desativa um usuário (apenas admin)
-   */
-  async toggleUserStatus(req: Request, res: Response): Promise<void> {
-    try {
-      const { id } = req.params;
-
-      const user = await this.repository.findOne({ where: { id: String(id) } });
-
+      if (!isAdminOuSuper(req.usuario)) {
+        res.status(403).json({ error: 'Apenas o gestor pode sair do contrato' });
+        return;
+      }
+      const user = await this.repository.findOne({ where: { id: req.usuario!.id } });
       if (!user) {
         res.status(404).json({ error: 'Usuário não encontrado' });
         return;
       }
-
-      user.ativo = !user.ativo;
-      await this.repository.save(user);
-
+      const payload = payloadUsuario(user, null);
       res.json({
-        message: `Usuário ${user.ativo ? 'ativado' : 'desativado'} com sucesso`,
-        user: user.toJSON(),
+        token: gerarToken(payload),
+        refreshToken: gerarRefreshToken(payload),
+        user: userPublico(user, { contractId: null, tenantDb: null }),
       });
     } catch (error) {
-      console.error('Erro ao alterar status do usuário:', error);
-      res.status(500).json({ error: 'Erro interno ao alterar status' });
+      console.error('Erro ao sair do contrato:', error);
+      res.status(500).json({ error: 'Erro interno ao sair do contrato' });
     }
   }
 }

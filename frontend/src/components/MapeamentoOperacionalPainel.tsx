@@ -13,6 +13,7 @@ import servicoService, {
   type MapeamentoOperacionalResponse,
   type ViagemPesoRotaItem,
 } from '../services/servicoService';
+import TrechosImprodutivosPainel from './TrechosImprodutivosPainel';
 
 interface Props {
   contractId: string;
@@ -200,6 +201,8 @@ export default function MapeamentoOperacionalPainel({
       'Rota', 'Motorista', 'Placa', 'Tipo', 'Dias', 'Viagens',
       'KM', 'Horas totais', 'Horas produtivas', 'Horas improdutivas',
       '% produtivo', 'h tot/viagem', 'h prod/viagem', 'km/viagem', 't', 't/h prod',
+      'h deslocamento inicial', 'h entre rotas', 'h retorno', 'h sem horário',
+      'KM nas rotas', 'KM fora das rotas',
     ];
     const rows = linhasFiltradas.map((l: LinhaMapeamentoOperacional) => [
       l.rota, l.motorista, l.placa, l.tipoCaminhao || '',
@@ -211,6 +214,12 @@ export default function MapeamentoOperacionalPainel({
       l.horasPorViagem,
       l.horasProdutivasPorViagem ?? 0,
       l.kmPorViagem, l.tonelagem, l.tonPorHora,
+      l.horasDeslocamentoInicial ?? 0,
+      l.horasEntreRotas ?? 0,
+      l.horasRetornoFinal ?? 0,
+      l.horasImprodutivasNaoDetalhadas ?? 0,
+      l.kmProdutivo ?? 0,
+      l.kmImprodutivo ?? 0,
     ].map(csvEscape).join(';'));
     const blob = new Blob([[header.join(';'), ...rows].join('\n')], {
       type: 'text/csv;charset=utf-8',
@@ -333,6 +342,8 @@ export default function MapeamentoOperacionalPainel({
                   cor="#0369a1"
                 />
               </div>
+
+              <TrechosImprodutivosPainel dados={dados} />
 
               {dados.resumo.truncado && (
                 <div style={{

@@ -43,12 +43,9 @@ interface GoogleFilterBarProps {
   onToggleComparacao: () => void;
   onAdicionarFiltro: (dimensaoNome: string, valor: string) => void;
   onRemoverFiltro: (dimensaoNome: string, valor: string) => void;
-  onLimparDimensao: (dimensaoNome: string) => void;
   onLimparTodos: () => void;
   onRefresh?: () => void;
 
-  /** Opcional: label personalizada */
-  label?: string;
   /** Oculta pills de período (ex.: dashboard executivo usa ciclo do contrato) */
   omitirSeletorPeriodo?: boolean;
 }
@@ -76,10 +73,8 @@ export default function GoogleFilterBar({
   onToggleComparacao,
   onAdicionarFiltro,
   onRemoverFiltro,
-  onLimparDimensao,
   onLimparTodos,
   onRefresh,
-  label = 'Filtros',
   omitirSeletorPeriodo = false,
 }: GoogleFilterBarProps) {
   /* ═══ Estado local do dropdown de busca ═══ */
@@ -163,13 +158,6 @@ export default function GoogleFilterBar({
     setDimensaoSelecionada(dimNome || null);
     setBuscaTexto('');
   }, []);
-
-  /* ═══ Adicionar filtro da dimensão selecionada ═══ */
-  const handleAdicionarFiltro = useCallback((valor: string) => {
-    if (dimensaoSelecionada) {
-      onAdicionarFiltro(dimensaoSelecionada, valor);
-    }
-  }, [dimensaoSelecionada, onAdicionarFiltro]);
 
   /* ═══ Selecionar dimensão no dropdown ═══ */
   const handleSelecionarDimensao = useCallback((nome: string) => {

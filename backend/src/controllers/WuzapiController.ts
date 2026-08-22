@@ -4,6 +4,10 @@ import { WhatsappGrupoMapa } from '../entities/WhatsappGrupoMapa';
 import { Servico } from '../entities/Servico';
 import wuzapiService from '../services/WuzapiService';
 import whatsappPlanilhaPipeline from '../services/WhatsappPlanilhaPipelineService';
+import {
+  removerRoteamentoWhatsapp,
+  sincronizarRoteamentoWhatsapp,
+} from '../services/whatsappRoteamentoService';
 
 export class WuzapiController {
   /**
@@ -307,6 +311,7 @@ export class WuzapiController {
         ativo: ativo !== false,
       });
       const salvo = await repo.save(criado);
+      await sincronizarRoteamentoWhatsapp(salvo, undefined, servico.contract_id);
       res.status(201).json(salvo);
     } catch (error: any) {
       res.status(500).json({ error: error?.message || 'Erro ao criar mapeamento' });
@@ -343,6 +348,10 @@ export class WuzapiController {
       }
 
       const salvo = await repo.save(item);
+      const servicoAtual = await AppDataSource.getRepository(Servico).findOne({
+        where: { id: salvo.servicoId },
+      });
+      await sincronizarRoteamentoWhatsapp(salvo, undefined, servicoAtual?.contract_id);
       res.json(salvo);
     } catch (error: any) {
       res.status(500).json({ error: error?.message || 'Erro ao atualizar' });
@@ -358,6 +367,7 @@ export class WuzapiController {
         res.status(404).json({ error: 'Mapeamento não encontrado' });
         return;
       }
+      await removerRoteamentoWhatsapp(item.grupoJid);
       await repo.remove(item);
       res.json({ ok: true });
     } catch (error: any) {

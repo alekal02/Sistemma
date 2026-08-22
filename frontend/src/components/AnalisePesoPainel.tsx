@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { FiChevronDown, FiDownload, FiExternalLink } from 'react-icons/fi';
+import { FiAlertTriangle, FiChevronDown, FiDownload, FiExternalLink } from 'react-icons/fi';
 import { useToast } from '../contexts/ToastContext';
 import pdfService from '../services/pdfService';
 import type { AnalisePesoColeta, CompararPorTipoServico } from '../services/servicoService';
@@ -7,6 +7,7 @@ import {
   CORES_SERVICO_PESO,
   METRICAS_PESO,
   SECAO_LABEL_PESO,
+  avisoTipoCaminhaoDeduzido,
   formatarCelulaMetricaPeso,
   type LinhaMetricaPeso,
   type SecaoPeso,
@@ -363,6 +364,26 @@ export default function AnalisePesoPainel({
         <strong> Melhoria</strong> para o comparativo <strong>ciclo anterior × atual</strong>
         (viagens, peso médio por dia e perda/superávit de carga).
       </p>
+
+      {(() => {
+        const avisos = comDados
+          .map((s) => ({ nome: s.nome, aviso: avisoTipoCaminhaoDeduzido(s.analisePeso!) }))
+          .filter((a): a is { nome: string; aviso: string } => !!a.aviso);
+        if (avisos.length === 0) return null;
+        return (
+          <div className="vg-peso-aviso-tipo">
+            <FiAlertTriangle size={13} aria-hidden />
+            <div>
+              <strong>Origem do tipo de caminhão</strong>
+              <ul>
+                {avisos.map((a) => (
+                  <li key={a.nome}><strong>{a.nome}:</strong> {a.aviso}</li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        );
+      })()}
 
       <div className="vg-peso-comp-wrap">
         <table className="vg-peso-comp-tabela">

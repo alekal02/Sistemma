@@ -57,14 +57,17 @@ function toneladasDoPesoKg(pesoTotalKg: number): number {
  *   CAMINHÃO, KM TOTAL, Nº DE VIAGENS, DIA DA SEMANA...
  */
 export class PlanilhaService {
-  private coletaRepo: Repository<ColetaData>;
-  private uploadRepo: Repository<PlanilhaUpload>;
-  private servicoRepo: Repository<Servico>;
+  // Resolvidos a cada uso: com um banco por contrato, o banco ativo muda por requisição.
+  private get coletaRepo(): Repository<ColetaData> {
+    return AppDataSource.getRepository(ColetaData);
+  }
 
-  constructor() {
-    this.coletaRepo = AppDataSource.getRepository(ColetaData);
-    this.uploadRepo = AppDataSource.getRepository(PlanilhaUpload);
-    this.servicoRepo = AppDataSource.getRepository(Servico);
+  private get uploadRepo(): Repository<PlanilhaUpload> {
+    return AppDataSource.getRepository(PlanilhaUpload);
+  }
+
+  private get servicoRepo(): Repository<Servico> {
+    return AppDataSource.getRepository(Servico);
   }
 
   /**

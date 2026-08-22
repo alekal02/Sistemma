@@ -43,6 +43,42 @@ export interface LinhaMapeamentoOperacional {
   kmPorViagem: number;
   tonPorHora: number;
   percentualProdutivo: number;
+  /** Base → primeira rota */
+  horasDeslocamentoInicial?: number;
+  /** Saída de uma rota → chegada na próxima (inclui descarga/aterro) */
+  horasEntreRotas?: number;
+  /** Saída da última rota → base */
+  horasRetornoFinal?: number;
+  horasImprodutivasNaoDetalhadas?: number;
+  /** KM rodado dentro das rotas */
+  kmProdutivo?: number;
+  /** KM rodado fora das rotas */
+  kmImprodutivo?: number;
+  kmDeslocamentoInicial?: number;
+  kmEntreRotas?: number;
+  kmRetornoFinal?: number;
+}
+
+/** Onde a hora e o KM improdutivos foram gastos, por placa / motorista / rota. */
+export interface TrechosJornadaDimensao {
+  chave: string;
+  viagens: number;
+  horasTotais: number;
+  horasProdutivas: number;
+  horasImprodutivas: number;
+  horasDeslocamentoInicial: number;
+  horasEntreRotas: number;
+  horasRetornoFinal: number;
+  horasImprodutivasNaoDetalhadas: number;
+  kmTotal: number;
+  kmProdutivo: number;
+  kmImprodutivo: number;
+  kmDeslocamentoInicial: number;
+  kmEntreRotas: number;
+  kmRetornoFinal: number;
+  percentualProdutivo: number;
+  horasImprodutivasPorViagem: number | null;
+  kmImprodutivoPorViagem: number | null;
 }
 
 export interface TopRotaProdutividadeEncher {
@@ -97,13 +133,84 @@ export interface MapeamentoOperacionalResponse {
     horasImprodutivas: number;
     percentualProdutivo: number;
     tonelagem: number;
+    horasDeslocamentoInicial?: number;
+    horasEntreRotas?: number;
+    horasRetornoFinal?: number;
+    horasImprodutivasNaoDetalhadas?: number;
+    kmProdutivo?: number;
+    kmImprodutivo?: number;
+    kmDeslocamentoInicial?: number;
+    kmEntreRotas?: number;
+    kmRetornoFinal?: number;
+    registrosComTrecho?: number;
+    registros?: number;
   };
+  trechosPorPlaca?: TrechosJornadaDimensao[];
+  trechosPorMotorista?: TrechosJornadaDimensao[];
+  trechosPorRota?: TrechosJornadaDimensao[];
   linhas: LinhaMapeamentoOperacional[];
   topRotasLentas: TopRotaProdutividadeEncher[];
   viagensPesoRota?: ViagemPesoRotaItem[];
   dataInicio: string | null;
   dataFim: string | null;
   tipoServico?: string;
+}
+
+export type DirecaoTendenciaRota = 'melhorando' | 'estavel' | 'piorando';
+
+export interface DiaRotaCiclo {
+  data: string;
+  viagens: number;
+  toneladas: number;
+  km: number;
+  horasProdutivas: number;
+  tonPorViagem: number | null;
+}
+
+export interface TendenciaRotaCiclo {
+  direcao: DirecaoTendenciaRota;
+  variacaoPct: number;
+  primeiraMetade: number;
+  segundaMetade: number;
+}
+
+/** Comportamento de uma rota ao longo do ciclo, não só num dia. */
+export interface FichaRotaCiclo {
+  rota: string;
+  tipoPredominante: string | null;
+  diasComOperacao: number;
+  viagens: number;
+  toneladas: number;
+  km: number;
+  horasProdutivas: number;
+  medianaViagensDia: number | null;
+  medianaTonDia: number | null;
+  medianaKmDia: number | null;
+  medianaTonPorViagem: number | null;
+  cvKmDia: number | null;
+  cvTonPorViagem: number | null;
+  kmDiaMin: number | null;
+  kmDiaMax: number | null;
+  tendencia: TendenciaRotaCiclo | null;
+  instavelKm: boolean;
+  instavelCarga: boolean;
+  alertas: string[];
+  porDia: DiaRotaCiclo[];
+}
+
+export interface FichaRotasCicloResponse {
+  rotas: FichaRotaCiclo[];
+  resumo: {
+    rotas: number;
+    rotasInstaveis: number;
+    rotasPiorando: number;
+    rotasMelhorando: number;
+    diasPeriodo: number | null;
+    registros: number;
+    truncado: boolean;
+  };
+  dataInicio: string | null;
+  dataFim: string | null;
 }
 
 export interface KpiConsolidadoItem {
@@ -203,6 +310,15 @@ export interface AnalisePesoColeta {
   densidadeOtima: number;
   mediaIdealKg: number;
   perdaTon: number;
+  /** Origem do tipo de caminhão — ausente em respostas antigas em cache. */
+  frotaTipoDeduzido?: {
+    placas: number;
+    porTipo: { MINI: number; TOCO: number; BASCULANTE: number; TRUCK: number };
+    placasLista: string[];
+    placasDeclaradas: number;
+    placasSemTipo: number;
+  } | null;
+  viagensTipoDeduzido?: number;
   porDia?: Array<{
     data: string;
     viagens: number;
@@ -642,7 +758,7 @@ const servicoService = {
     servicoId: string,
     opts?: { data?: string; dataInicio?: string; dataFim?: string },
   ) {
-    const chave = `mapeamento-op-v6:${contractId}:${servicoId}:${opts?.data || ''}:${opts?.dataInicio || ''}:${opts?.dataFim || ''}`;
+    const chave = `mapeamento-op-v7:${contractId}:${servicoId}:${opts?.data || ''}:${opts?.dataInicio || ''}:${opts?.dataFim || ''}`;
     return cachedFetch(chave, async () => {
       const { data } = await api.get(
         `/contracts/${contractId}/servicos/${servicoId}/mapeamento-operacional`,
@@ -650,6 +766,24 @@ const servicoService = {
       );
       return data;
     }, { ttlMs: 120_000 }) as Promise<MapeamentoOperacionalResponse>;
+  },
+
+  /**
+   * Ficha de cada rota no ciclo: mediana do dia, variabilidade e tendência.
+   */
+  async getRotasCiclo(
+    contractId: string,
+    servicoId: string,
+    opts?: { dataInicio?: string; dataFim?: string },
+  ) {
+    const chave = `rotas-ciclo-v1:${contractId}:${servicoId}:${opts?.dataInicio || ''}:${opts?.dataFim || ''}`;
+    return cachedFetch(chave, async () => {
+      const { data } = await api.get(
+        `/contracts/${contractId}/servicos/${servicoId}/rotas-ciclo`,
+        { params: opts, signal: nextAbortSignal('servico:getRotasCiclo') },
+      );
+      return data;
+    }, { ttlMs: 120_000 }) as Promise<FichaRotasCicloResponse>;
   },
 
   /** KPIs calculados no backend — cache + deduplicação. */

@@ -272,7 +272,6 @@ const DashboardFiltros = memo(function DashboardFiltros({
         onToggleComparacao={filtrosGA.toggleComparacao}
         onAdicionarFiltro={filtrosGA.adicionarFiltro}
         onRemoverFiltro={filtrosGA.removerFiltro}
-        onLimparDimensao={filtrosGA.limparDimensao}
         onLimparTodos={() => {
           filtrosGA.limparTodos();
           onRefresh();

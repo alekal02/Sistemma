@@ -68,6 +68,13 @@ import {
   KPIS_CONSOLIDADO_CONCURRENCY,
   LIMITE_DADOS_MAX,
 } from '../config/limitesRecursos';
+import {
+  ehHubDeContratos,
+  emCadaContrato,
+  emCadaContratoComServicos,
+  escopoCacheTenant,
+  unirDias,
+} from '../services/tenantFanout';
 import { parseDataPlanilha } from '../utils/formatarDataPlanilha';
 import { resolverFiltrosPeriodoQuery, type PeriodoCicloContrato } from '../utils/periodoCicloContrato';
 import {
@@ -95,6 +102,7 @@ import {
   metricaExecutivaDeColetaSql,
   agregarGraficoColetaSql,
 } from '../services/coletaAgregacaoService';
+import { getFichaRotasCiclo } from '../services/rotaCicloService';
 import { invalidarCacheSaudeContratos } from './ContractController';
 
 /** KPI "Viagens Realizadas" — viagens em rotas (linhas) validadas, não só contagem de linhas */
@@ -1050,7 +1058,7 @@ export class ServicoController {
         return res.status(400).json({ error: 'dataFim inválida. Use YYYY-MM-DD.' });
       }
 
-      const cacheKey = ['mapeamento-operacional-v6', id, data || '', dataInicio || '', dataFim || ''].join(':');
+      const cacheKey = ['mapeamento-operacional-v7', id, data || '', dataInicio || '', dataFim || ''].join(':');
       const cached = getCache<any>(cacheKey);
       if (cached) return res.json(cached);
 
@@ -1061,6 +1069,42 @@ export class ServicoController {
     } catch (error) {
       console.error('Erro no mapeamento operacional:', error);
       return res.status(500).json({ error: 'Erro ao montar mapeamento operacional' });
+    }
+  }
+
+  /**
+   * GET /api/contracts/:contractId/servicos/:id/rotas-ciclo
+   * Ficha de cada rota no ciclo: mediana do dia, variabilidade e tendência.
+   */
+  async getRotasCiclo(req: Request, res: Response): Promise<any> {
+    try {
+      const id = req.params.id as string;
+      const servico = await this.repository.findOne({ where: { id }, select: ['id', 'tipo'] as any });
+      if (!servico) return res.status(404).json({ error: 'Serviço não encontrado' });
+      const ehColeta = servico.tipo === TipoServico.COLETA_CAMINHAO || servico.tipo === 'coleta_caminhao';
+      if (!ehColeta) {
+        return res.status(400).json({ error: 'Ficha de rotas disponível apenas para serviços de coleta' });
+      }
+
+      const dataInicio = typeof req.query.dataInicio === 'string' ? req.query.dataInicio : undefined;
+      const dataFim = typeof req.query.dataFim === 'string' ? req.query.dataFim : undefined;
+      if (dataInicio && !/^\d{4}-\d{2}-\d{2}$/.test(dataInicio)) {
+        return res.status(400).json({ error: 'dataInicio inválida. Use YYYY-MM-DD.' });
+      }
+      if (dataFim && !/^\d{4}-\d{2}-\d{2}$/.test(dataFim)) {
+        return res.status(400).json({ error: 'dataFim inválida. Use YYYY-MM-DD.' });
+      }
+
+      const cacheKey = ['rotas-ciclo-v1', id, dataInicio || '', dataFim || ''].join(':');
+      const cached = getCache<any>(cacheKey);
+      if (cached) return res.json(cached);
+
+      const resultado = await getFichaRotasCiclo(id, { dataInicio, dataFim });
+      setCache(cacheKey, resultado);
+      return res.json(resultado);
+    } catch (error) {
+      console.error('Erro na ficha de rotas do ciclo:', error);
+      return res.status(500).json({ error: 'Erro ao montar ficha de rotas do ciclo' });
     }
   }
 
@@ -2843,38 +2887,12 @@ export class ServicoController {
         return res.status(400).json({ error: 'tipoServico é obrigatório' });
       }
 
-      const servicos = await this.repository.find({
-        where: { tipo: tipoServico },
-        order: { nome: 'ASC' },
-      });
+      const partes = ehHubDeContratos(req.usuario)
+        ? await emCadaContrato(() => this.montarServicosPorTipo(tipoServico))
+        : [await this.montarServicosPorTipo(tipoServico)];
 
-      const contractIds = [...new Set(servicos.map(s => s.contract_id))];
-      const contracts = contractIds.length
-        ? await this.contractRepo.find({ where: { id: In(contractIds) } })
-        : [];
-      const contractMap = new Map(contracts.map(c => [c.id, c]));
-
-      const lista: any[] = [];
-      for (const s of servicos) {
-        const total = await PlanilhaService.getTotalRegistrosPorServico(s.id);
-        if (total === 0) continue;
-        const contract = contractMap.get(s.contract_id);
-        lista.push({
-          id: s.id,
-          nome: s.nome,
-          tipo: s.tipo,
-          contratoId: s.contract_id,
-          contratoNome: contract?.numeroContrato || '-',
-          totalRegistros: total,
-          temKpis: !!(s.configDashboard?.kpis?.length),
-        });
-      }
-
-      const tiposDisponiveis = [...new Set(
-        (await this.repository.find({ select: ['tipo'] }))
-          .map(s => s.tipo)
-          .filter(Boolean),
-      )].sort();
+      const lista = partes.flatMap((p) => p.lista);
+      const tiposDisponiveis = [...new Set(partes.flatMap((p) => p.tipos))].sort();
 
       return res.json({
         tipoServico,
@@ -2889,6 +2907,47 @@ export class ServicoController {
       console.error('Erro ao listar servicos por tipo:', error?.message || error);
       return res.status(500).json({ error: 'Erro ao listar serviços por tipo' });
     }
+  }
+
+  /** Serviços de um tipo, com contagem, no banco atualmente ativo. */
+  private async montarServicosPorTipo(tipoServico: string): Promise<{
+    lista: any[];
+    tipos: string[];
+  }> {
+    const servicos = await this.repository.find({
+      where: { tipo: tipoServico },
+      order: { nome: 'ASC' },
+    });
+
+    const contractIds = [...new Set(servicos.map(s => s.contract_id))];
+    const contracts = contractIds.length
+      ? await this.contractRepo.find({ where: { id: In(contractIds) } })
+      : [];
+    const contractMap = new Map(contracts.map(c => [c.id, c]));
+
+    const lista: any[] = [];
+    for (const s of servicos) {
+      const total = await PlanilhaService.getTotalRegistrosPorServico(s.id);
+      if (total === 0) continue;
+      const contract = contractMap.get(s.contract_id);
+      lista.push({
+        id: s.id,
+        nome: s.nome,
+        tipo: s.tipo,
+        contratoId: s.contract_id,
+        contratoNome: contract?.numeroContrato || '-',
+        totalRegistros: total,
+        temKpis: !!(s.configDashboard?.kpis?.length),
+      });
+    }
+
+    const tipos = [...new Set(
+      (await this.repository.find({ select: ['tipo'] }))
+        .map(s => s.tipo)
+        .filter(Boolean),
+    )];
+
+    return { lista, tipos };
   }
 
   /**
@@ -2914,44 +2973,32 @@ export class ServicoController {
         ? servicoIdsParam.split(',').map(s => s.trim()).filter(Boolean)
         : [];
 
-      let servicos: Servico[];
-      if (servicoIds.length > 0) {
-        servicos = await this.repository.find({
-          where: { id: In(servicoIds), tipo: tipoServico },
-          order: { nome: 'ASC' },
-        });
-        if (servicos.length < 2) {
-          return res.status(400).json({ error: 'Selecione pelo menos 2 serviços do mesmo tipo para comparar' });
-        }
-      } else {
-        servicos = await this.repository.find({
-          where: { tipo: tipoServico },
-          order: { nome: 'ASC' },
-        });
+      const hub = ehHubDeContratos(req.usuario);
+
+      // Passada leve: quantos serviços existem e qual a impressão dos limites (chave de cache)
+      const inventarios = hub
+        ? await emCadaContrato(() => this.inventarioComparacao(tipoServico, servicoIds))
+        : [await this.inventarioComparacao(tipoServico, servicoIds)];
+
+      const totalServicos = inventarios.reduce((s, i) => s + i.nServicos, 0);
+      if (servicoIds.length > 0 && totalServicos < 2) {
+        return res.status(400).json({ error: 'Selecione pelo menos 2 serviços do mesmo tipo para comparar' });
       }
 
-      const contractIds = [...new Set(servicos.map(s => s.contract_id))];
-      const contracts = contractIds.length
-        ? await this.contractRepo.find({ where: { id: In(contractIds) } })
-        : [];
-      const contractMap = new Map(contracts.map(c => [c.id, c]));
-
-      const limitesFp = contracts
-        .map(c => `${c.id}:${fingerprintLimitesContrato(c.configOperacional)}`)
-        .sort()
-        .join('|');
-      const cacheKey = `comparar-global:${tipoServico}:${servicoIds.join('|')}:${limitesFp}:${JSON.stringify(req.query)}`;
+      const limitesFp = inventarios.flatMap(i => i.limitesFp).sort().join('|');
+      const cacheKey = `comparar-global:${escopoCacheTenant()}:${tipoServico}:${servicoIds.join('|')}:${limitesFp}:${JSON.stringify(req.query)}`;
       const cached = getCache<any>(cacheKey);
       if (cached) return res.json(cached);
 
-      const servicosComDados: Servico[] = [];
-      const contagensGlobal = await PlanilhaService.getContagemRegistrosPorServicos(servicos.map(s => s.id));
-      for (const s of servicos) {
-        const total = contagensGlobal.get(s.id)?.validos ?? contagensGlobal.get(s.id)?.total ?? 0;
-        if (total > 0) servicosComDados.push(s);
-      }
+      const resultados = hub
+        ? (await emCadaContrato(() => this.resultadosComparacao(
+            tipoServico, servicoIds, req.query as Record<string, any>, limiteKpisTv, perfilTv,
+          ))).flat()
+        : await this.resultadosComparacao(
+            tipoServico, servicoIds, req.query as Record<string, any>, limiteKpisTv, perfilTv,
+          );
 
-      if (servicosComDados.length < 2) {
+      if (resultados.length < 2) {
         return res.json({
           escopo: 'global',
           tipoServico,
@@ -2964,45 +3011,6 @@ export class ServicoController {
           mensagem: 'Selecione pelo menos 2 serviços do mesmo tipo com dados importados',
         });
       }
-
-      const resultados = await mapComLimite(
-        servicosComDados,
-        ENDPOINTS_PESADOS_CONCURRENCY,
-        async s => {
-          const contract = contractMap.get(s.contract_id) || null;
-          try {
-            const r = await this.calcularKpisParaComparacao(
-              s.contract_id,
-              s,
-              contract,
-              req.query as Record<string, any>,
-              limiteKpisTv,
-              perfilTv,
-            );
-            return {
-              ...r,
-              contratoId: s.contract_id,
-              contratoNome: contract?.numeroContrato || '-',
-            };
-          } catch (errServico: any) {
-            console.error(
-              `[comparar-por-tipo] falhou em "${s.nome}" (${s.id}):`,
-              errServico?.message || errServico,
-            );
-            return {
-              id: s.id,
-              nome: s.nome,
-              tipo: s.tipo,
-              totalRegistros: 0,
-              periodo: undefined,
-              analisePeso: null,
-              kpis: [],
-              contratoId: s.contract_id,
-              contratoNome: contract?.numeroContrato || '-',
-            };
-          }
-        },
-      );
 
       const matriz = this.montarMatrizComparacaoKpis(resultados, {
         incluirAnalisePeso: !perfilTv && tipoServico === 'coleta_caminhao',
@@ -3033,6 +3041,96 @@ export class ServicoController {
     }
   }
 
+  /** Passada leve no banco ativo: quantos serviços e a impressão dos limites dos contratos. */
+  private async inventarioComparacao(
+    tipoServico: string,
+    servicoIds: string[],
+  ): Promise<{ nServicos: number; limitesFp: string[] }> {
+    const servicos = await this.repository.find({
+      where: servicoIds.length > 0
+        ? { id: In(servicoIds), tipo: tipoServico }
+        : { tipo: tipoServico },
+      select: ['id', 'contract_id'],
+    });
+    const contractIds = [...new Set(servicos.map(s => s.contract_id))];
+    const contracts = contractIds.length
+      ? await this.contractRepo.find({ where: { id: In(contractIds) } })
+      : [];
+    return {
+      nServicos: servicos.length,
+      limitesFp: contracts.map(c => `${c.id}:${fingerprintLimitesContrato(c.configOperacional)}`),
+    };
+  }
+
+  /** KPIs de comparação dos serviços com dados no banco ativo. */
+  private async resultadosComparacao(
+    tipoServico: string,
+    servicoIds: string[],
+    query: Record<string, any>,
+    limiteKpisTv: number | undefined,
+    perfilTv: boolean,
+  ): Promise<any[]> {
+    const servicos = await this.repository.find({
+      where: servicoIds.length > 0
+        ? { id: In(servicoIds), tipo: tipoServico }
+        : { tipo: tipoServico },
+      order: { nome: 'ASC' },
+    });
+    if (servicos.length === 0) return [];
+
+    const contractIds = [...new Set(servicos.map(s => s.contract_id))];
+    const contracts = contractIds.length
+      ? await this.contractRepo.find({ where: { id: In(contractIds) } })
+      : [];
+    const contractMap = new Map(contracts.map(c => [c.id, c]));
+
+    const contagens = await PlanilhaService.getContagemRegistrosPorServicos(servicos.map(s => s.id));
+    const servicosComDados = servicos.filter((s) => {
+      const c = contagens.get(s.id);
+      return (c?.validos ?? c?.total ?? 0) > 0;
+    });
+    if (servicosComDados.length === 0) return [];
+
+    return mapComLimite(
+      servicosComDados,
+      ENDPOINTS_PESADOS_CONCURRENCY,
+      async s => {
+        const contract = contractMap.get(s.contract_id) || null;
+        try {
+          const r = await this.calcularKpisParaComparacao(
+            s.contract_id,
+            s,
+            contract,
+            query,
+            limiteKpisTv,
+            perfilTv,
+          );
+          return {
+            ...r,
+            contratoId: s.contract_id,
+            contratoNome: contract?.numeroContrato || '-',
+          };
+        } catch (errServico: any) {
+          console.error(
+            `[comparar-por-tipo] falhou em "${s.nome}" (${s.id}):`,
+            errServico?.message || errServico,
+          );
+          return {
+            id: s.id,
+            nome: s.nome,
+            tipo: s.tipo,
+            totalRegistros: 0,
+            periodo: undefined,
+            analisePeso: null,
+            kpis: [],
+            contratoId: s.contract_id,
+            contratoNome: contract?.numeroContrato || '-',
+          };
+        }
+      },
+    );
+  }
+
   /**
    * GET /api/dashboard/qualidade-ideal-3d?tipoServico=coleta_caminhao&servicoIds=...&dataInicio&dataFim
    * Pontos agregados (dia × rota) para scatter 3D no TV Mode.
@@ -3059,7 +3157,9 @@ export class ServicoController {
       }
 
       const { agregarQualidadeIdeal3d } = await import('../services/qualidadeIdeal3dService');
-      const result = await agregarQualidadeIdeal3d({ servicoIds, dataInicio, dataFim });
+      const result = ehHubDeContratos(req.usuario)
+        ? await this.qualidade3dEmTodosOsContratos(servicoIds, dataInicio, dataFim)
+        : await agregarQualidadeIdeal3d({ servicoIds, dataInicio, dataFim });
       return res.json({
         tipoServico: 'coleta_caminhao',
         tipoServicoLabel: TIPOS_SERVICO_META.coleta_caminhao?.label || 'Coleta com caminhão',
@@ -3097,7 +3197,9 @@ export class ServicoController {
       }
 
       const { agregarEvolucaoOperacional } = await import('../services/evolucaoOperacionalService');
-      const result = await agregarEvolucaoOperacional({ servicoIds, dataInicio, dataFim });
+      const result = ehHubDeContratos(req.usuario)
+        ? await this.evolucaoEmTodosOsContratos(servicoIds, dataInicio, dataFim)
+        : await agregarEvolucaoOperacional({ servicoIds, dataInicio, dataFim });
       return res.json({
         tipoServico: 'coleta_caminhao',
         tipoServicoLabel: TIPOS_SERVICO_META.coleta_caminhao?.label || 'Coleta com caminhão',
@@ -3107,6 +3209,47 @@ export class ServicoController {
       console.error('Erro evolucao-operacional:', error?.message || error);
       return res.status(500).json({ error: 'Erro ao agregar evolução operacional' });
     }
+  }
+
+  /** Junta os pontos 3D vindos do banco de cada contrato. */
+  private async qualidade3dEmTodosOsContratos(
+    servicoIds: string[],
+    dataInicio: string,
+    dataFim: string,
+  ) {
+    const { agregarQualidadeIdeal3d } = await import('../services/qualidadeIdeal3dService');
+    const partes = await emCadaContratoComServicos(servicoIds, (ids) =>
+      agregarQualidadeIdeal3d({ servicoIds: ids, dataInicio, dataFim }),
+    );
+    return {
+      dataInicio,
+      dataFim,
+      totalPontos: partes.reduce((s, p) => s + p.totalPontos, 0),
+      totalViagens: partes.reduce((s, p) => s + p.totalViagens, 0),
+      rotas: [...new Set(partes.flatMap((p) => p.rotas))].sort(),
+      dias: unirDias(partes.map((p) => p.dias)),
+      pontos: partes.flatMap((p) => p.pontos),
+    };
+  }
+
+  /** Junta as séries de evolução vindas do banco de cada contrato. */
+  private async evolucaoEmTodosOsContratos(
+    servicoIds: string[],
+    dataInicio: string,
+    dataFim: string,
+  ) {
+    const { agregarEvolucaoOperacional } = await import('../services/evolucaoOperacionalService');
+    const partes = await emCadaContratoComServicos(servicoIds, (ids) =>
+      agregarEvolucaoOperacional({ servicoIds: ids, dataInicio, dataFim }),
+    );
+    const base = partes[0];
+    return {
+      ...(base || {}),
+      dataInicio,
+      dataFim,
+      dias: unirDias(partes.map((p) => p.dias)),
+      series: partes.flatMap((p) => p.series),
+    };
   }
 
   /**
@@ -3449,7 +3592,31 @@ export class ServicoController {
    * GET /api/dashboard/diagnostico-servicos
    * Audita todos os serviços e explica por que o dashboard pode estar vazio.
    */
-  async getDiagnosticoTodosServicos(_req: Request, res: Response): Promise<any> {
+  async getDiagnosticoTodosServicos(req: Request, res: Response): Promise<any> {
+    try {
+      const partes = ehHubDeContratos(req.usuario)
+        ? await emCadaContrato(() => this.montarDiagnosticoServicos())
+        : [await this.montarDiagnosticoServicos()];
+      const itens = partes.flat();
+
+      return res.json({
+        total: itens.length,
+        resumo: {
+          ok: itens.filter(i => i.status === 'ok').length,
+          alerta: itens.filter(i => i.status === 'alerta').length,
+          parcial: itens.filter(i => i.status === 'parcial').length,
+          vazio: itens.filter(i => i.status === 'vazio').length,
+        },
+        servicos: itens,
+      });
+    } catch (error: any) {
+      console.error('Erro no diagnostico-servicos:', error?.message || error);
+      return res.status(500).json({ error: 'Erro ao gerar diagnóstico dos dashboards' });
+    }
+  }
+
+  /** Diagnóstico dos serviços do banco ativo. */
+  private async montarDiagnosticoServicos(): Promise<any[]> {
     try {
       const [contratos, todosServicos] = await Promise.all([
         this.contractRepo.find({ order: { numeroContrato: 'ASC' } }),
@@ -3550,19 +3717,10 @@ export class ServicoController {
         };
       });
 
-      return res.json({
-        total: itens.length,
-        resumo: {
-          ok: itens.filter(i => i.status === 'ok').length,
-          alerta: itens.filter(i => i.status === 'alerta').length,
-          parcial: itens.filter(i => i.status === 'parcial').length,
-          vazio: itens.filter(i => i.status === 'vazio').length,
-        },
-        servicos: itens,
-      });
+      return itens;
     } catch (error: any) {
-      console.error('Erro no diagnostico-servicos:', error?.message || error);
-      return res.status(500).json({ error: 'Erro ao gerar diagnóstico dos dashboards' });
+      console.error('Erro no diagnóstico do banco ativo:', error?.message || error);
+      return [];
     }
   }
 
@@ -3573,10 +3731,32 @@ export class ServicoController {
   async getKpisConsolidado(req: Request, res: Response): Promise<any> {
     try {
       const modo = (req.query.modo as string) || 'completo';
-      const cacheKey = `kpis-consolidado:${modo}:${JSON.stringify(req.query)}`;
+      const cacheKey = `kpis-consolidado:${escopoCacheTenant()}:${modo}:${JSON.stringify(req.query)}`;
       const cached = getCache<any>(cacheKey);
       if (cached) return res.json(cached);
 
+      const partes = ehHubDeContratos(req.usuario)
+        ? await emCadaContrato(() => this.montarKpisConsolidado(modo, req.query as Record<string, any>))
+        : [await this.montarKpisConsolidado(modo, req.query as Record<string, any>)];
+
+      const response = {
+        servicos: partes.flat(),
+        modo: modo === 'resumo' ? 'resumo' : 'completo',
+      };
+      setCache(cacheKey, response);
+      return res.json(response);
+    } catch (error: any) {
+      console.error('Erro ao buscar kpis-consolidado:', error?.message || error);
+      return res.status(500).json({ error: 'Erro ao carregar dados consolidados' });
+    }
+  }
+
+  /** KPIs consolidados dos serviços do banco ativo. */
+  private async montarKpisConsolidado(
+    modo: string,
+    query: Record<string, any>,
+  ): Promise<any[]> {
+    try {
       const [contratos, todosServicos] = await Promise.all([
         this.contractRepo.find({ order: { numeroContrato: 'ASC' } }),
         this.repository.find({ order: { nome: 'ASC' } }),
@@ -3599,11 +3779,7 @@ export class ServicoController {
         return temColunas || temRegistros;
       });
 
-      if (servicosElegiveis.length === 0) {
-        const vazio = { servicos: [], modo };
-        setCache(cacheKey, vazio);
-        return res.json(vazio);
-      }
+      if (servicosElegiveis.length === 0) return [];
 
       const servicosComDados = servicosElegiveis.filter(s => (contagens.get(s.id)?.validos ?? contagens.get(s.id)?.total ?? 0) > 0);
 
@@ -3627,13 +3803,10 @@ export class ServicoController {
       };
 
       if (modo === 'resumo') {
-        const resultado = servicosComDados.map(s => ({
+        return servicosComDados.map(s => ({
           ...montarItemBase(s),
           kpis: [],
         }));
-        const response = { servicos: resultado, modo: 'resumo' };
-        setCache(cacheKey, response);
-        return res.json(response);
       }
 
       const limiteKpis = parseInt(process.env.KPIS_CONSOLIDADO_LIMITE || '8', 10);
@@ -3646,7 +3819,7 @@ export class ServicoController {
           contract.id,
           servico,
           contract,
-          req.query as Record<string, any>,
+          query,
           limiteKpis,
         );
         const kpis = kpiCalc.kpis.map(k => ({
@@ -3665,12 +3838,10 @@ export class ServicoController {
         };
       });
 
-      const response = { servicos: resultados, modo: 'completo' };
-      setCache(cacheKey, response);
-      return res.json(response);
+      return resultados;
     } catch (error: any) {
-      console.error('Erro ao buscar kpis-consolidado:', error?.message || error);
-      return res.status(500).json({ error: 'Erro ao carregar dados consolidados' });
+      console.error('Erro ao montar kpis-consolidado do banco ativo:', error?.message || error);
+      return [];
     }
   }
 

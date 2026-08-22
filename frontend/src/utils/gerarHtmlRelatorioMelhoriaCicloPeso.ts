@@ -281,7 +281,12 @@ export function gerarHtmlRelatorioMelhoriaCicloPeso(opts: {
     }
     .resumo .n { font-size: 14px; font-weight: 800; color: #0f172a; }
     .resumo .l { font-size: 6.5px; color: #64748b; margin-top: 2px; text-transform: uppercase; font-weight: 700; }
-    .par { margin-bottom: 14px; page-break-inside: avoid; }
+    .par { margin-bottom: 14px; page-break-inside: avoid; break-inside: avoid; }
+    .resumo, .cards-par { page-break-inside: avoid; break-inside: avoid; }
+    .par-titulo { page-break-after: avoid; break-after: avoid; }
+    tr { page-break-inside: avoid; break-inside: avoid; }
+    thead { display: table-header-group; }
+    tbody { page-break-before: avoid; break-before: avoid; }
     .par-titulo { font-size: 10px; font-weight: 800; color: #334155; margin-bottom: 6px; }
     .cards-par { display: grid; grid-template-columns: 1fr auto 1fr; gap: 8px; align-items: stretch; margin-bottom: 8px; }
     .seta { display: flex; align-items: center; font-size: 16px; font-weight: 800; color: #6366f1; }

@@ -178,6 +178,8 @@ export interface ResultadoAnaliseViagens {
   viagensValidasDashboard: number;
   viagensInconsistentesTotal: number;
   linhasDescartadasSemDados?: number;
+  /** Linhas de template/rodapé da planilha, sem nada que identifique uma viagem */
+  linhasEmBrancoIgnoradas?: number;
   /** Viagens importáveis com KM zerado por hodômetro igual/quebrado */
   viagensCorrigidasHodometro?: number;
   /** Pesagens individuais > 15.000 kg (até 1.000 t) — alerta, não bloqueia dashboard */
@@ -198,6 +200,8 @@ export interface ResultadoAnaliseViagens {
     rota: string | null;
     kmTotal: number | null;
     pesoTotal: number | null;
+    /** Pesagens individuais da linha (PESO 1–5) — o total é a soma delas */
+    pesagensKg?: number[];
     kmSaida: number | null;
     kmChegada: number | null;
     kmTotalCalculado: number | null;
@@ -425,6 +429,7 @@ export function analisarViagensPlanilha(
   let pesagensAltas = 0;
   let linhasComPesagemAlta = 0;
   let linhasDescartadasSemDados = 0;
+  let linhasEmBrancoIgnoradas = 0;
   let somaContadorViagens = 0;
   let somaContadorNoDashboard = 0;
   let somaContadorForaDashboard = 0;
@@ -503,6 +508,26 @@ export function analisarViagensPlanilha(
     const viagensLinha = contarViagensPorRotaRegistro(coletaTmp);
     const linhaPlanilha = i + 2;
 
+    const pesagensLinha = [idx.peso1, idx.peso2, idx.peso3, idx.peso4, idx.peso5]
+      .map((col) => parseNum(valorColuna(linha, col)))
+      .filter((p): p is number => p != null && !Number.isNaN(p) && p > 0);
+    const kmCelula = parseNum(valorColuna(linha, idx.kmTotal));
+    const pesoCelula = parseNum(valorColuna(linha, idx.pesoTotal));
+
+    // Linha de template/rodapé: nada identifica uma viagem (sem data, placa, motorista,
+    // contador, KM e pesagem). Só sujaria o relatório com centenas de "FORA DO DASH".
+    const linhaEmBranco = !dataRaw
+      && !placa
+      && !motorista
+      && !(contador != null && contador > 0)
+      && !(kmCelula != null && kmCelula > 0)
+      && !(pesoCelula != null && pesoCelula > 0)
+      && pesagensLinha.length === 0;
+    if (linhaEmBranco) {
+      linhasEmBrancoIgnoradas++;
+      continue;
+    }
+
     // CONTADOR da planilha — soma SEMPRE (inclusive linhas descartadas/fora do dash)
     if (contador !== null && contador > 0) {
       somaContadorViagens += contador;
@@ -524,8 +549,9 @@ export function analisarViagensPlanilha(
           placaValida: validacaoPlaca.valida,
           motorista,
           rota: rota || regional || distrito,
-          kmTotal: parseNum(valorColuna(linha, idx.kmTotal)),
-          pesoTotal: parseNum(valorColuna(linha, idx.pesoTotal)),
+          kmTotal: kmCelula,
+          pesoTotal: pesoCelula,
+          pesagensKg: pesagensLinha,
           kmSaida: parseNum(valorColuna(linha, idx.kmSaida)),
           kmChegada: parseNum(valorColuna(linha, idx.kmChegada)),
           kmTotalCalculado: null,
@@ -598,7 +624,7 @@ export function analisarViagensPlanilha(
       }
     }
 
-    const kmTotalRaw = parseNum(valorColuna(linha, idx.kmTotal));
+    const kmTotalRaw = kmCelula;
     const kmTotalCalculado = coletaTmp.kmTotal != null && coletaTmp.kmTotal > 0
       ? Number(coletaTmp.kmTotal.toFixed(1))
       : (validacao.kmEfetivo != null ? Number(validacao.kmEfetivo.toFixed(1)) : null);
@@ -617,7 +643,8 @@ export function analisarViagensPlanilha(
       motorista,
       rota: rota || regional || distrito,
       kmTotal: kmTotalRaw,
-      pesoTotal: coletaTmp.pesoTotal ?? parseNum(valorColuna(linha, idx.pesoTotal)),
+      pesoTotal: coletaTmp.pesoTotal ?? pesoCelula,
+      pesagensKg: pesagensLinha,
       kmSaida: parseNum(valorColuna(linha, idx.kmSaida)),
       kmChegada: parseNum(valorColuna(linha, idx.kmChegada)),
       kmTotalCalculado,
@@ -688,6 +715,12 @@ export function analisarViagensPlanilha(
       + '.',
     );
   }
+  if (linhasEmBrancoIgnoradas > 0) {
+    partesAviso.push(
+      `${linhasEmBrancoIgnoradas} linha(s) em branco da planilha (sem data, placa, motorista, contador, KM e pesagem) `
+      + 'foram ignoradas e não aparecem como problema.',
+    );
+  }
   if (somaContadorViagens > 0 && somaContadorNoDashboard !== somaContadorViagens) {
     partesAviso.push(
       `CONTADOR DE VIAGENS na planilha = ${somaContadorViagens}; no dashboard = ${somaContadorNoDashboard}`
@@ -715,6 +748,7 @@ export function analisarViagensPlanilha(
     viagensValidasDashboard: viagensCompletas,
     viagensInconsistentesTotal: viagensIncompletas,
     linhasDescartadasSemDados,
+    linhasEmBrancoIgnoradas,
     viagensCorrigidasHodometro,
     pesagensAltas,
     linhasComPesagemAlta,
