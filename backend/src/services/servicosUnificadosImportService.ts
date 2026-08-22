@@ -12,6 +12,7 @@ import { obterUploadIdsModificaveis, aplicarReferenciaCicloNoUpload, apagarDatas
 import { normalizarDiaInicioCiclo } from '../utils/periodoCicloContrato';
 import { invalidarCacheDadosServico } from './servicoDadosCache';
 import { invalidarCacheDashboardServico } from '../controllers/ServicoController';
+import { recalcularTotaisDiaServicoSilencioso } from './coletaTotaisDiaService';
 import { invalidarCacheSaudeContratos } from '../controllers/ContractController';
 import { dashboardCache } from './DashboardCacheManager';
 import { agendarWarmupPosUpload } from './executivoCacheWarmupService';
@@ -319,6 +320,7 @@ class ServicosUnificadosImportService {
     dashboardCache.invalidar(servico.id);
     agendarWarmupPosUpload(servico.id);
     invalidarCacheSaudeContratos(servico.contract_id);
+    void recalcularTotaisDiaServicoSilencioso(servico.id);
 
     return {
       servicoId: servico.id,

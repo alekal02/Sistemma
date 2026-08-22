@@ -1221,6 +1221,7 @@ export class ValidacaoViagemService {
     }
 
     invalidarCacheDadosServico(servicoId);
+    void import('./coletaTotaisDiaService').then((m) => m.recalcularTotaisDiaServicoSilencioso(servicoId));
     return { atualizadas, inconsistentes };
   }
 

@@ -26,6 +26,7 @@ import {
 import { limitarDiasAusentesAoPeriodoDaPlanilha, normalizarDiaInicioCiclo } from '../utils/periodoCicloContrato';
 import { invalidarCacheDadosServico } from './servicoDadosCache';
 import { invalidarCacheDashboardServico } from '../controllers/ServicoController';
+import { recalcularTotaisDiaServicoSilencioso } from './coletaTotaisDiaService';
 import { invalidarCacheSaudeContratos } from '../controllers/ContractController';
 import { dashboardCache } from './DashboardCacheManager';
 import { agendarWarmupPosUpload } from './executivoCacheWarmupService';
@@ -936,6 +937,7 @@ export class DeduplicacaoService {
       dashboardCache.invalidar(servicoId);
       agendarWarmupPosUpload(servicoId);
       invalidarCacheSaudeContratos();
+      void recalcularTotaisDiaServicoSilencioso(servicoId);
     }
 
     return {
@@ -1520,6 +1522,7 @@ export class DeduplicacaoService {
       dashboardCache.invalidar(servicoId);
       agendarWarmupPosUpload(servicoId);
       invalidarCacheSaudeContratos();
+      void recalcularTotaisDiaServicoSilencioso(servicoId);
     }
 
     return {

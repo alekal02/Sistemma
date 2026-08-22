@@ -90,7 +90,7 @@ assinado. Equivalente manual:
 
 ```powershell
 # Dev
-.\publicar.ps1 -Tag 3.2.0
+.\publicar.ps1 -Tag 3.2.5
 
 # Destino — só muda a TAG no .env (já em multi-banco: NÃO rode o cutover de novo):
 docker compose pull

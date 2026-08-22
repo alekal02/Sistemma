@@ -1,4 +1,5 @@
 import PlanilhaService from './PlanilhaService';
+import { getCurrentTenantDb } from '../database/data-source';
 import {
   DADOS_CACHE_MAX_ENTRADAS,
   DADOS_CACHE_MAX_LINHAS,
@@ -16,7 +17,7 @@ export function invalidarCacheDadosServico(servicoId: string): void {
 }
 
 function chaveCache(servicoId: string): string {
-  return `dados:${servicoId}`;
+  return `dados:${getCurrentTenantDb() || 'banco-unico'}:${servicoId}`;
 }
 
 function linhasNoCache(): number {

@@ -3,6 +3,7 @@ import { User } from '../entities/User';
 import { Caminhao } from '../entities/Caminhao';
 import { AbastecimentoLog } from '../entities/AbastecimentoLog';
 import { ColetaData } from '../entities/ColetaData';
+import { ColetaTotaisDia } from '../entities/ColetaTotaisDia';
 import { PlanilhaUpload } from '../entities/PlanilhaUpload';
 import { Servico } from '../entities/Servico';
 import { Contract } from '../entities/Contract';
@@ -28,6 +29,7 @@ export const TENANT_ENTITIES = [
   Caminhao,
   AbastecimentoLog,
   ColetaData,
+  ColetaTotaisDia,
   PlanilhaUpload,
   Contract,
   Servico,

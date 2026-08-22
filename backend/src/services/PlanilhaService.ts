@@ -20,6 +20,7 @@ import { sqlDataIsoDia, sqlJsonNumero, sqlSumPesoEfetivoKg, sqlSumViagens } from
 import { deduplicarKpisLista } from './kpiDeduplicacaoService';
 import { invalidarCacheDadosServico } from './servicoDadosCache';
 import { invalidarCacheDashboardServico } from './comparacaoCache';
+import { recalcularTotaisDiaServicoSilencioso } from './coletaTotaisDiaService';
 import { normalizarTextoTipoCaminhao } from '../config/pesoMaximoCaminhao';
 
 interface LinhaPlanilha {
@@ -204,6 +205,7 @@ export class PlanilhaService {
     if (servicoId) {
       invalidarCacheDadosServico(servicoId);
       invalidarCacheDashboardServico(servicoId);
+      void recalcularTotaisDiaServicoSilencioso(servicoId);
     }
 
     // Detectar padrão e salvar no serviço (se vinculado)
@@ -1333,6 +1335,7 @@ export class PlanilhaService {
     if (servicoId) {
       invalidarCacheDadosServico(servicoId);
       invalidarCacheDashboardServico(servicoId);
+      void recalcularTotaisDiaServicoSilencioso(servicoId);
       const restantes = await this.uploadRepo.count({ where: { servico_id: servicoId } });
       if (restantes === 0) {
         const servico = await this.servicoRepo.findOne({ where: { id: servicoId } });
@@ -1405,6 +1408,7 @@ export class PlanilhaService {
 
     invalidarCacheDadosServico(servicoId);
     invalidarCacheDashboardServico(servicoId);
+    void recalcularTotaisDiaServicoSilencioso(servicoId);
 
     return {
       uploadsRemovidos: uploadIds.length,

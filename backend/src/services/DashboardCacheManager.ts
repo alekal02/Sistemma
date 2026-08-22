@@ -7,6 +7,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { getCurrentTenantDb } from '../database/data-source';
 
 const CACHE_DURACAO = parseInt(
   process.env.DASHBOARD_EXECUTIVO_CACHE_TTL_MS || String(24 * 60 * 60 * 1000),
@@ -70,7 +71,7 @@ class DashboardCacheManager {
       servicoId: params.servicoId || null,
       mesReferencia: params.mesReferencia ?? null,
       anoReferencia: params.anoReferencia ?? null,
-      escopo: params.escopo || null,
+      escopo: params.escopo || getCurrentTenantDb() || 'banco-unico',
     });
   }
 

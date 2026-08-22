@@ -7,6 +7,7 @@
  * que ninguém lia e a primeira abertura da tela continuava lenta.
  */
 import { getEndpointCache, setEndpointCache } from './comparacaoCache';
+import { escopoCacheContrato } from './coletaTotaisDiaService';
 import {
   getAgregacaoColeta,
   getRankingsColetaSql,
@@ -33,6 +34,7 @@ export async function agregacaoColetaComCache(
   opts: PeriodoColeta & { topN?: number; tipoServico?: string | null; valoresFixos?: Record<string, number> },
 ): Promise<any> {
   const chave = [
+    escopoCacheContrato(),
     'coleta-agregacao',
     servicoId,
     opts.data || '',
@@ -57,7 +59,7 @@ export async function rankingsColetaComCache(
   servicoId: string,
   opts: { dataInicio?: string; dataFim?: string },
 ): Promise<any> {
-  const chave = ['coleta-rankings', servicoId, opts.dataInicio || '', opts.dataFim || ''].join(':');
+  const chave = [escopoCacheContrato(), 'coleta-rankings', servicoId, opts.dataInicio || '', opts.dataFim || ''].join(':');
   return comCache(chave, () => getRankingsColetaSql(servicoId, { ...opts, topN: 100 }));
 }
 
@@ -66,7 +68,8 @@ export async function mapeamentoOperacionalComCache(
   opts: PeriodoColeta & { tipoServico?: string | null },
 ): Promise<any> {
   const chave = [
-      'mapeamento-operacional-v10',
+    escopoCacheContrato(),
+    'mapeamento-operacional-v10',
     servicoId,
     opts.data || '',
     opts.dataInicio || '',
@@ -87,6 +90,6 @@ export async function fichaRotasCicloComCache(
   servicoId: string,
   opts: { dataInicio?: string; dataFim?: string },
 ): Promise<any> {
-  const chave = ['rotas-ciclo-v1', servicoId, opts.dataInicio || '', opts.dataFim || ''].join(':');
+  const chave = [escopoCacheContrato(), 'rotas-ciclo-v1', servicoId, opts.dataInicio || '', opts.dataFim || ''].join(':');
   return comCache(chave, () => getFichaRotasCiclo(servicoId, opts));
 }

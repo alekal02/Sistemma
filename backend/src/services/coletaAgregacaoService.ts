@@ -183,10 +183,18 @@ function mapRanking(rows: any[]): LinhaRankingColeta[] {
  */
 export async function getMetricasColetaSql(
   servicoId: string,
-  opts: { dataInicio?: string; dataFim?: string; data?: string } = {},
+  opts: { dataInicio?: string; dataFim?: string; data?: string; ignorarTotais?: boolean } = {},
   valoresFixos: Record<string, number> = {},
   uploadIdsConhecidos?: number[],
 ): Promise<MetricasColetaSql> {
+  const { dataInicio, dataFim } = parsePeriodo(opts);
+  const temTarifa = Object.keys(valoresFixos).length > 0;
+  if (!opts.ignorarTotais && !temTarifa && dataInicio && dataInicio === dataFim) {
+    const { lerTotaisDia } = await import('./coletaTotaisDiaService');
+    const salvo = await lerTotaisDia(servicoId, dataInicio);
+    if (salvo && salvo.registros > 0) return salvo;
+  }
+
   const uploadIds = uploadIdsConhecidos ?? await getUploadIds(servicoId);
   const vazio: MetricasColetaSql = {
     registros: 0, viagens: 0, pesoTotalKg: 0, pesoTotalTon: 0, kmTotal: 0,
@@ -195,7 +203,6 @@ export async function getMetricasColetaSql(
   };
   if (!uploadIds.length) return vazio;
 
-  const { dataInicio, dataFim } = parsePeriodo(opts);
   const tarifa = sqlTarifaPorTipo(valoresFixos, 't.tipo_bruto');
 
   const porLinha = baseQb(uploadIds, dataInicio, dataFim)

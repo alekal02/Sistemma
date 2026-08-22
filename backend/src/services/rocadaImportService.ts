@@ -28,6 +28,7 @@ import {
 import { normalizarDiaInicioCiclo } from '../utils/periodoCicloContrato';
 import { invalidarCacheDadosServico } from './servicoDadosCache';
 import { invalidarCacheDashboardServico } from '../controllers/ServicoController';
+import { recalcularTotaisDiaServicoSilencioso } from './coletaTotaisDiaService';
 import { invalidarCacheSaudeContratos } from '../controllers/ContractController';
 import { dashboardCache } from './DashboardCacheManager';
 import { agendarWarmupPosUpload } from './executivoCacheWarmupService';
@@ -297,6 +298,7 @@ class RocadaImportService {
     dashboardCache.invalidar(servicoId);
     agendarWarmupPosUpload(servicoId);
     invalidarCacheSaudeContratos(servico.contract_id);
+    void recalcularTotaisDiaServicoSilencioso(servicoId);
 
     return {
       servicoId,
