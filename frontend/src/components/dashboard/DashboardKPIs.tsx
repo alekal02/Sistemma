@@ -14,6 +14,53 @@ export interface DashboardKPIsProps {
   widgetAtivo: (id: string) => boolean;
 }
 
+function normalizarNomeKpi(nome: string): string {
+  return nome
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+const NOMES_KPIS_BASE = new Set([
+  'faturamento total',
+  'faturamento estimado',
+  'faturamento',
+  'custo operacional',
+  'margem bruta',
+  'receita por hora',
+  'receita/hora',
+  'ticket medio',
+  'tonelagem',
+  'tonelagem total',
+  'peso total',
+  'peso total (kg)',
+  'km rodados',
+  'viagens',
+  'viagens realizadas',
+  'coletores ativos',
+  'horas produtivas',
+  'eficiencia (t/km)',
+  'eficiencia (ton/km)',
+]);
+
+function kpisExtrasVisiveis(
+  kpis: NonNullable<DashboardExecutivoResponse['kpisCalculados']>,
+  semDadosCiclo: boolean,
+) {
+  if (semDadosCiclo) return [];
+  const vistos = new Set<string>();
+  return kpis.filter((kpi) => {
+    if (kpi.valor === null || kpi.valor === 0) return false;
+    if (!kpi.ehProjecaoCiclo && NOMES_KPIS_BASE.has(normalizarNomeKpi(kpi.nome))) return false;
+    const chave = `${normalizarNomeKpi(kpi.nome)}:${kpi.formato}`;
+    if (vistos.has(chave)) return false;
+    vistos.add(chave);
+    return true;
+  });
+}
+
 const DashboardKPIs = memo(function DashboardKPIs({
   dados,
   widgetsAtivos,
@@ -22,15 +69,23 @@ const DashboardKPIs = memo(function DashboardKPIs({
   const { financeiro: f, operacional: o, graficos: g, periodo: p, resumoCiclo, metadados } = dados;
   const comparacaoAnterior = p.comparacaoAnterior;
   const semDadosCiclo = (metadados.totalRegistrosAtual ?? 0) === 0 && o.viagens.valor <= 0;
+  const temAbastecimentos = (metadados.totalAbastecimentosAtual ?? 0) > 0;
+  const mostrarFaturamento = f.faturamento.valor > 0;
+  const mostrarCusto = temAbastecimentos && f.custoOperacional.valor > 0;
+  const mostrarMargem = temAbastecimentos && f.margemBruta.valor !== 0;
+  const mostrarTicket = f.ticketMedio.valor > 0;
+  const mostrarReceitaHora = f.receitaHora.valor > 0;
 
   const kpisFinanceiros = useMemo(
-    () => semDadosCiclo ? [] : (dados.kpisCalculados || []).filter(isKpiFinanceiro),
+    () => kpisExtrasVisiveis((dados.kpisCalculados || []).filter(isKpiFinanceiro), semDadosCiclo),
     [dados.kpisCalculados, semDadosCiclo],
   );
   const kpisOperacionais = useMemo(
-    () => semDadosCiclo ? [] : (dados.kpisCalculados || []).filter((k) => !isKpiFinanceiro(k)),
+    () => kpisExtrasVisiveis((dados.kpisCalculados || []).filter((k) => !isKpiFinanceiro(k)), semDadosCiclo),
     [dados.kpisCalculados, semDadosCiclo],
   );
+  const temFinanceiroVisivel = mostrarFaturamento || mostrarCusto || mostrarMargem || mostrarTicket || mostrarReceitaHora || kpisFinanceiros.length > 0;
+  const temOperacionalVisivel = !semDadosCiclo && (o.tonelagem.valor > 0 || o.kmRodados.valor > 0 || o.viagens.valor > 0 || o.coletoresAtivos.valor > 0 || o.horasProdutivas.valor > 0 || o.eficiencia.valor > 0 || kpisOperacionais.length > 0);
 
   return (
     <>
@@ -53,7 +108,7 @@ const DashboardKPIs = memo(function DashboardKPIs({
             )}
       
             {/* ═══ CAMADA 1: PAINEL FINANCEIRO ═══ */}
-            {temGrupoAtivo(widgetsAtivos, 'financeiro') && (
+            {temGrupoAtivo(widgetsAtivos, 'financeiro') && temFinanceiroVisivel && (
               <>
                 <div className="exec-section-title">
                   <div className="bar green" />
@@ -61,7 +116,7 @@ const DashboardKPIs = memo(function DashboardKPIs({
                 </div>
       
                 <div className="financeiro-grid">
-                  {widgetAtivo('fin_faturamento') && (
+                  {widgetAtivo('fin_faturamento') && mostrarFaturamento && (
                     <CardFinanceiro
                       label="Faturamento Total"
                       card={f.faturamento}
@@ -71,7 +126,7 @@ const DashboardKPIs = memo(function DashboardKPIs({
                       comparacaoTooltip={tooltipComparacaoVariacao(f.faturamento.variacao, comparacaoAnterior, 'planilha')}
                     />
                   )}
-                  {widgetAtivo('fin_custo') && (
+                  {widgetAtivo('fin_custo') && mostrarCusto && (
                     <CardFinanceiro
                       label="Custo Operacional"
                       card={f.custoOperacional}
@@ -79,7 +134,7 @@ const DashboardKPIs = memo(function DashboardKPIs({
                       comparacaoTooltip={tooltipComparacaoVariacao(f.custoOperacional.variacao, comparacaoAnterior, 'abastecimento')}
                     />
                   )}
-                  {widgetAtivo('fin_margem') && (
+                  {widgetAtivo('fin_margem') && mostrarMargem && (
                     <CardFinanceiro
                       label="Margem Bruta"
                       card={f.margemBruta}
@@ -87,7 +142,7 @@ const DashboardKPIs = memo(function DashboardKPIs({
                       comparacaoTooltip={tooltipComparacaoVariacao(f.margemBruta.variacao, comparacaoAnterior, 'planilha')}
                     />
                   )}
-                  {widgetAtivo('fin_receita_hora') && (
+                  {widgetAtivo('fin_receita_hora') && mostrarReceitaHora && (
                     <CardFinanceiro
                       label="Receita por Hora"
                       card={f.receitaHora}
@@ -95,7 +150,7 @@ const DashboardKPIs = memo(function DashboardKPIs({
                       comparacaoTooltip={tooltipComparacaoVariacao(f.receitaHora.variacao, comparacaoAnterior, 'planilha')}
                     />
                   )}
-                  {widgetAtivo('fin_ticket') && (
+                  {widgetAtivo('fin_ticket') && mostrarTicket && (
                     <CardFinanceiro
                       label="Ticket Médio"
                       card={f.ticketMedio}
@@ -122,7 +177,7 @@ const DashboardKPIs = memo(function DashboardKPIs({
             )}
       
             {/* ═══ CAMADA 2: PAINEL OPERACIONAL ═══ */}
-            {temGrupoAtivo(widgetsAtivos, 'operacional') && (
+            {temGrupoAtivo(widgetsAtivos, 'operacional') && temOperacionalVisivel && (
               <>
                 <div className="exec-section-title">
                   <div className="bar blue" />

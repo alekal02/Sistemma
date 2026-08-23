@@ -64,6 +64,15 @@ export function gerarHtmlSaudeDadosServer(opts: {
   const tDash = ((relatorio.pesoKgDashboard ?? 0) / 1000);
   const tFora = ((relatorio.pesoKgForaDashboard ?? 0) / 1000);
   const dataRelatorio = new Date().toLocaleDateString('pt-BR');
+  const contadorPlanilha = relatorio.somaContadorViagens ?? relatorio.totalViagens ?? 0;
+  const contadorDashboard = relatorio.somaContadorNoDashboard ?? validas;
+  const contadorFora = relatorio.somaContadorForaDashboard ?? inconsistentes;
+  const pctAproveitamento = contadorPlanilha > 0
+    ? Math.round((contadorDashboard / contadorPlanilha) * 1000) / 10
+    : 0;
+  const viagensCorrigidas = viagens.filter((v) => v.corrigidaHodometro && !v.foraDashboard && !v.descartada);
+  const viagensFora = viagens.filter((v) => v.foraDashboard || v.descartada);
+  const viagensAlerta = viagens.filter((v) => v.alertaPesagemAlta && !v.foraDashboard && !v.descartada && !v.corrigidaHodometro);
 
   const filtrarProblemas = (
     problemas: string[] | undefined,
@@ -80,7 +89,7 @@ export function gerarHtmlSaudeDadosServer(opts: {
       return !pl.includes('placa será unificada') && !pl.startsWith('corrigido automaticamente');
     });
 
-  const linhasTabela = viagens.map((v) => {
+  const linhaTabela = (v: ResultadoAnaliseViagens['viagens'][number]) => {
     const probs = filtrarProblemas(v.problemas, {
       corrigidaHodometro: v.corrigidaHodometro,
       alertaPesagemAlta: v.alertaPesagemAlta,
@@ -125,7 +134,16 @@ export function gerarHtmlSaudeDadosServer(opts: {
           : ''}</td>
         <td style="color:${corProb};font-size:9px">${statusHtml}</td>
       </tr>`;
-  }).join('');
+  };
+  const tabelaViagens = (titulo: string, lista: ResultadoAnaliseViagens['viagens'], classe = '') => lista.length === 0 ? '' : `
+  <div class="section-title ${classe}">${esc(titulo)} (${esc(lista.length)})</div>
+  <table>
+    <thead><tr>
+      <th>Linha</th><th>Data</th><th>Placa</th><th>Motorista</th><th>Contador</th>
+      <th>KM Total</th><th>Peso da linha (t)</th><th>Status / Tratativa</th>
+    </tr></thead>
+    <tbody>${lista.map(linhaTabela).join('')}</tbody>
+  </table>`;
 
   const problemasLista = relatorio.problemasDashboard || relatorio.problemasAgrupados || [];
   const problemasHtml = problemasLista.map((p) => `
@@ -146,30 +164,48 @@ export function gerarHtmlSaudeDadosServer(opts: {
   <meta charset="UTF-8">
   <style>
     * { box-sizing: border-box; overflow: visible; }
-    body { font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 20px; background: #f1f5f9; }
-    .header { text-align: center; padding: 20px 0 10px; }
-    .header h1 { margin: 0; font-size: 20px; color: #1e293b; }
-    .header p { margin: 4px 0 0; font-size: 12px; color: #64748b; }
+    @page { size: A4; margin: 10mm; }
+    * { box-sizing: border-box; }
+    body { font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 24px; background: #edf2f7; color: #172238; }
+    .header { text-align: left; padding: 22px 24px 18px; background: linear-gradient(120deg, #172238, #263b61); border-radius: 12px; color: #fff; }
+    .header h1 { margin: 0; font-size: 22px; color: #fff; letter-spacing: -.02em; }
+    .header p { margin: 5px 0 0; font-size: 11px; color: #d5e0f2; }
+    .header .eyebrow { color: #91e1d0; text-transform: uppercase; letter-spacing: .12em; font-size: 9px; font-weight: 700; }
     .summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 14px 0; }
-    .card { background: #fff; border-radius: 8px; padding: 12px; text-align: center; box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
-    .card .num { font-size: 22px; font-weight: 700; color: #1e293b; }
-    .card .label { font-size: 10px; color: #64748b; margin-top: 2px; }
-    .card.completas .num { color: #16a34a; }
-    .card.incompletas .num { color: #dc2626; }
-    .section-title { font-size: 14px; font-weight: 700; color: #334155; margin: 16px 0 8px; padding-bottom: 4px; border-bottom: 2px solid #6366f1; }
-    .problemas-box { background: #fff; border-radius: 8px; padding: 10px; margin-bottom: 12px; box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
-    .aviso { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 10px; margin-bottom: 12px; font-size: 12px; color: #1e40af; }
-    table { width: 100%; border-collapse: collapse; font-size: 9px; }
-    th { background: #1e293b; color: #fff; padding: 6px 8px; text-align: left; font-weight: 600; }
-    td { padding: 5px 8px; border-bottom: 1px solid #e2e8f0; }
-    tr:nth-child(even) { background: #f8fafc; }
+    .card { background: #fff; border: 1px solid #dce4ef; border-radius: 9px; padding: 13px 10px; text-align: center; box-shadow: 0 4px 12px rgba(23,34,56,.05); }
+    .card .num { font-size: 21px; font-weight: 800; color: #172238; }
+    .card .label { font-size: 9px; color: #697890; margin-top: 4px; text-transform: uppercase; letter-spacing: .04em; }
+    .card.completas .num { color: #0f9f86; }
+    .card.incompletas .num { color: #d34b59; }
+    .card.tratadas .num { color: #2475c9; }
+    .section-title { font-size: 13px; font-weight: 800; color: #253653; margin: 18px 0 8px; padding: 0 0 6px 10px; border-bottom: 2px solid #2457d6; }
+    .section-title.ok { border-bottom-color: #0f9f86; }
+    .section-title.danger { border-bottom-color: #d34b59; }
+    .problemas-box { background: #fff; border: 1px solid #dce4ef; border-radius: 9px; padding: 10px; margin-bottom: 12px; box-shadow: 0 4px 12px rgba(23,34,56,.04); }
+    .aviso { background: #eaf0ff; border: 1px solid #b9caff; border-radius: 9px; padding: 12px 14px; margin-bottom: 12px; font-size: 11px; color: #18388f; line-height: 1.5; }
+    .aviso-ok { background: #e4f8f3; border-color: #9adfd2; color: #087564; }
+    .tratativas { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; margin-bottom: 12px; }
+    .tratativa { background: #fff; border: 1px solid #dce4ef; border-left: 4px solid #2475c9; border-radius: 8px; padding: 10px; font-size: 10px; color: #52627a; }
+    .tratativa strong { display: block; color: #253653; font-size: 12px; margin-bottom: 3px; }
+    .impacto { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+    .impacto-box { background: #fff; border: 1px solid #dce4ef; border-radius: 9px; padding: 11px 13px; }
+    .impacto-box strong { display: block; font-size: 11px; color: #253653; margin-bottom: 4px; }
+    .impacto-box span { font-size: 11px; color: #52627a; }
+    ul.regras { font-size: 11px; color: #52627a; margin: 0 0 12px 18px; padding: 0; line-height: 1.5; }
+    table { width: 100%; border-collapse: collapse; font-size: 9px; background: #fff; }
+    th { background: #172238; color: #fff; padding: 7px 8px; text-align: left; font-weight: 600; }
+    td { padding: 6px 8px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+    tr:nth-child(even) { background: #f7f9fc; }
     tr { break-inside: avoid; }
-    .footer { text-align: center; font-size: 10px; color: #94a3b8; margin-top: 20px; padding-top: 10px; border-top: 1px solid #e2e8f0; }
-    .obs { font-size: 10px; color: #64748b; font-style: italic; margin-top: 4px; }
+    .footer { text-align: center; font-size: 9px; color: #92a0b4; margin-top: 20px; padding-top: 10px; border-top: 1px solid #dce4ef; }
+    .obs { font-size: 10px; color: #697890; font-style: italic; margin-top: 6px; line-height: 1.4; }
+    @media (max-width: 760px) { body { padding: 12px; } .summary, .tratativas, .impacto { grid-template-columns: 1fr 1fr; } }
+    @media print { body { background: #fff; padding: 0; } .header, .card, .problemas-box, .tratativa, .impacto-box { box-shadow: none; } }
   </style>
 </head>
 <body>
   <div class="header">
+    <div class="eyebrow">Sistemma · Qualidade e rastreabilidade</div>
     <h1>Relatório de Saúde dos Dados</h1>
     <p style="font-size:13px;font-weight:600;color:#334155;margin:6px 0 2px">
       Contrato: ${esc(contratoNome)} • Tipo: ${esc(tipoLabel)} • Data: ${esc(dataRelatorio)}
@@ -178,76 +214,56 @@ export function gerarHtmlSaudeDadosServer(opts: {
   </div>
 
   <div class="summary">
-    <div class="card"><div class="num">${esc((relatorio.somaContadorViagens ?? relatorio.totalViagens) || 0)}</div><div class="label">CONTADOR planilha</div></div>
-    <div class="card completas"><div class="num">${esc(relatorio.somaContadorNoDashboard ?? validas)}</div><div class="label">CONTADOR no dashboard</div></div>
-    <div class="card incompletas"><div class="num">${esc(relatorio.somaContadorForaDashboard ?? inconsistentes)}</div><div class="label">CONTADOR fora do dash</div></div>
-    ${pesagensAltas > 0
-      ? `<div class="card"><div class="num" style="color:#ea580c">${esc(pesagensAltas)}</div><div class="label">Pesagens &gt; 15 t</div></div>`
-      : ''}
-    ${tFora > 0
-      ? `<div class="card incompletas"><div class="num">${esc(tFora.toLocaleString('pt-BR', { maximumFractionDigits: 1 }))}</div><div class="label">t FORA do ciclo</div></div>`
-      : ''}
-    ${tDash > 0
-      ? `<div class="card completas"><div class="num">${esc(tDash.toLocaleString('pt-BR', { maximumFractionDigits: 1 }))}</div><div class="label">t no ciclo/dash</div></div>`
-      : ''}
-    ${descartadas > 0
-      ? `<div class="card"><div class="num">${esc(descartadas)}</div><div class="label">Linhas ignoradas</div></div>`
-      : ''}
-    ${emBranco > 0
-      ? `<div class="card"><div class="num">${esc(emBranco)}</div><div class="label">Linhas em branco</div></div>`
-      : ''}
-    <div class="card"><div class="num">${esc(relatorio.percentualCompleto || 0)}%</div><div class="label">% Linhas válidas</div></div>
+    <div class="card"><div class="num">${esc(contadorPlanilha)}</div><div class="label">Viagens na planilha</div></div>
+    <div class="card completas"><div class="num">${esc(contadorDashboard)}</div><div class="label">Viagens aproveitadas</div></div>
+    <div class="card incompletas"><div class="num">${esc(contadorFora)}</div><div class="label">Viagens rejeitadas</div></div>
+    <div class="card completas"><div class="num">${esc(pctAproveitamento)}%</div><div class="label">Aproveitamento</div></div>
   </div>
 
-  <div class="aviso">
-    CONTADOR DE VIAGENS na planilha: <strong>${esc(relatorio.somaContadorViagens ?? '—')}</strong>.
-    Entram no dashboard: <strong>${esc(relatorio.somaContadorNoDashboard ?? validas)}</strong>.
-    Ficam fora: <strong>${esc(relatorio.somaContadorForaDashboard ?? 0)}</strong>
-    (${esc(inconsistentes)} linha(s) inconsistente(s)${descartadas > 0 ? ` + ${esc(descartadas)} ignorada(s)` : ''}).
+  <div class="impacto">
+    <div class="impacto-box"><strong>Impacto no peso</strong><span>${esc(tDash.toLocaleString('pt-BR', { maximumFractionDigits: 1 }))} t aproveitadas${tFora > 0 ? ` · ${esc(tFora.toLocaleString('pt-BR', { maximumFractionDigits: 1 }))} t fora` : ''}</span></div>
+    <div class="impacto-box"><strong>Tratamento automático</strong><span>${esc(corrigidasHodometro)} viagem(ns) corrigidas e mantidas no dashboard</span></div>
+  </div>
+
+  <div class="aviso aviso-ok">
+    <strong>Conclusão executiva:</strong>
+    ${contadorPlanilha > 0
+      ? `a planilha informou ${esc(contadorPlanilha)} viagem(ns), das quais ${esc(contadorDashboard)} (${esc(pctAproveitamento)}%) entraram no dashboard.`
+      : 'não foram identificadas viagens com contador preenchido.'}
     ${tFora > 0
-      ? `A coluna <strong>Toneladas</strong> do ciclo soma só as viagens válidas: <strong>${esc(tDash.toLocaleString('pt-BR', { maximumFractionDigits: 1 }))} t</strong>. `
-        + `<strong>${esc(tFora.toLocaleString('pt-BR', { maximumFractionDigits: 1 }))} t</strong> ficaram FORA DO DASH (linhas com erro) e não entram no total. `
-        + `Planilha ≈ ciclo + toneladas fora. `
+      ? ` O dashboard considera ${esc(tDash.toLocaleString('pt-BR', { maximumFractionDigits: 1 }))} t; ${esc(tFora.toLocaleString('pt-BR', { maximumFractionDigits: 1 }))} t ficaram fora por inconsistências e não foram somadas.`
       : ''}
-    ${corrigidasHodometro > 0
-      ? `${esc(corrigidasHodometro)} viagem(ns) com hodômetro inconsistente foram tratadas (KM zerado; peso/viagens mantidos). `
-      : ''}
-    ${pesagensAltas > 0
-      ? `${esc(pesagensAltas)} pesagem(ns) &gt; 15.000 kg/viagem — alerta informativo. `
-      : ''}
-    ${descartadas > 0 ? `${esc(descartadas)} linha(s) sem placa, KM Total e Peso Total foram ignoradas. ` : ''}
-    ${emBranco > 0 ? `${esc(emBranco)} linha(s) em branco da planilha foram ignoradas (não contam como problema). ` : ''}
-    Regras: KM máx. 300, peso &gt; 0, sem negativos, horas com ":". Hodômetro quebrado e pesagem alta não travam a subida.
+    ${emBranco > 0 ? ` ${esc(emBranco)} linha(s) em branco foram ignoradas por não representarem viagens.` : ''}
+  </div>
+
+  <div class="section-title ok">Tratativas aplicadas automaticamente</div>
+  <div class="tratativas">
+    <div class="tratativa"><strong>${esc(corrigidasHodometro)} corrigidas</strong>Hodômetro inconsistente tratado. Peso e contador preservados; KM ajustado quando possível.</div>
+    <div class="tratativa"><strong>${esc(pesagensAltas)} alertas</strong>Pesagens acima de 15 t sinalizadas para conferência, sem bloquear a entrada.</div>
+    <div class="tratativa"><strong>${esc(emBranco)} ignoradas</strong>Linhas vazias de template ou rodapé não foram consideradas viagens.</div>
   </div>
 
   ${(relatorio.regrasSaude || []).length > 0 ? `
-  <div class="section-title">O que precisa para entrar no dashboard</div>
-  <ul style="font-size:11px;color:#475569;margin:0 0 12px 18px;padding:0;">
+  <div class="section-title">Critérios de entrada no dashboard</div>
+  <ul class="regras">
     ${(relatorio.regrasSaude || []).map((r) => `<li>${esc(r)}</li>`).join('')}
   </ul>` : ''}
 
-  <div class="section-title">Problemas que excluem viagens do dashboard</div>
+  <div class="section-title danger">Viagens rejeitadas e motivo</div>
   <div class="problemas-box">
     ${problemasHtml || '<p style="color:#16a34a;font-weight:600">Nenhum bloqueio — todas as viagens identificadas entram no dashboard.</p>'}
   </div>
 
   ${resumoPlacasHtml}
 
+  ${tabelaViagens('Viagens corrigidas e mantidas no dashboard', viagensCorrigidas, 'ok')}
+  ${tabelaViagens('Viagens que ficaram fora do dashboard', viagensFora, 'danger')}
+  ${tabelaViagens('Alertas informativos de pesagem', viagensAlerta)}
   ${viagens.length > 0 ? `
-  <div class="section-title">Viagens que NÃO sobem / tratadas / alerta (${esc(viagens.length)}${viagens.length >= 500 ? '+' : ''})</div>
-  <table>
-    <thead>
-      <tr>
-        <th>Linha</th><th>Data</th><th>Placa</th><th>Motorista</th><th>Contador</th>
-        <th>KM Total</th><th>Peso da linha (t)</th><th>Status / Problemas</th>
-      </tr>
-    </thead>
-    <tbody>${linhasTabela}</tbody>
-  </table>
   <div class="obs">
     * Contador = coluna CONTADOR DE VIAGENS. O peso é o total da linha em toneladas (kg ÷ 1000) —
     quando a linha tem mais de uma viagem, cada pesagem (PESO 1–5) aparece detalhada abaixo do total.
-    Linhas FORA DO DASH não entram na coluna Toneladas do ciclo.
+    Linhas fora do dashboard não entram na coluna Toneladas do ciclo.
   </div>
   ` : ''}
 

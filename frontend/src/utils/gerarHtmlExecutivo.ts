@@ -100,133 +100,123 @@ function tabela(
 }
 
 const ESTILOS = `
+  @page { size: A4; margin: 14mm; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
-    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-    background: #f1f5f9;
-    color: #0f172a;
+    font-family: 'Aptos', 'Segoe UI', system-ui, sans-serif;
+    background: #edf2f7;
+    color: #172238;
     line-height: 1.45;
-    padding: 24px;
+    padding: 32px;
   }
-  .wrap { max-width: 1100px; margin: 0 auto; }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+  .toolbar { display: flex; justify-content: flex-end; margin-bottom: 16px; }
+  .print-btn { border: 0; border-radius: 8px; padding: 10px 16px; background: #2457d6; color: #fff; font: 700 12px inherit; cursor: pointer; box-shadow: 0 6px 16px rgba(36,87,214,.2); }
+  .print-btn:hover { background: #18388f; }
   .capa {
-    background: linear-gradient(135deg, #ecfdf5 0%, #fff 60%);
-    border: 1px solid #bbf7d0;
-    border-radius: 14px;
-    padding: 28px 32px;
-    margin-bottom: 20px;
+    position: relative;
+    overflow: hidden;
+    background: linear-gradient(125deg, #172238 0%, #263b61 66%, #2457d6 100%);
+    color: #fff;
+    border-radius: 16px;
+    padding: 34px 38px 30px;
+    margin-bottom: 26px;
+    box-shadow: 0 18px 38px rgba(23,34,56,.16);
   }
-  .capa h1 { font-size: 1.6rem; color: #065f46; margin-bottom: 6px; }
-  .capa .sub { color: #475569; font-size: 0.92rem; margin-bottom: 4px; }
-  .capa .meta { color: #64748b; font-size: 0.78rem; margin-top: 12px; }
+  .capa::after { content: ''; position: absolute; width: 260px; height: 260px; right: -80px; top: -120px; border: 1px solid rgba(255,255,255,.13); border-radius: 50%; box-shadow: 0 0 0 24px rgba(255,255,255,.025), 0 0 0 48px rgba(255,255,255,.02); }
+  .capa h1 { font-size: 2rem; letter-spacing: -.04em; color: #fff; margin-bottom: 7px; }
+  .capa .sub { color: #d5e0f2; font-size: .94rem; margin-bottom: 4px; }
+  .capa .meta { color: #aebed5; font-size: .76rem; margin-top: 18px; }
+  .capa-kicker { color: #91e1d0; font-size: .66rem; font-weight: 800; text-transform: uppercase; letter-spacing: .14em; margin-bottom: 10px; }
   .badge {
-    display: inline-block;
-    background: #dcfce7;
-    color: #166534;
-    font-size: 0.72rem;
+    display: inline-flex;
+    background: #9de6d8;
+    color: #075d54;
+    font-size: .7rem;
     font-weight: 700;
-    padding: 4px 10px;
+    padding: 5px 11px;
     border-radius: 999px;
-    margin-top: 10px;
+    margin-top: 12px;
   }
   .secao-titulo {
-    font-size: 0.78rem;
+    font-size: .68rem;
     font-weight: 800;
-    letter-spacing: 0.06em;
+    letter-spacing: .13em;
     text-transform: uppercase;
-    color: #64748b;
-    margin: 24px 0 12px;
+    color: #697890;
+    margin: 25px 0 11px;
     display: flex;
     align-items: center;
     gap: 8px;
   }
   .secao-titulo::before {
     content: '';
-    width: 4px;
-    height: 18px;
-    border-radius: 2px;
-    background: #22c55e;
+    width: 4px; height: 17px; border-radius: 4px;
+    background: #0f9f86;
   }
   .grid-kpi {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 12px;
-    margin-bottom: 8px;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 10px;
+    margin-bottom: 10px;
   }
   .kpi {
-    background: #fff;
-    border: 1px solid #e2e8f0;
-    border-radius: 10px;
-    padding: 14px 16px;
+    background: #fff; border: 1px solid #dce4ef; border-radius: 10px;
+    padding: 15px 16px; min-height: 92px;
+    box-shadow: 0 5px 14px rgba(23,34,56,.05);
   }
   .kpi.destaque {
-    border-color: #86efac;
-    background: #f0fdf4;
-    grid-column: span 1;
+    border-color: #73cfc0;
+    background: linear-gradient(135deg, #e7faf5, #fff);
   }
   .kpi-label {
-    font-size: 0.65rem;
+    font-size: .61rem;
     font-weight: 700;
     text-transform: uppercase;
-    color: #64748b;
-    margin-bottom: 6px;
+    letter-spacing: .06em; color: #697890; margin-bottom: 8px;
   }
-  .kpi-valor { font-size: 1.35rem; font-weight: 800; color: #0f172a; }
-  .var { font-size: 0.72rem; font-weight: 700; margin-top: 4px; display: inline-block; }
-  .var.up { color: #059669; }
-  .var.down { color: #dc2626; }
-  .var.estavel { color: #64748b; }
-  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-  @media (max-width: 768px) { .grid-2 { grid-template-columns: 1fr; } }
+  .kpi-valor { font-size: 1.3rem; font-weight: 800; letter-spacing: -.03em; color: #172238; }
+  .var { font-size: .68rem; font-weight: 700; margin-top: 5px; display: inline-block; }
+  .var.up { color: #0f9f86; } .var.down { color: #d34b59; } .var.estavel { color: #8794a8; }
+  .grid-2 { display: grid; grid-template-columns: 1.35fr 1fr; gap: 14px; }
   .bloco {
-    background: #fff;
-    border: 1px solid #e2e8f0;
-    border-radius: 10px;
-    padding: 16px 18px;
-    margin-bottom: 16px;
+    background: #fff; border: 1px solid #dce4ef; border-radius: 12px;
+    padding: 17px 19px; margin-bottom: 14px;
+    box-shadow: 0 5px 14px rgba(23,34,56,.04);
   }
   .bloco h2 {
-    font-size: 0.88rem;
+    font-size: .82rem;
     font-weight: 700;
-    color: #334155;
-    margin-bottom: 12px;
+    color: #253653; margin-bottom: 14px;
   }
-  table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+  table { width: 100%; border-collapse: collapse; font-size: .74rem; }
   th {
-    text-align: left;
-    background: #1e293b;
-    color: #fff;
-    padding: 8px 10px;
-    font-size: 0.68rem;
-    text-transform: uppercase;
+    text-align: left; background: #172238; color: #e7eef8; padding: 9px 10px;
+    font-size: .6rem; text-transform: uppercase; letter-spacing: .07em;
   }
   th.r, td.r { text-align: right; }
-  td { padding: 8px 10px; border-bottom: 1px solid #e2e8f0; }
-  tr:nth-child(even) td { background: #f8fafc; }
-  .barras { display: flex; flex-direction: column; gap: 8px; }
-  .barra-linha { display: grid; grid-template-columns: 120px 1fr 90px; gap: 8px; align-items: center; }
+  td { padding: 8px 10px; border-bottom: 1px solid #e9eef5; color: #3b4a62; }
+  tr:nth-child(even) td { background: #f7f9fc; }
+  .barras { display: flex; flex-direction: column; gap: 9px; }
+  .barra-linha { display: grid; grid-template-columns: 105px 1fr 104px; gap: 9px; align-items: center; }
   .barra-label {
-    font-size: 0.72rem;
-    color: #475569;
+    font-size: .67rem; color: #52627a;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .barra-track { height: 10px; background: #e2e8f0; border-radius: 5px; overflow: hidden; }
+  .barra-track { height: 8px; background: #e8eef5; border-radius: 5px; overflow: hidden; }
   .barra-fill { height: 100%; border-radius: 5px; }
-  .barra-valor { font-size: 0.72rem; font-weight: 700; text-align: right; color: #334155; }
-  .vazio { color: #94a3b8; font-size: 0.82rem; font-style: italic; }
+  .barra-valor { font-size: .67rem; font-weight: 700; text-align: right; color: #253653; }
+  .vazio { color: #92a0b4; font-size: .78rem; font-style: italic; }
   .rodape {
-    text-align: center;
-    color: #94a3b8;
-    font-size: 0.72rem;
-    margin-top: 28px;
-    padding-top: 16px;
-    border-top: 1px solid #e2e8f0;
+    text-align: center; color: #92a0b4; font-size: .68rem; margin-top: 26px;
+    padding-top: 14px; border-top: 1px solid #dce4ef;
   }
+  @media (max-width: 800px) { body { padding: 16px; } .grid-kpi { grid-template-columns: repeat(2, 1fr); } .grid-2 { grid-template-columns: 1fr; } .capa { padding: 26px 24px; } }
   @media print {
-    body { background: #fff; padding: 0; }
-    .capa, .bloco, .kpi { break-inside: avoid; }
+    body { background: #fff; padding: 0; } .toolbar { display: none; }
+    .capa, .bloco, .kpi { break-inside: avoid; box-shadow: none; }
   }
 `;
 
@@ -248,6 +238,23 @@ export function gerarHtmlExecutivoCompartilhavel(
   const receitaTurno = (g.receitaPorTurno || af.faturamentoPorTurno || []).slice(0, 8);
   const receitaDiaSemana = (g.receitaPorDiaSemana || af.faturamentoPorDiaSemana || []).slice(0, 7);
   const receitaDiaria = (g.receitaDiaria || g.receitaKmDiario || []).slice(-14);
+  const temPlanilha = m.totalRegistrosAtual > 0;
+  const temAbastecimentos = m.totalAbastecimentosAtual > 0;
+  const financeiroCards = [
+    f.faturamento.valor > 0 ? cardKpi('Faturamento Total', f.faturamento.formatado, f.faturamento.variacao, true) : '',
+    temAbastecimentos && f.custoOperacional.valor > 0 ? cardKpi('Custo Operacional', f.custoOperacional.formatado, f.custoOperacional.variacao) : '',
+    temAbastecimentos && f.margemBruta.valor !== 0 ? cardKpi('Margem Bruta', f.margemBruta.formatado, f.margemBruta.variacao) : '',
+    f.ticketMedio.valor > 0 ? cardKpi('Ticket Médio', f.ticketMedio.formatado, f.ticketMedio.variacao) : '',
+    f.receitaHora.valor > 0 ? cardKpi('Receita / Hora', f.receitaHora.formatado, f.receitaHora.variacao) : '',
+  ].filter(Boolean).join('');
+  const operacionalCards = [
+    o.tonelagem.valor > 0 ? cardKpi('Tonelagem', o.tonelagem.formatado, o.tonelagem.variacao) : '',
+    o.kmRodados.valor > 0 ? cardKpi('KM Rodados', o.kmRodados.formatado, o.kmRodados.variacao) : '',
+    o.viagens.valor > 0 ? cardKpi('Viagens', o.viagens.formatado, o.viagens.variacao) : '',
+    o.coletoresAtivos.valor > 0 ? cardKpi('Coletores Ativos', o.coletoresAtivos.formatado, o.coletoresAtivos.variacao) : '',
+    o.horasProdutivas.valor > 0 ? cardKpi('Horas Produtivas', o.horasProdutivas.formatado, o.horasProdutivas.variacao) : '',
+    o.eficiencia.valor > 0 ? cardKpi('Eficiência (t/km)', o.eficiencia.formatado, o.eficiencia.variacao) : '',
+  ].filter(Boolean).join('');
 
   const html = `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -259,7 +266,9 @@ export function gerarHtmlExecutivoCompartilhavel(
 </head>
 <body>
   <div class="wrap">
+    <div class="toolbar"><button class="print-btn" type="button" onclick="window.print()">Imprimir / salvar PDF</button></div>
     <header class="capa">
+      <div class="capa-kicker">Sistemma · Inteligência operacional</div>
       <h1>Dashboard Executivo</h1>
       <p class="sub"><strong>${esc(escopo)}</strong></p>
       <p class="sub">Período: ${esc(p.label)} (${fmtData(p.inicio)} — ${fmtData(p.fim)})</p>
@@ -270,24 +279,9 @@ export function gerarHtmlExecutivoCompartilhavel(
       </p>
     </header>
 
-    <div class="secao-titulo">Painel Financeiro</div>
-    <div class="grid-kpi">
-      ${cardKpi('Faturamento Total', f.faturamento.formatado, f.faturamento.variacao, true)}
-      ${cardKpi('Custo Operacional', f.custoOperacional.formatado, f.custoOperacional.variacao)}
-      ${cardKpi('Margem Bruta', f.margemBruta.formatado, f.margemBruta.variacao)}
-      ${cardKpi('Ticket Médio', f.ticketMedio.formatado, f.ticketMedio.variacao)}
-      ${cardKpi('Receita / Hora', f.receitaHora.formatado, f.receitaHora.variacao)}
-    </div>
+    ${financeiroCards ? `<div class="secao-titulo">Painel Financeiro</div><div class="grid-kpi">${financeiroCards}</div>` : ''}
 
-    <div class="secao-titulo">Painel Operacional</div>
-    <div class="grid-kpi">
-      ${cardKpi('Tonelagem', o.tonelagem.formatado, o.tonelagem.variacao)}
-      ${cardKpi('KM Rodados', o.kmRodados.formatado, o.kmRodados.variacao)}
-      ${cardKpi('Viagens', o.viagens.formatado, o.viagens.variacao)}
-      ${cardKpi('Coletores Ativos', o.coletoresAtivos.formatado, o.coletoresAtivos.variacao)}
-      ${cardKpi('Horas Produtivas', o.horasProdutivas.formatado, o.horasProdutivas.variacao)}
-      ${cardKpi('Eficiência (t/km)', o.eficiencia.formatado, o.eficiencia.variacao)}
-    </div>
+    ${temPlanilha && operacionalCards ? `<div class="secao-titulo">Painel Operacional</div><div class="grid-kpi">${operacionalCards}</div>` : ''}
 
     <div class="grid-2">
       <div class="bloco">
