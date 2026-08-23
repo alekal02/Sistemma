@@ -1,6 +1,7 @@
 import { BrowserRouter as Router, Routes, Route, Navigate, useParams } from 'react-router-dom'
+import type { ReactNode } from 'react'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
-import { homePath } from './utils/homePath'
+import { ehGestor, homePath } from './utils/homePath'
 import { ToastProvider } from './contexts/ToastContext'
 import { BreadcrumbProvider } from './contexts/BreadcrumbContext'
 import ToastContainer from './components/Toast'
@@ -31,6 +32,12 @@ function HomeRedirect() {
   const { user, loading } = useAuth()
   if (loading) return null
   return <Navigate to={homePath(user)} replace />
+}
+
+function GestorOnlyRoute({ children }: { children: ReactNode }) {
+  const { user } = useAuth()
+  if (!ehGestor(user) || user?.contractId) return <Navigate to={homePath(user)} replace />
+  return <>{children}</>
 }
 
 /** Sem sessão a raiz é a própria escolha de área; com sessão vai para a home. */
@@ -136,9 +143,11 @@ function App() {
             path="/dashboard/executivo"
             element={
               <ProtectedRoute>
-                <Layout>
-                  <DashboardExecutivo />
-                </Layout>
+                <GestorOnlyRoute>
+                  <Layout>
+                    <DashboardExecutivo />
+                  </Layout>
+                </GestorOnlyRoute>
               </ProtectedRoute>
             }
           />

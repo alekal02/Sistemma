@@ -21,17 +21,16 @@ const DashboardKPIs = memo(function DashboardKPIs({
 }: DashboardKPIsProps) {
   const { financeiro: f, operacional: o, graficos: g, periodo: p, resumoCiclo, metadados } = dados;
   const comparacaoAnterior = p.comparacaoAnterior;
+  const semDadosCiclo = (metadados.totalRegistrosAtual ?? 0) === 0 && o.viagens.valor <= 0;
 
   const kpisFinanceiros = useMemo(
-    () => (dados.kpisCalculados || []).filter(isKpiFinanceiro),
-    [dados.kpisCalculados],
+    () => semDadosCiclo ? [] : (dados.kpisCalculados || []).filter(isKpiFinanceiro),
+    [dados.kpisCalculados, semDadosCiclo],
   );
   const kpisOperacionais = useMemo(
-    () => (dados.kpisCalculados || []).filter((k) => !isKpiFinanceiro(k)),
-    [dados.kpisCalculados],
+    () => semDadosCiclo ? [] : (dados.kpisCalculados || []).filter((k) => !isKpiFinanceiro(k)),
+    [dados.kpisCalculados, semDadosCiclo],
   );
-
-  const semDadosCiclo = (metadados.totalRegistrosAtual ?? 0) === 0 && o.viagens.valor <= 0;
 
   return (
     <>

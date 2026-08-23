@@ -6,11 +6,12 @@ dotenv.config();
 
 import express, { Express, Request, Response, NextFunction } from 'express';
 import cors from 'cors';
-import AppDataSource, { isMultiTenant, runWithTenant } from './database/data-source';
+import AppDataSource from './database/data-source';
 import { MAX_BODY_BYTES } from './config/limitesRecursos';
+import { iniciarAplicacao } from './bootstrap';
 
 const app: Express = express();
-const PORT = process.env.APP_PORT || 3200;
+const PORT = Number(process.env.APP_PORT || 3200);
 
 // Middlewares globais
 const corsOrigins = (
@@ -63,21 +64,9 @@ import whatsappRoutes from './routes/whatsapp';
 import wuzapiRoutes from './routes/wuzapi';
 import pdfRoutes from './routes/pdf';
 import { pdfController } from './controllers/PdfController';
-import { seedKpisUniversais } from './database/seedKpiUniversal';
-import { seedKpisUniversaisExtra } from './database/seedKpiUniversalExtra';
-import { seedKpisUniversaisReceita } from './database/seedKpiUniversalReceita';
-import { seedGraficosPadrao } from './database/seedGraficosPadrao';
-import { migrateHorasProdutivas } from './database/migrate_horas_produtivas';
-import { migrateColetoresEquipeKpi } from './database/migrate_coletores_equipe_kpi';
-import { migrateMediaHorasViagemKpi } from './database/migrate_media_horas_viagem_kpi';
-import { migratePesoCelulasPlanilha } from './database/migrate_peso_celulas_planilha';
-import { sincronizarKpisUniversaisBiblioteca } from './database/sincronizarKpisUniversaisBiblioteca';
 import { DashboardExecutivoController } from './controllers/DashboardExecutivoController';
 import { ModeloExecutivoController } from './controllers/ModeloExecutivoController';
-import {
-  registrarControllerExecutivo,
-  iniciarAgendamentoWarmupExecutivo,
-} from './services/executivoCacheWarmupService';
+import { registrarControllerExecutivo } from './services/executivoCacheWarmupService';
 
 const servicoCtrl = new ServicoController();
 const dashboardExecutivoCtrl = new DashboardExecutivoController();
@@ -318,97 +307,4 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   res.status(500).json({ error: err.message || 'Erro interno do servidor' });
 });
 
-/** Seeds e migrations de startup no banco que estiver ativo. */
-async function prepararBancoAtivo(): Promise<void> {
-    const skipStartup = process.env.SKIP_STARTUP_SEED === 'true';
-
-    if (!skipStartup) {
-      try {
-        await seedKpisUniversais();
-      } catch (err) {
-        console.error('⚠️ Erro ao seed KPIs universais:', err);
-      }
-      try {
-        await seedKpisUniversaisExtra();
-      } catch (err) {
-        console.error('⚠️ Erro ao seed KPIs universais extra:', err);
-      }
-      try {
-        await seedKpisUniversaisReceita();
-      } catch (err) {
-        console.error('⚠️ Erro ao seed KPIs universais receita:', err);
-      }
-      if (process.env.SYNC_KPIS_UNIVERSAIS !== 'false') {
-        try {
-          await sincronizarKpisUniversaisBiblioteca();
-        } catch (err) {
-          console.error('⚠️ Erro ao sincronizar biblioteca de KPIs universais:', err);
-        }
-      }
-      try {
-        await seedGraficosPadrao();
-      } catch (err) {
-        console.error('⚠️ Erro ao seed gráficos padrão:', err);
-      }
-    } else {
-      console.log('⏭️ SKIP_STARTUP_SEED=true — seeds de biblioteca ignorados');
-    }
-
-    if (process.env.SKIP_STARTUP_MIGRATIONS !== 'true') {
-      try {
-        await migrateHorasProdutivas();
-      } catch (err) {
-        console.error('⚠️ Erro na migration de horas produtivas:', err);
-      }
-      try {
-        await migrateColetoresEquipeKpi();
-      } catch (err) {
-        console.error('⚠️ Erro na migration de coletores na equipe:', err);
-      }
-      try {
-        await migrateMediaHorasViagemKpi();
-      } catch (err) {
-        console.error('⚠️ Erro na migration de média horas/viagem:', err);
-      }
-      try {
-        await migratePesoCelulasPlanilha();
-      } catch (err) {
-        console.error('⚠️ Erro na migration de peso das células da planilha:', err);
-      }
-    } else {
-      console.log('⏭️ SKIP_STARTUP_MIGRATIONS=true — migrations automáticas ignoradas');
-    }
-}
-
-// Inicializar banco de dados e iniciar servidor
-AppDataSource.initialize()
-  .then(async () => {
-    console.log('✅ Banco de dados conectado com sucesso');
-
-    if (isMultiTenant()) {
-      // Um banco por contrato: as tabelas de operação vivem em cada contrato,
-      // então seeds e migrations rodam dentro de cada banco.
-      const { contratosComBanco } = await import('./services/tenantFanout');
-      const bancos = await contratosComBanco();
-      console.log(`🗂️ Modo um-banco-por-contrato — ${bancos.length} contrato(s) para preparar`);
-      for (const tenant of bancos) {
-        try {
-          await runWithTenant(tenant.databaseName, () => prepararBancoAtivo());
-          console.log(`   ✔ ${tenant.numeroContrato} (${tenant.databaseName})`);
-        } catch (err) {
-          console.error(`   ✖ ${tenant.numeroContrato} (${tenant.databaseName}):`, err);
-        }
-      }
-    } else {
-      await prepararBancoAtivo();
-    }
-
-    app.listen(PORT, () => {
-      console.log(`✅ Servidor rodando em http://localhost:${PORT}`);
-      iniciarAgendamentoWarmupExecutivo();
-    });
-  })
-  .catch((error) => {
-    console.error('❌ Erro ao conectar ao banco de dados:', error);
-    process.exit(1);
-  });
+iniciarAplicacao(app, PORT);

@@ -27,10 +27,15 @@ import {
 import { dashboardCache, type ExecutivoCacheParams } from './DashboardCacheManager';
 import PlanilhaService from './PlanilhaService';
 import type { DashboardExecutivoController } from '../controllers/DashboardExecutivoController';
+import { calcularWarmupPedido } from './warmupPolicy';
+export { calcularWarmupPedido } from './warmupPolicy';
+export type { WarmupPedido } from './warmupPolicy';
 
 let aquecendo = false;
 let controllerRef: DashboardExecutivoController | null = null;
 let timerDiario: ReturnType<typeof setInterval> | null = null;
+let warmupPosUploadTimer: ReturnType<typeof setTimeout> | null = null;
+let warmupPosUploadPendente: { servicoId: string; contractId?: string } | null = null;
 
 const INTERVALO_MS = parseInt(
   process.env.DASHBOARD_WARMUP_INTERVAL_MS || String(24 * 60 * 60 * 1000),
@@ -41,7 +46,10 @@ const DELAY_INICIAL_MS = parseInt(
   10,
 );
 const WARMUP_ENABLED = process.env.DASHBOARD_WARMUP_ENABLED !== 'false';
-const WARMUP_PAUSE_MS = parseInt(process.env.DASHBOARD_WARMUP_PAUSE_MS || '1500', 10);
+const WARMUP_FULL_SCAN = process.env.DASHBOARD_WARMUP_FULL_SCAN === 'true';
+const WARMUP_MAX_CONTRATOS = parseInt(process.env.DASHBOARD_WARMUP_MAX_CONTRATOS || '2', 10);
+const WARMUP_MAX_SERVICOS = parseInt(process.env.DASHBOARD_WARMUP_MAX_SERVICOS || '6', 10);
+const WARMUP_PAUSE_MS = parseInt(process.env.DASHBOARD_WARMUP_PAUSE_MS || '400', 10);
 
 let warmupPendente: { contractId?: string; servicoId?: string } | null = null;
 
@@ -126,10 +134,23 @@ export async function aquecerCacheExecutivo(opts?: {
         todosServicos.push(...lista);
       }
     }
-    const contagens = await PlanilhaService.getContagemRegistrosPorServicos(todosServicos.map(s => s.id));
+
+    const pedidoWarmup = calcularWarmupPedido({
+      fullScan: WARMUP_FULL_SCAN || Boolean(opts?.contractId || opts?.servicoId),
+      contratoTotal: contratos.length,
+      servicoTotal: todosServicos.length,
+      servicos: todosServicos.map(s => s.id),
+      maxContratos: WARMUP_MAX_CONTRATOS,
+      maxServicos: WARMUP_MAX_SERVICOS,
+    });
+    const contratosAProcessar = pedidoWarmup.fullScan ? contratos : contratos.slice(0, pedidoWarmup.maxContratos);
+
+    const contagens = await PlanilhaService.getContagemRegistrosPorServicos(
+      todosServicos.filter((s, index) => pedidoWarmup.fullScan || index < pedidoWarmup.maxServicos).map(s => s.id),
+    );
     const servicoTemDados = (id: string) => (contagens.get(id)?.total || 0) > 0;
 
-    for (const contrato of contratos) {
+    for (const contrato of contratosAProcessar) {
       const dia = contrato.diaInicioCiclo ?? 1;
 
       if (opts?.servicoId) {
@@ -142,7 +163,8 @@ export async function aquecerCacheExecutivo(opts?: {
         continue;
       }
 
-      const servicos = todosServicos.filter(s => s.contract_id === contrato.id);
+      const servicos = (pedidoWarmup.fullScan ? todosServicos : todosServicos.slice(0, pedidoWarmup.maxServicos))
+        .filter(s => s.contract_id === contrato.id);
       const servicosComDados = servicos.filter(s => servicoTemDados(s.id));
 
       if (servicosComDados.length === 0) {
@@ -261,21 +283,29 @@ export function agendarWarmupPosUpload(servicoId: string, contractId?: string): 
   if (!WARMUP_ENABLED) return;
   const tenantDb = getCurrentTenantDb();
 
-  const aquecer = async () => {
-    let cid = contractId;
-    if (!cid) {
-      const s = await AppDataSource.getRepository(Servico).findOne({ where: { id: servicoId } });
-      cid = s?.contract_id;
-    }
-    if (!cid) {
-      console.warn(`[DashboardWarmup] Serviço ${servicoId} sem contrato — aquecimento ignorado`);
-      return;
-    }
-    await aquecerCacheExecutivo({ contractId: cid, servicoId });
-    await aquecerOperacionalDoServico(servicoId, cid);
-  };
+  warmupPosUploadPendente = { servicoId, contractId };
+  if (warmupPosUploadTimer) clearTimeout(warmupPosUploadTimer);
 
-  setTimeout(() => {
+  warmupPosUploadTimer = setTimeout(() => {
+    const pending = warmupPosUploadPendente;
+    warmupPosUploadPendente = null;
+    warmupPosUploadTimer = null;
+    if (!pending) return;
+
+    const aquecer = async () => {
+      let cid = pending.contractId;
+      if (!cid) {
+        const s = await AppDataSource.getRepository(Servico).findOne({ where: { id: pending.servicoId } });
+        cid = s?.contract_id;
+      }
+      if (!cid) {
+        console.warn(`[DashboardWarmup] Serviço ${pending.servicoId} sem contrato — aquecimento ignorado`);
+        return;
+      }
+      await aquecerCacheExecutivo({ contractId: cid, servicoId: pending.servicoId });
+      await aquecerOperacionalDoServico(pending.servicoId, cid);
+    };
+
     void (async () => {
       try {
         if (tenantDb) await runWithTenant(tenantDb, aquecer);

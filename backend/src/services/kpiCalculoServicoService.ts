@@ -204,9 +204,8 @@ export function prepararKpisServico(servico: Servico, contract: Contract | null)
 }
 
 function chaveMesclagemKpi(kpi: KpiCalculadoResultado & { origemUniversal?: string }): string {
-  if (kpi.id) return kpi.id;
   if (kpi.origemUniversal) return `uni:${kpi.origemUniversal}`;
-  return `nome:${normalizarTexto(kpi.nome || '')}`;
+  return `nome:${normalizarTexto(kpi.nome || '')}:${kpi.formato || 'numero'}`;
 }
 
 /** Recalcula KPIs de contagem distinta no dataset consolidado do período (executivo multi-serviço). */

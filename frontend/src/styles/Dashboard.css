@@ -2651,6 +2651,23 @@
   flex-direction: column;
   gap: 1rem;
   margin-bottom: 1.5rem;
+  position: relative;
+  padding: 1.15rem 1.15rem 1rem;
+  border-radius: 24px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: linear-gradient(180deg, rgba(255,255,255,0.92) 0%, rgba(248,250,252,0.96) 100%);
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.08);
+}
+
+.vg-tv-wrap::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto auto 0;
+  width: 100%;
+  height: 4px;
+  border-radius: 24px 24px 0 0;
+  background: linear-gradient(90deg, #1a73e8 0%, #3b82f6 30%, #8b5cf6 100%);
+  opacity: 0.9;
 }
 
 .vg-tv-wrap.vg-tv-fullscreen {
@@ -2695,6 +2712,11 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 0.75rem 1rem;
+  padding: 0.95rem 1.05rem;
+  border-radius: 18px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: linear-gradient(180deg, rgba(255,255,255,0.72) 0%, rgba(248,250,252,0.96) 100%);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
 }
 
 .vg-tv-titulo {
@@ -2703,6 +2725,10 @@
   font-weight: 800;
   color: #0f172a;
   letter-spacing: -0.02em;
+  background: linear-gradient(135deg, #0f172a 0%, #1a73e8 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
 }
 
 .vg-tv-fullscreen .vg-tv-titulo { font-size: 1.75rem; }
@@ -2714,6 +2740,12 @@
   margin-top: 0.35rem;
   font-size: 0.8rem;
   color: #64748b;
+}
+
+.vg-tv-meta span {
+  padding: 0.2rem 0.4rem;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.08);
 }
 
 .vg-tv-live {
@@ -2728,6 +2760,11 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 0.4rem;
+}
+
+.vg-tv-header-right .btn,
+.vg-tv-header-right .filtro-input {
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.04);
 }
 
 .vg-tv-tipo { min-width: 180px; }
@@ -2774,6 +2811,16 @@
   container-type: inline-size;
   min-width: 0;
   overflow: hidden;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.04);
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+
+.vg-tv-peso-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 16px 28px rgba(26, 115, 232, 0.08);
+  border-color: rgba(26, 115, 232, 0.18);
 }
 
 .vg-tv-fullscreen .vg-tv-peso-card {
@@ -2812,6 +2859,7 @@
   font-weight: 800;
   color: #0f172a;
   overflow-wrap: anywhere;
+  letter-spacing: -0.02em;
 }
 
 .vg-tv-fullscreen .vg-tv-peso-card-servico { color: #ffffff; font-size: 1.3rem; }

@@ -143,14 +143,15 @@
 }
 
 .btn-primary {
-  background: var(--color-primary);
+  background: var(--gradient-primary);
   color: var(--color-text-white);
   border: none;
-  box-shadow: none;
+  box-shadow: 0 6px 14px rgba(36, 87, 214, 0.2);
 }
 .btn-primary:hover:not(:disabled) {
-  background: var(--color-primary-hover);
-  box-shadow: var(--shadow-sm);
+  background: var(--gradient-primary-dark);
+  box-shadow: 0 9px 20px rgba(36, 87, 214, 0.25);
+  transform: translateY(-1px);
 }
 .btn-primary:active:not(:disabled) {
   background: var(--color-primary-dark);
@@ -160,10 +161,22 @@
   background: var(--color-bg-card);
   color: var(--color-primary);
   border-color: var(--color-border);
+  box-shadow: var(--shadow-sm);
 }
 .btn-secondary:hover:not(:disabled) {
   background: var(--color-primary-light);
   border-color: var(--color-primary);
+  transform: translateY(-1px);
+}
+
+.btn-danger {
+  background: var(--color-danger-light);
+  color: var(--color-danger-dark);
+  border-color: var(--color-danger);
+}
+.btn-danger:hover:not(:disabled) {
+  background: var(--color-danger);
+  color: var(--color-text-white);
 }
 
 .btn-success {
@@ -175,16 +188,6 @@
   background: var(--color-success);
   color: var(--color-text-white);
   border-color: transparent;
-}
-
-.btn-danger {
-  background: var(--color-danger-light);
-  color: var(--color-danger-dark);
-  border-color: var(--color-danger);
-}
-.btn-danger:hover:not(:disabled) {
-  background: var(--color-danger);
-  color: var(--color-text-white);
 }
 
 .btn-ghost {
@@ -212,8 +215,8 @@
 
 .card {
   background: var(--color-bg-card);
-  border-radius: var(--radius-lg);
-  box-shadow: none;
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-md);
   overflow: hidden;
   border: 1px solid var(--color-border);
 }

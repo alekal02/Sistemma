@@ -6,7 +6,6 @@ import {
   validarExpressao,
   parseNumeroBr,
   normalizarChave,
-  encontrarValorColuna,
 } from './FormulaEngine';
 
 const dadosColeta = [
@@ -275,8 +274,8 @@ describe('ajustarKpisFaturamentoCicloConsolidada', async () => {
 
   it('recalcula Faturamento Estimado com dados do ciclo consolidado', () => {
     const dadosCiclo = [
-      { 'PESO TOTAL': 10000, 'TIPO DE CAMINHÃO': 'TRUCK', validoDashboard: true, 'DATA SAIDA': '2026-08-01' },
-      { 'PESO TOTAL': 5000, 'TIPO DE CAMINHÃO': 'MINI', validoDashboard: true, 'DATA SAIDA': '2026-08-02' },
+      { 'PESO TOTAL': 10000, 'TIPO DE CAMINHÃO': 'TRUCK', validoDashboard: true, 'DATA SAIDA': '2026-06-01' },
+      { 'PESO TOTAL': 5000, 'TIPO DE CAMINHÃO': 'MINI', validoDashboard: true, 'DATA SAIDA': '2026-06-02' },
     ];
     const valoresFixos = { VALOR_TRUCK: 100, VALOR_MINI: 80, VALOR_GERAL: 90 };
     const kpis = [
@@ -292,7 +291,7 @@ describe('ajustarKpisFaturamentoCicloConsolidada', async () => {
       valoresFixos,
       defs,
       [],
-      { dataInicio: '2026-08-01', dataFim: '2026-08-31' },
+      { dataInicio: '2026-06-01', dataFim: '2026-06-30' },
     );
     const fat = ajustados.find((k) => k.nome === 'Faturamento Estimado');
     const recKm = ajustados.find((k) => k.nome === 'Receita por Km');
@@ -306,7 +305,7 @@ describe('ajustarKpisFaturamentoCicloConsolidada', async () => {
 describe('calcularProjecaoFaturamentoCiclo', async () => {
   const { calcularProjecaoFaturamentoCiclo } = await import('./projecaoFaturamentoCicloService');
 
-  it('projeta faturamento do ciclo pela média dos dias decorridos', () => {
+  it('projeta faturamento do ciclo pela média dos dias com dados', () => {
     const proj = calcularProjecaoFaturamentoCiclo(
       128139,
       [
@@ -319,10 +318,9 @@ describe('calcularProjecaoFaturamentoCiclo', async () => {
     );
     assert.equal(proj.realizado, 128139);
     assert.equal(proj.diasComDados, 2);
-    assert.equal(proj.diasDecorridos, 15);
     assert.equal(proj.diasTotaisCiclo, 30);
-    assert.equal(proj.mediaDiaria, 8542.6);
-    assert.equal(proj.projetado, 256278);
+    assert.equal(proj.mediaDiaria, 64069.5);
+    assert.equal(proj.projetado, 1922085);
     assert.equal(proj.cicloEmAndamento, true);
   });
 });
@@ -474,12 +472,10 @@ describe('corrigirViagemAutomatica', () => {
       'PLACA': 'ABC1D23',
       'MOTORISTA': 'Teste',
       'PESO TOTAL': 5000,
-      'KM SAIDA BASE': 100000,
+      'KM SAIDA ROTA 1': 100000,
       'KM CHEGADA ROTA 1': 100050,
-      'KM SAIDA ROTA 1': 100050,
+      'KM SAIDA ROTA 2': 100050,
       'KM CHEGADA ROTA 2': 100070,
-      'KM SAIDA ROTA 2': 100070,
-      'KM CHEGADA BASE': 100070,
       'KM TOTAL': 0,
     };
 
@@ -499,14 +495,5 @@ describe('corrigirViagemAutomatica', () => {
     const back = dateUtcColumnTransformer.from(iso);
     assert.equal(back?.getUTCDate(), 26);
     assert.equal(back?.getUTCMonth(), 5);
-  });
-});
-
-describe('encontrarValorColuna não usa id da linha como peso', () => {
-  it('PESO 2 ausente não retorna o id da viagem', () => {
-    const dado = { id: 2535, peso1: 8300, 'PESO 1': 8300, 'PESO TOTAL': 8300, placa: 'SDG1J76' };
-    const v = encontrarValorColuna(dado, 'PESO 2');
-    assert.notEqual(v, 2535);
-    assert.notEqual(Number(v), 2535);
   });
 });

@@ -5,13 +5,16 @@
 .layout {
   display: flex;
   min-height: 100vh;
-  background: var(--color-bg);
+  background:
+    radial-gradient(circle at top left, rgba(26, 115, 232, 0.08), transparent 26%),
+    linear-gradient(180deg, #f7f9fc 0%, #eef3f9 100%);
 }
 
 /* ── Sidebar ── */
 .sidebar {
   width: var(--sidebar-width);
-  background: var(--color-bg-card);
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(10px);
   color: var(--color-text-secondary);
   display: flex;
   flex-direction: column;
@@ -22,7 +25,8 @@
   transition: width var(--transition-smooth);
   overflow: hidden;
   z-index: 200;
-  border-right: 1px solid var(--color-border);
+  border-right: 1px solid rgba(218, 220, 224, 0.9);
+  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.5);
 }
 
 .sidebar.collapsed {
@@ -38,13 +42,14 @@
   min-height: 64px;
   border-bottom: 1px solid var(--color-border-light);
   flex-shrink: 0;
+  background: linear-gradient(180deg, rgba(245, 248, 255, 0.9), rgba(255, 255, 255, 0.2));
 }
 
 .sidebar-brand-icon {
   width: 40px;
   height: 40px;
-  border-radius: var(--radius-lg);
-  background: var(--color-primary);
+  border-radius: 13px;
+  background: var(--gradient-primary);
   color: #fff;
   display: flex;
   align-items: center;
@@ -58,6 +63,17 @@
   min-width: 0;
   flex: 1;
   line-height: 1.2;
+}
+
+.sidebar-link.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--color-primary);
 }
 
 .sidebar-brand-name {
@@ -170,6 +186,7 @@
   transition: background var(--transition-base), color var(--transition-base);
   white-space: nowrap;
   min-height: 40px;
+  position: relative;
 }
 
 .sidebar-link:hover {
@@ -179,9 +196,21 @@
 }
 
 .sidebar-link.active {
-  background: var(--color-bg-active);
+  background: linear-gradient(90deg, rgba(26, 115, 232, 0.12), rgba(26, 115, 232, 0.04));
   color: var(--color-primary);
   font-weight: var(--weight-medium);
+  box-shadow: inset 0 0 0 1px rgba(26, 115, 232, 0.08);
+}
+
+.sidebar-link.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--color-primary);
 }
 
 .sidebar-icon {
@@ -226,19 +255,20 @@
 
 /* ── Header (GA top bar) ── */
 .header {
-  background: var(--color-bg-card);
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(12px);
   color: var(--color-text-primary);
-  padding: 0 24px;
+  padding: 0 28px;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  border-bottom: 1px solid var(--color-border);
+  border-bottom: 1px solid rgba(218, 220, 224, 0.9);
   position: sticky;
   top: 0;
   z-index: 100;
   min-height: var(--header-height);
   flex-shrink: 0;
-  box-shadow: var(--shadow-sm);
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.04);
 }
 
 .header-left {
@@ -256,7 +286,7 @@
 .header h1 {
   margin: 0;
   font-size: var(--text-xl);
-  font-weight: var(--weight-normal);
+  font-weight: 700;
   color: var(--color-text-primary);
   white-space: nowrap;
   overflow: hidden;
@@ -315,8 +345,9 @@
   gap: 10px;
   padding: 4px 12px 4px 4px;
   border-radius: var(--radius-full);
-  border: 1px solid var(--color-border-light);
-  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  background: rgba(247, 250, 255, 0.9);
+  box-shadow: var(--shadow-sm);
 }
 
 .header-user-name {
@@ -333,7 +364,7 @@
   width: 32px;
   height: 32px;
   border-radius: 50%;
-  background: var(--color-primary);
+  background: var(--gradient-primary);
   color: #fff;
   display: flex;
   align-items: center;
@@ -350,7 +381,7 @@
   padding: 8px 14px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-full);
-  background: var(--color-bg-card);
+  background: rgba(255, 255, 255, 0.75);
   color: var(--color-text-muted);
   cursor: pointer;
   font-size: var(--text-sm);
@@ -387,11 +418,18 @@
 /* ── Content ── */
 .main-content {
   flex: 1;
-  padding: 24px 32px 32px;
+  padding: 28px 36px 40px;
   width: 100%;
   max-width: none;
   overflow-y: auto;
   box-sizing: border-box;
+  background: transparent;
+}
+
+.main-content > * {
+  max-width: 1600px;
+  width: 100%;
+  margin: 0 auto;
 }
 
 .layout-login {
@@ -413,7 +451,7 @@
 
 /* ── Responsive ── */
 @media (max-width: 1024px) {
-  .main-content { padding: 20px 24px 28px; }
+  .main-content { padding: 22px 24px 30px; }
   .header { padding: 0 20px; }
 }
 

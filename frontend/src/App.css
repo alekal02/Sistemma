@@ -1,1 +1,13 @@
 /* Estilos globais da aplicação */
+#root {
+  min-height: 100vh;
+}
+
+html, body {
+  min-height: 100%;
+  background: #f4f7fb;
+}
+
+body {
+  color: #172238;
+}

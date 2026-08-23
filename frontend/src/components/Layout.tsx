@@ -148,6 +148,14 @@ function Layout({ children }: LayoutProps) {
                 <span className="sidebar-icon"><FiDatabase size={20} /></span>
                 <span className={sidebarAberta ? '' : 'hidden-text'}>Contratos</span>
               </Link>
+              <Link
+                to="/dashboard/executivo"
+                className={`sidebar-link ${location.pathname === '/dashboard/executivo' ? 'active' : ''}`}
+                onClick={fecharSidebarMobile}
+              >
+                <span className="sidebar-icon"><FiPieChart size={20} /></span>
+                <span className={sidebarAberta ? '' : 'hidden-text'}>Executivo</span>
+              </Link>
             </>
           )}
 
@@ -163,14 +171,6 @@ function Layout({ children }: LayoutProps) {
               >
                 <span className="sidebar-icon"><FiDatabase size={20} /></span>
                 <span className={sidebarAberta ? '' : 'hidden-text'}>Meu contrato</span>
-              </Link>
-              <Link
-                to="/dashboard/executivo"
-                className={`sidebar-link ${location.pathname === '/dashboard/executivo' ? 'active' : ''}`}
-                onClick={fecharSidebarMobile}
-              >
-                <span className="sidebar-icon"><FiPieChart size={20} /></span>
-                <span className={sidebarAberta ? '' : 'hidden-text'}>Executivo</span>
               </Link>
               <Link
                 to="/whatsapp-grupos"
@@ -258,10 +258,10 @@ function Layout({ children }: LayoutProps) {
               </button>
             )}
             <div className="header-user-chip">
-              <div className="header-user-avatar" title={hubGestor ? 'Gestor' : 'Unidade'}>
-                {getInitials(hubGestor ? 'Gestor' : 'Unidade')}
+              <div className="header-user-avatar" title={gestor ? 'Gestor' : 'Unidade'}>
+                {getInitials(gestor ? 'Gestor' : 'Unidade')}
               </div>
-              <span className="header-user-name">{hubGestor ? 'Gestor' : 'Unidade'}</span>
+              <span className="header-user-name">{gestor ? 'Gestor' : 'Unidade'}</span>
             </div>
             <button type="button" className="btn-logout-header" onClick={logout} title="Trocar área">
               <FiLogOut size={16} />
