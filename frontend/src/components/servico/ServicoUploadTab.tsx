@@ -511,7 +511,7 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
       const fora = v.foraDashboard || v.descartada || !v.completa;
       const status = fora
         ? `<strong style="color:#dc2626">FORA DO DASH</strong>${v.motivoForaDashboard ? ` — ${v.motivoForaDashboard}` : ''}${probs.length ? `<br/>${probs.join('; ')}` : ''}`
-        : (probs.join('; ') || (v.corrigidaHodometro ? 'No dash (KM tratado)' : '—'));
+        : (probs.join('; ') || (v.corrigidaHodometro ? 'No dash (KM tratado)' : (v.alertaSemPesagem ? 'No dash — viagem sem pesagem' : '—')));
       return `
       <tr>
         <td>${v.linha}</td>
@@ -602,6 +602,9 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
       : ''}
     ${descartadas > 0 ? `${descartadas} linha(s) sem placa, KM Total e Peso Total foram ignoradas. ` : ''}
     ${emBranco > 0 ? `${emBranco} linha(s) em branco da planilha foram ignoradas (não contam como problema). ` : ''}
+    ${(relatorio.viagensSemPesagem || 0) > 0
+      ? `${relatorio.viagensSemPesagem} viagem(ns) sem pesagem (trecho com horário e PESO vazio) sobem no dashboard; o peso dessa faixa não soma. `
+      : ''}
     Regras: KM máx. 300, peso &gt; 0, sem negativos, horas com ":" (não ";").
   </div>
 
@@ -1249,7 +1252,9 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
                                     ? '#fef2f2'
                                     : v.alertaPesagemAlta
                                       ? '#fff7ed'
-                                      : (v.corrigidaHodometro ? '#f0fdf4' : undefined),
+                                      : v.alertaSemPesagem
+                                        ? '#fffbeb'
+                                        : (v.corrigidaHodometro ? '#f0fdf4' : undefined),
                                 }}
                               >
                                 <td style={{ padding: '3px 5px' }}>{v.linha}</td>
@@ -1296,9 +1301,10 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
                                           || pl.includes('km total')
                                         )) return true;
                                         if (v.alertaPesagemAlta && pl.includes('pesagem alta')) return true;
+                                        if (v.alertaSemPesagem && pl.includes('sem pesagem')) return true;
                                         return !pl.includes('placa será unificada') && !pl.startsWith('corrigido automaticamente');
                                       })
-                                      .join('; ') || (v.corrigidaHodometro ? 'No dash (KM tratado)' : '—'))}
+                                      .join('; ') || (v.corrigidaHodometro ? 'No dash (KM tratado)' : (v.alertaSemPesagem ? 'No dash — viagem sem pesagem' : '—')))}
                                 </td>
                               </tr>
                               );

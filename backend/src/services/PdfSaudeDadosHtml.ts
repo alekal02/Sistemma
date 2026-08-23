@@ -73,10 +73,12 @@ export function gerarHtmlSaudeDadosServer(opts: {
   const viagensCorrigidas = viagens.filter((v) => v.corrigidaHodometro && !v.foraDashboard && !v.descartada);
   const viagensFora = viagens.filter((v) => v.foraDashboard || v.descartada);
   const viagensAlerta = viagens.filter((v) => v.alertaPesagemAlta && !v.foraDashboard && !v.descartada && !v.corrigidaHodometro);
+  const viagensSemPeso = viagens.filter((v) => v.alertaSemPesagem && !v.foraDashboard && !v.descartada);
+  const qtdSemPesagem = relatorio.viagensSemPesagem ?? viagensSemPeso.reduce((n, v) => n + (v.viagensSemPesagem?.length || 1), 0);
 
   const filtrarProblemas = (
     problemas: string[] | undefined,
-    opts?: { corrigidaHodometro?: boolean; alertaPesagemAlta?: boolean },
+    opts?: { corrigidaHodometro?: boolean; alertaPesagemAlta?: boolean; alertaSemPesagem?: boolean },
   ) =>
     (problemas || []).filter((p) => {
       const pl = p.toLowerCase();
@@ -86,6 +88,9 @@ export function gerarHtmlSaudeDadosServer(opts: {
       if (opts?.alertaPesagemAlta && pl.includes('pesagem alta')) {
         return true;
       }
+      if (opts?.alertaSemPesagem && pl.includes('sem pesagem')) {
+        return true;
+      }
       return !pl.includes('placa será unificada') && !pl.startsWith('corrigido automaticamente');
     });
 
@@ -93,12 +98,15 @@ export function gerarHtmlSaudeDadosServer(opts: {
     const probs = filtrarProblemas(v.problemas, {
       corrigidaHodometro: v.corrigidaHodometro,
       alertaPesagemAlta: v.alertaPesagemAlta,
+      alertaSemPesagem: v.alertaSemPesagem,
     });
     const corProb = v.foraDashboard || v.descartada
       ? '#dc2626'
       : v.alertaPesagemAlta
         ? '#9a3412'
-        : (v.corrigidaHodometro ? '#166534' : '#b45309');
+        : v.alertaSemPesagem
+          ? '#b45309'
+          : (v.corrigidaHodometro ? '#166534' : '#b45309');
     const kmCell = (() => {
       if (!v.corrigidaHodometro) {
         if (v.kmTotal != null) {
@@ -120,7 +128,7 @@ export function gerarHtmlSaudeDadosServer(opts: {
     const statusHtml = v.foraDashboard || v.descartada
       ? `<strong style="color:#dc2626">FORA DO DASH</strong>${v.motivoForaDashboard ? ` — ${esc(v.motivoForaDashboard)}` : ''}`
         + (probs.length ? `<br/>${esc(probs.join('; '))}` : '')
-      : esc(probs.join('; ') || (v.corrigidaHodometro ? 'No dash (KM tratado) — peso/viagens mantidos' : '—'));
+      : esc(probs.join('; ') || (v.corrigidaHodometro ? 'No dash (KM tratado) — peso/viagens mantidos' : (v.alertaSemPesagem ? 'No dash — viagem sem pesagem' : '—')));
     return `
       <tr>
         <td>${esc(v.linha)}</td>
@@ -184,7 +192,7 @@ export function gerarHtmlSaudeDadosServer(opts: {
     .problemas-box { background: #fff; border: 1px solid #dce4ef; border-radius: 9px; padding: 10px; margin-bottom: 12px; box-shadow: 0 4px 12px rgba(23,34,56,.04); }
     .aviso { background: #eaf0ff; border: 1px solid #b9caff; border-radius: 9px; padding: 12px 14px; margin-bottom: 12px; font-size: 11px; color: #18388f; line-height: 1.5; }
     .aviso-ok { background: #e4f8f3; border-color: #9adfd2; color: #087564; }
-    .tratativas { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; margin-bottom: 12px; }
+    .tratativas { display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px; margin-bottom: 12px; }
     .tratativa { background: #fff; border: 1px solid #dce4ef; border-left: 4px solid #2475c9; border-radius: 8px; padding: 10px; font-size: 10px; color: #52627a; }
     .tratativa strong { display: block; color: #253653; font-size: 12px; margin-bottom: 3px; }
     .impacto { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
@@ -234,12 +242,16 @@ export function gerarHtmlSaudeDadosServer(opts: {
       ? ` O dashboard considera ${esc(tDash.toLocaleString('pt-BR', { maximumFractionDigits: 1 }))} t; ${esc(tFora.toLocaleString('pt-BR', { maximumFractionDigits: 1 }))} t ficaram fora por inconsistências e não foram somadas.`
       : ''}
     ${emBranco > 0 ? ` ${esc(emBranco)} linha(s) em branco foram ignoradas por não representarem viagens.` : ''}
+    ${qtdSemPesagem > 0
+      ? ` ${esc(qtdSemPesagem)} viagem(ns) subiram sem pesagem (trecho com horário e PESO vazio); o peso dessa faixa não entra nas toneladas.`
+      : ''}
   </div>
 
   <div class="section-title ok">Tratativas aplicadas automaticamente</div>
   <div class="tratativas">
     <div class="tratativa"><strong>${esc(corrigidasHodometro)} corrigidas</strong>Hodômetro inconsistente tratado. Peso e contador preservados; KM ajustado quando possível.</div>
     <div class="tratativa"><strong>${esc(pesagensAltas)} alertas</strong>Pesagens acima de 15 t sinalizadas para conferência, sem bloquear a entrada.</div>
+    <div class="tratativa"><strong>${esc(qtdSemPesagem)} sem pesagem</strong>Trecho com horário e PESO vazio. A viagem sobe no dashboard; o peso dessa faixa não soma.</div>
     <div class="tratativa"><strong>${esc(emBranco)} ignoradas</strong>Linhas vazias de template ou rodapé não foram consideradas viagens.</div>
   </div>
 
@@ -257,6 +269,7 @@ export function gerarHtmlSaudeDadosServer(opts: {
   ${resumoPlacasHtml}
 
   ${tabelaViagens('Viagens corrigidas e mantidas no dashboard', viagensCorrigidas, 'ok')}
+  ${tabelaViagens('Viagens sem pesagem (mantidas no dashboard)', viagensSemPeso)}
   ${tabelaViagens('Viagens que ficaram fora do dashboard', viagensFora, 'danger')}
   ${tabelaViagens('Alertas informativos de pesagem', viagensAlerta)}
   ${viagens.length > 0 ? `

@@ -114,3 +114,51 @@ describe('analisarViagensPlanilha — pesagens da linha', () => {
     assert.equal(r2.pesagensAltas, 1);
   });
 });
+
+describe('analisarViagensPlanilha — viagem sem pesagem', () => {
+  const CABECALHO_HORAS = [
+    'DATA SAIDA', 'PLACA', 'MOTORISTA', 'ROTA', 'CONTADOR DE VIAGENS',
+    'KM TOTAL', 'PESO 1', 'PESO 2', 'PESO TOTAL',
+    'HORA CHEGADA ROTA 01', 'HORA SAÍDA ROTA 01',
+    'HORA CHEGADA ROTA 02', 'HORA SAÍDA ROTA 02',
+  ];
+
+  function planilhaHoras(linhas: unknown[][]): Buffer {
+    const ws = XLSX.utils.aoa_to_sheet([CABECALHO_HORAS, ...linhas]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'BANCO DE DADOS');
+    return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+  }
+
+  it('marca viagem 2 sem peso quando o trecho 2 tem horário e não barra o dashboard', () => {
+    const linha = [
+      '21/08/2026', 'RBL0C31', 'JOAO DE DEUS', 'AD02', 2,
+      80, 7680, null, 7680,
+      7.2 / 24, 11 / 24,
+      12 / 24, 13 / 24,
+    ];
+    const r = analisarViagensPlanilha(planilhaHoras([linha]), 'Unai.xlsx');
+
+    assert.equal(r.viagensValidasDashboard, 1);
+    assert.equal(r.viagensInconsistentesTotal, 0);
+    assert.equal(r.viagensSemPesagem, 1);
+    assert.equal(r.linhasComSemPesagem, 1);
+    const item = r.viagens.find((v) => v.alertaSemPesagem);
+    assert.ok(item);
+    assert.equal(item!.foraDashboard, false);
+    assert.deepEqual(item!.viagensSemPesagem, [2]);
+    assert.ok((item!.problemas || []).some((p) => /viagem 2 sem pesagem/i.test(p)));
+  });
+
+  it('não acusa sem pesagem quando só existe um trecho com peso', () => {
+    const linha = [
+      '21/08/2026', 'RBS8H87', 'LEONARDO', 'AD01', 1,
+      40, 6780, null, 6780,
+      7 / 24, 13.6 / 24,
+      null, null,
+    ];
+    const r = analisarViagensPlanilha(planilhaHoras([linha]), 'Unai.xlsx');
+    assert.equal(r.viagensSemPesagem, 0);
+    assert.equal(r.viagens.filter((v) => v.alertaSemPesagem).length, 0);
+  });
+});

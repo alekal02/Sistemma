@@ -16,6 +16,7 @@ import {
   contarViagensPorRotaRegistro,
   obterContadorViagensRegistro,
 } from './viagensPorRotaService';
+import { montarViagensPesoDoRegistro } from './viagemPesoRotaService';
 import { encontrarValorColuna, parseNumeroBr } from './FormulaEngine';
 import {
   conferirCadastroOperacional,
@@ -222,6 +223,10 @@ export interface ResultadoAnaliseViagens {
     /** true se há pesagem > 15.000 kg (alerta informativo) */
     alertaPesagemAlta?: boolean;
     pesoAlertaKg?: number | null;
+    /** true se algum trecho tem horário e o PESO N está vazio — sobe no dash */
+    alertaSemPesagem?: boolean;
+    /** Números das viagens (1–4) sem pesagem nesta linha */
+    viagensSemPesagem?: number[];
   }>;
   mensagem?: string;
   regrasSaude?: string[];
@@ -244,6 +249,10 @@ export interface ResultadoAnaliseViagens {
   viagensCalculadasDashboard?: number;
   /** Linhas sem contador preenchido */
   linhasSemContador?: number;
+  /** Faixas com horário e sem PESO N — entram no dash, peso da faixa não soma */
+  viagensSemPesagem?: number;
+  /** Linhas da planilha com ao menos uma viagem sem pesagem */
+  linhasComSemPesagem?: number;
   /** Conferência planilha × cadastro operacional do contrato */
   conferenciaCadastro?: ConferenciaCadastroOperacional | null;
 }
@@ -305,6 +314,27 @@ function detectarPesagemAlta(coleta: Partial<ColetaData>): {
       + `${ton.toLocaleString('pt-BR', { maximumFractionDigits: 2 })} t > 15.000 kg). `
       + `Não bloqueia o dashboard.`,
   };
+}
+
+function mensagemSemPesagem(slots: number[]): string {
+  const lista = slots.length === 1
+    ? `Viagem ${slots[0]}`
+    : `Viagens ${slots.slice(0, -1).join(', ')} e ${slots[slots.length - 1]}`;
+  const pesos = slots.map((n) => `PESO ${n}`).join(', ');
+  return `${lista} sem pesagem (trecho com horário e ${pesos} vazio). `
+    + 'Sobe no dashboard; toneladas dessa faixa não entram.';
+}
+
+function detectarViagensSemPesagem(coleta: Partial<ColetaData>): number[] {
+  return montarViagensPesoDoRegistro({
+    rota: String(coleta.distrito || coleta.regional || ''),
+    placa: String(coleta.placa || ''),
+    motorista: String(coleta.motorista || ''),
+    tipo: null,
+    pesos: [coleta.peso1, coleta.peso2, coleta.peso3, coleta.peso4],
+    objHoras: coleta as Record<string, unknown>,
+    pesoIdealKg: null,
+  }).filter((v) => v.semPesagem).map((v) => v.nViagem);
 }
 
 function correcaoEhHodometro(texto: string): boolean {
@@ -437,6 +467,8 @@ export function analisarViagensPlanilha(
   let pesoKgForaDashboard = 0;
   let viagensCalculadasDashboard = 0;
   let linhasSemContador = 0;
+  let viagensSemPesagemCount = 0;
+  let linhasComSemPesagem = 0;
   const problemasPorCategoria = new Map<string, Set<number>>();
 
   const auditoriaPlacas = auditarPlacasPlanilha({
@@ -608,6 +640,13 @@ export function analisarViagensPlanilha(
       pesagensAltas += detPesagem.quantidade;
       linhasComPesagemAlta++;
     }
+    const slotsSemPesagem = completa ? detectarViagensSemPesagem(coletaTmp) : [];
+    const alertaSemPesagem = slotsSemPesagem.length > 0;
+    if (alertaSemPesagem) {
+      problemas.push(mensagemSemPesagem(slotsSemPesagem));
+      viagensSemPesagemCount += slotsSemPesagem.length;
+      linhasComSemPesagem++;
+    }
 
     if (completa) viagensCompletas++;
     else if (temIdentificacao) viagensIncompletas++;
@@ -659,14 +698,17 @@ export function analisarViagensPlanilha(
       corrigidaHodometro,
       alertaPesagemAlta,
       pesoAlertaKg: detPesagem.pesoMaxKg,
+      alertaSemPesagem,
+      viagensSemPesagem: slotsSemPesagem,
     };
 
-    // Inclui: fora do dash, hodômetro tratado, pesagem alta — para o PDF de saúde
+    // Inclui: fora do dash, hodômetro tratado, pesagem alta ou sem pesagem — PDF de saúde
     const incluirNoDetalhe = viagens.length < MAX_DETALHE_VIAGENS
       && (
         !completa
         || corrigidaHodometro
         || alertaPesagemAlta
+        || alertaSemPesagem
         || (temIdentificacao && contador != null && contador > 0 && !completa)
       );
 
@@ -704,6 +746,12 @@ export function analisarViagensPlanilha(
   if (pesagensAltas > 0) {
     partesAviso.push(
       `${pesagensAltas} pesagem(ns) acima de 15.000 kg/viagem (até 1.000 t) em ${linhasComPesagemAlta} linha(s) — alerta de saúde, não bloqueia o dashboard.`,
+    );
+  }
+  if (viagensSemPesagemCount > 0) {
+    partesAviso.push(
+      `${viagensSemPesagemCount} viagem(ns) sem pesagem em ${linhasComSemPesagem} linha(s) `
+      + '(trecho com horário e PESO vazio) — entram no dashboard; o peso dessa faixa não soma.',
     );
   }
   if (linhasDescartadasSemDados > 0) {
@@ -767,6 +815,8 @@ export function analisarViagensPlanilha(
     pesoKgForaDashboard,
     viagensCalculadasDashboard,
     linhasSemContador,
+    viagensSemPesagem: viagensSemPesagemCount,
+    linhasComSemPesagem,
     conferenciaCadastro,
   };
 }

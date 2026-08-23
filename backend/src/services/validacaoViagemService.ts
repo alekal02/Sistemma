@@ -134,6 +134,7 @@ export const REGRAS_VIAGEM_DASHBOARD = [
   `KM Total até ${MAX_KM_DASHBOARD} km (hodômetro igual/parado, salto absurdo ou chegada < saída → KM zerado; peso/viagens entram)`,
   'Sem valores negativos efetivos em KM ou peso (fórmulas Excel com -1 em coluna ociosa são limpas e não derrubam a viagem)',
   'Horas no formato HH:MM (use ":", não ";")',
+  'Trecho com horário e PESO N vazio: a viagem sobe no dashboard como “sem pesagem”; o peso dessa faixa não soma',
 ] as const;
 
 const CAMPOS_KM = ['kmTotal', 'kmSaida', 'kmChegada', 'kmRota1', 'kmRota2', 'kmRota3', 'kmRota4'] as const;

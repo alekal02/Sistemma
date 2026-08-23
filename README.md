@@ -90,12 +90,12 @@ assinado. Equivalente manual:
 
 ```powershell
 # Dev
-\.\publicar.ps1 -Tag 3.3.1
+\.\publicar.ps1 -Tag 3.3.2
 docker compose pull
 docker compose up -d --force-recreate backend frontend
 ```
 
-### Atualizar para a 3.3.1 sem perder o banco
+### Atualizar para a 3.3.2 sem perder o banco
 
 Na máquina atual, faça um backup antes de desligar ou atualizar:
 
@@ -148,7 +148,7 @@ Na máquina nova, depois de criar os volumes com `docker compose up -d` e parar 
 serviços, copie os arquivos `.tgz` para a pasta `backups` e extraia cada um no
 volume de mesmo nome. O prefixo `sistemma_` pode variar; confirme com `docker volume ls`.
 
-Para uma máquina que já possui os volumes, altere apenas `TAG=3.3.1` no `.env` e
+Para uma máquina que já possui os volumes, altere apenas `TAG=3.3.2` no `.env` e
 execute `docker compose pull` seguido de `docker compose up -d --force-recreate`.
 Não use `docker compose down -v`, não remova volumes e não substitua o `.env`.
 Se for necessário restaurar um dump, pare apenas o backend e restaure no mesmo
