@@ -91,6 +91,7 @@ interface CicloDateSelectorProps {
   volumeL?: MapaLimiteCaminhao | null;
   densidadeResiduoKgL?: number | null;
   densidadeKgL?: MapaLimiteCaminhao | null;
+  densidadeKgLPorPlaca?: Record<string, number> | null;
   dataSelecionada?: string;
   onOpenDia?: (data: string, resumo: DadoDiario) => void;
   onClearDia?: () => void;
@@ -147,6 +148,7 @@ export default function CicloDateSelector({
   volumeL = null,
   densidadeResiduoKgL = null,
   densidadeKgL = null,
+  densidadeKgLPorPlaca = null,
   dataSelecionada,
   onOpenDia,
   onClearDia,
@@ -774,6 +776,7 @@ export default function CicloDateSelector({
         volumeL,
         densidadeResiduoKgL,
         densidadeKgL,
+        densidadeKgLPorPlaca,
       };
       const operacao = analisarOperacaoDia(dadosPeriodo);
       const capacidade = analisarCapacidadeViagensDia(dadosPeriodo, limOpts);
@@ -828,6 +831,7 @@ export default function CicloDateSelector({
   }, [
     adicionarToast, servicoNome, ciclo, dias, tarifas, ehRocada, ehUnidadeNaoRocada,
     contractId, servicoId, placasReserva, limitesPesoKg, volumeL, densidadeResiduoKgL, densidadeKgL,
+    densidadeKgLPorPlaca,
     exportarRelatorioRocadaCiclo, exportarRelatorioUnidadeCiclo, projecaoCiclo,
   ]);
 

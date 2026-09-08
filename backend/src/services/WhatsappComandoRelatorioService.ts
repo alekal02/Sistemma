@@ -726,6 +726,13 @@ export async function processarComandoTextoWhatsapp(opts: {
         '*ciclo* / *ciclo anterior* — PDF ciclo operacional',
         '*comparativo* / *peso anterior* — PDF análise de peso',
         '*evolucao* — gráficos (semana, 15 dias, ciclo atual ou anterior)',
+        ...(process.env.MANU_WEBHOOK_URL
+          ? [
+              '',
+              '*manutencao* — relatório de equipamentos (ManuControl)',
+              '*os abertas* — equipamentos parados na unidade',
+            ]
+          : []),
         '',
         'Envie planilha .xlsx para importar + PDF do dia.',
       ].join('\n'),

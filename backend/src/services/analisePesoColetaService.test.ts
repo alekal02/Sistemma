@@ -4,6 +4,7 @@ import {
   analisarPesoColeta,
   calcularCaixaMediaPorFrota,
   calcularMediaIdealKg,
+  calcularMediaIdealKgPorTipo,
   contarFrotaPorTipoCaminhao,
   DENSIDADE_OTIMA_PADRAO,
 } from './analisePesoColetaService';
@@ -176,6 +177,41 @@ describe('avisoTipoCaminhaoDeduzido', () => {
     assert.ok(aviso);
     assert.match(aviso!, /BBB2222/);
     assert.match(aviso!, /deduzido pelo peso/);
+  });
+});
+
+describe('calcularMediaIdealKgPorTipo — densidade por caminhão', () => {
+  const densidades = { MINI: 0.43, TOCO: 0.43, BASCULANTE: 0.43, TRUCK: 0.43 };
+  const frota = { MINI: 0, TOCO: 4, BASCULANTE: 0, TRUCK: 0 };
+  const placasPorTipo = {
+    MINI: [],
+    TOCO: ['AAA1111', 'BBB2222', 'CCC3333', 'DDD0031'],
+    BASCULANTE: [],
+    TRUCK: [],
+  };
+
+  it('sem densidade por placa, mantém a densidade do tipo', () => {
+    const r = calcularMediaIdealKgPorTipo(frota, VOLUME_L_PADRAO, densidades);
+    assert.equal(r.densidadeMedia, 0.43);
+    assert.equal(r.mediaIdealKg, VOLUME_L_PADRAO.TOCO * 0.43);
+  });
+
+  it('o caminhão com densidade própria entra com a densidade dele', () => {
+    const r = calcularMediaIdealKgPorTipo(frota, VOLUME_L_PADRAO, densidades, {
+      placasPorTipo,
+      densPorPlaca: { DDD0031: 0.55 },
+    });
+    // 3 caminhões a 0,43 + 1 a 0,55 = 0,46
+    assert.equal(r.densidadeMedia, 0.46);
+    assert.equal(r.mediaIdealKg, Math.round(VOLUME_L_PADRAO.TOCO * 0.46 * 100) / 100);
+  });
+
+  it('placa sem densidade própria não muda nada', () => {
+    const r = calcularMediaIdealKgPorTipo(frota, VOLUME_L_PADRAO, densidades, {
+      placasPorTipo,
+      densPorPlaca: { ZZZ9999: 0.9 },
+    });
+    assert.equal(r.densidadeMedia, 0.43);
   });
 });
 

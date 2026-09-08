@@ -57,6 +57,7 @@ export default function ServicoVisao() {
   const [volumeL, setVolumeL] = useState<MapaLimiteCaminhao | null>(null);
   const [densidadeResiduoKgL, setDensidadeResiduoKgL] = useState<number | null>(null);
   const [densidadeKgL, setDensidadeKgL] = useState<MapaLimiteCaminhao | null>(null);
+  const [densidadeKgLPorPlaca, setDensidadeKgLPorPlaca] = useState<Record<string, number> | null>(null);
   const [inconsistencias, setInconsistencias] = useState<{
     viagensInconsistentes: number;
     viagensValidas: number;
@@ -118,6 +119,7 @@ export default function ServicoVisao() {
         volumeL?: MapaLimiteCaminhao;
         densidadeResiduoKgL?: number | null;
         densidadeKgL?: MapaLimiteCaminhao;
+        densidadeKgLPorPlaca?: Record<string, number> | null;
       } | undefined;
       setLimitesPesoKg(cfg?.pesoMaximoKg || null);
       setVolumeL(cfg?.volumeL || null);
@@ -127,6 +129,7 @@ export default function ServicoVisao() {
           : null,
       );
       setDensidadeKgL(cfg?.densidadeKgL || null);
+      setDensidadeKgLPorPlaca(cfg?.densidadeKgLPorPlaca || null);
 
       // Libera o ciclo antes da verificação pesada (até 20k linhas no servidor).
       if (!opts?.silencioso) setCarregando(false);
@@ -336,6 +339,7 @@ export default function ServicoVisao() {
           volumeL={volumeL}
           densidadeResiduoKgL={densidadeResiduoKgL}
           densidadeKgL={densidadeKgL}
+          densidadeKgLPorPlaca={densidadeKgLPorPlaca}
           onCicloChange={setCicloSelecionado}
           onCicloFechado={() => carregarDados({ silencioso: true })}
         />

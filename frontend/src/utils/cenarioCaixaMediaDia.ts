@@ -6,11 +6,13 @@ import { obterTipoCaminhaoRegistro } from './capacidadeViagemDia';
 import {
   LABEL_TIPO_CAMINHAO,
   TIPOS_LIMITE_CAMINHAO,
+  calcularPesoIdealKg,
   densidadeOptsToInput,
   normalizarTipoCaminhaoPeso,
+  resolverDensidadeParaViagem,
   resolverDensidadesKgL,
   resolverLimitesVolumeL,
-  resolverPesosIdeaisKg,
+  type DensidadeResiduoInput,
   type MapaLimiteCaminhao,
   type TipoLimiteCaminhao,
 } from './limitesCaminhaoContrato';
@@ -73,10 +75,10 @@ function calcularCaixaMediaPorFrota(
   return soma / total;
 }
 
-/** Conta placas únicas por tipo tipado na planilha do dia. */
-export function contarFrotaPorTipoDia(
+/** Placas únicas por tipo tipado na planilha do dia. */
+export function mapearPlacasPorTipoDia(
   registros: Record<string, unknown>[],
-): Record<TipoLimiteCaminhao, number> {
+): Record<TipoLimiteCaminhao, string[]> {
   const placasPorTipo: Record<TipoLimiteCaminhao, Set<string>> = {
     MINI: new Set(),
     TOCO: new Set(),
@@ -98,11 +100,50 @@ export function contarFrotaPorTipoDia(
   }
 
   return {
-    MINI: placasPorTipo.MINI.size,
-    TOCO: placasPorTipo.TOCO.size,
-    BASCULANTE: placasPorTipo.BASCULANTE.size,
-    TRUCK: placasPorTipo.TRUCK.size,
+    MINI: [...placasPorTipo.MINI],
+    TOCO: [...placasPorTipo.TOCO],
+    BASCULANTE: [...placasPorTipo.BASCULANTE],
+    TRUCK: [...placasPorTipo.TRUCK],
   };
+}
+
+/** Conta placas únicas por tipo tipado na planilha do dia. */
+export function contarFrotaPorTipoDia(
+  registros: Record<string, unknown>[],
+): Record<TipoLimiteCaminhao, number> {
+  const placas = mapearPlacasPorTipoDia(registros);
+  return {
+    MINI: placas.MINI.length,
+    TOCO: placas.TOCO.length,
+    BASCULANTE: placas.BASCULANTE.length,
+    TRUCK: placas.TRUCK.length,
+  };
+}
+
+/**
+ * Densidade média do tipo considerando a densidade própria de cada placa.
+ * Sem placas conhecidas (ou sem densidade especial), cai na densidade do tipo.
+ */
+function densidadesEfetivasPorTipo(
+  placasPorTipo: Record<TipoLimiteCaminhao, string[]> | null,
+  densPorTipo: Record<TipoLimiteCaminhao, number>,
+  densInput: DensidadeResiduoInput,
+  porPlaca?: Record<string, number> | null,
+): Record<TipoLimiteCaminhao, number> {
+  if (!placasPorTipo || !porPlaca || Object.keys(porPlaca).length === 0) {
+    return densPorTipo;
+  }
+  const out = { ...densPorTipo };
+  for (const tipo of TIPOS_LIMITE_CAMINHAO) {
+    const placas = placasPorTipo[tipo];
+    if (!placas?.length) continue;
+    const soma = placas.reduce(
+      (s, placa) => s + resolverDensidadeParaViagem({ placa, tipo, densidade: densInput, porPlaca }),
+      0,
+    );
+    out[tipo] = soma / placas.length;
+  }
+  return out;
 }
 
 /**
@@ -132,6 +173,7 @@ export function analisarCenarioCaixaMediaDia(
     volumeL?: MapaLimiteCaminhao | null;
     densidadeResiduoKgL?: number | null;
     densidadeKgL?: MapaLimiteCaminhao | null;
+    densidadeKgLPorPlaca?: Record<string, number> | null;
   },
 ): CenarioCaixaMediaDia | null {
   const viagens = operacao.resumo.viagens;
@@ -139,10 +181,18 @@ export function analisarCenarioCaixaMediaDia(
 
   const densInput = densidadeOptsToInput(opts);
   const volumes = resolverLimitesVolumeL(opts?.volumeL);
-  const densPorTipo = resolverDensidadesKgL(densInput);
 
-  let frotaContagem = opts?.registros?.length
-    ? contarFrotaPorTipoDia(opts.registros)
+  const placasPorTipo = opts?.registros?.length
+    ? mapearPlacasPorTipoDia(opts.registros)
+    : null;
+
+  let frotaContagem: Record<TipoLimiteCaminhao, number> | null = placasPorTipo
+    ? {
+      MINI: placasPorTipo.MINI.length,
+      TOCO: placasPorTipo.TOCO.length,
+      BASCULANTE: placasPorTipo.BASCULANTE.length,
+      TRUCK: placasPorTipo.TRUCK.length,
+    }
     : null;
   if (!frotaContagem || TIPOS_LIMITE_CAMINHAO.every((t) => (frotaContagem![t] || 0) <= 0)) {
     frotaContagem = frotaDeOperacaoPorTipo(operacao);
@@ -154,7 +204,19 @@ export function analisarCenarioCaixaMediaDia(
   const caixaMediaL = Math.round(calcularCaixaMediaPorFrota(frotaContagem, volumes) * 100) / 100;
   if (!(caixaMediaL > 0)) return null;
 
-  const pesosIdeaisKg = resolverPesosIdeaisKg(opts?.volumeL, densInput);
+  // Densidade por tipo já ponderada pelas placas com densidade própria do contrato.
+  const densPorTipo = densidadesEfetivasPorTipo(
+    placasPorTipo,
+    resolverDensidadesKgL(densInput),
+    densInput,
+    opts?.densidadeKgLPorPlaca,
+  );
+  const pesosIdeaisKg = {
+    MINI: calcularPesoIdealKg(volumes.MINI, densPorTipo.MINI),
+    TOCO: calcularPesoIdealKg(volumes.TOCO, densPorTipo.TOCO),
+    BASCULANTE: calcularPesoIdealKg(volumes.BASCULANTE, densPorTipo.BASCULANTE),
+    TRUCK: calcularPesoIdealKg(volumes.TRUCK, densPorTipo.TRUCK),
+  };
 
   // Peso ideal da frota = média ponderada de (vol × dens) por tipo
   let somaIdealPonderado = 0;

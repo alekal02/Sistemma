@@ -27,6 +27,7 @@ import {
   extrairTextoMensagem,
   processarComandoTextoWhatsapp,
 } from './WhatsappComandoRelatorioService';
+import { encaminharComandoManu } from './ManuChatbotForwardService';
 
 const EXT_PLANILHA = /\.(xlsx|xls|xlsm)$/i;
 const MIME_PLANILHA = /spreadsheet|excel|ms-excel|officedocument\.spreadsheetml|octet-stream/i;
@@ -445,6 +446,14 @@ export class WhatsappPlanilhaPipelineService {
         });
         if (cmd.processado) {
           return { processado: true, motivo: 'comando-texto', resultado: { comando: true } };
+        }
+        const manu = await encaminharComandoManu({
+          grupoJid,
+          texto: textoMsg,
+          sender: String(info.Sender || ''),
+        });
+        if (manu.processado) {
+          return { processado: true, motivo: 'comando-manu', resultado: { comando: true } };
         }
       }
     }

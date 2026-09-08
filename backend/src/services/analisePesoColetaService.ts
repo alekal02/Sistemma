@@ -313,6 +313,7 @@ export function contarFrotaPorTipoCaminhao(
   limites: LimitesPesoKg,
 ): {
   tiposCaminhao: { MINI: number; TOCO: number; BASCULANTE: number; TRUCK: number; soma: number };
+  placasPorTipo: Record<TipoCaminhaoPeso, string[]>;
   caminhoesUnicos: number;
   tipoDeduzido: FrotaTipoDeduzido;
 } {
@@ -375,6 +376,12 @@ export function contarFrotaPorTipoCaminhao(
 
   return {
     tiposCaminhao,
+    placasPorTipo: {
+      MINI: [...placasPorTipo.MINI],
+      TOCO: [...placasPorTipo.TOCO],
+      BASCULANTE: [...placasPorTipo.BASCULANTE],
+      TRUCK: [...placasPorTipo.TRUCK],
+    },
     caminhoesUnicos: placasUnicas.size,
     tipoDeduzido: {
       placas: placasDeduzidas.length,
@@ -414,25 +421,48 @@ export function calcularMediaIdealKg(caixaMediaL: number, densidadeResiduoKgL: n
 /**
  * Peso ideal da frota com densidade por tipo:
  * média ponderada de (volume[tipo] × dens[tipo]) pela contagem da frota.
+ *
+ * Com `placasPorTipo` e `densPorPlaca`, cada caminhão entra com a sua própria
+ * densidade — um veículo com densidade diferente do tipo não é mais diluído.
  */
 export function calcularMediaIdealKgPorTipo(
   frota: { MINI: number; TOCO: number; BASCULANTE?: number; TRUCK: number },
   volumes: LimitesVolumeL,
   densidades: Record<TipoCaminhaoPeso, number>,
+  opts?: {
+    placasPorTipo?: Record<TipoCaminhaoPeso, string[]> | null;
+    densPorPlaca?: Record<string, number> | null;
+  },
 ): { mediaIdealKg: number; densidadeMedia: number } {
   const basculante = frota.BASCULANTE ?? 0;
   const total = frota.MINI + frota.TOCO + basculante + frota.TRUCK;
   if (total <= 0) return { mediaIdealKg: 0, densidadeMedia: DENSIDADE_OTIMA_PADRAO };
+
+  const densEfetiva = { ...densidades };
+  const placasPorTipo = opts?.placasPorTipo;
+  const densPorPlaca = opts?.densPorPlaca;
+  if (placasPorTipo && densPorPlaca && Object.keys(densPorPlaca).length > 0) {
+    for (const tipo of TIPOS_CAMINHAO_ORDEM) {
+      const placas = placasPorTipo[tipo];
+      if (!placas?.length) continue;
+      const soma = placas.reduce(
+        (s, placa) => s + (densPorPlaca[normalizarPlaca(placa)] ?? densidades[tipo]),
+        0,
+      );
+      densEfetiva[tipo] = soma / placas.length;
+    }
+  }
+
   const somaIdeal =
-    frota.MINI * volumes.MINI * densidades.MINI
-    + frota.TOCO * volumes.TOCO * densidades.TOCO
-    + basculante * volumes.BASCULANTE * densidades.BASCULANTE
-    + frota.TRUCK * volumes.TRUCK * densidades.TRUCK;
+    frota.MINI * volumes.MINI * densEfetiva.MINI
+    + frota.TOCO * volumes.TOCO * densEfetiva.TOCO
+    + basculante * volumes.BASCULANTE * densEfetiva.BASCULANTE
+    + frota.TRUCK * volumes.TRUCK * densEfetiva.TRUCK;
   const somaDens =
-    frota.MINI * densidades.MINI
-    + frota.TOCO * densidades.TOCO
-    + basculante * densidades.BASCULANTE
-    + frota.TRUCK * densidades.TRUCK;
+    frota.MINI * densEfetiva.MINI
+    + frota.TOCO * densEfetiva.TOCO
+    + basculante * densEfetiva.BASCULANTE
+    + frota.TRUCK * densEfetiva.TRUCK;
   return {
     mediaIdealKg: Math.round((somaIdeal / total) * 100) / 100,
     densidadeMedia: Math.round((somaDens / total) * 1000) / 1000,
@@ -628,7 +658,7 @@ export function analisarPesoColeta(
   const pesoMedioKg = totalPesoKg > 0 ? totalPesoKg / totalViagens : 0;
   const { rotaMinima, rotaMaxima } = calcularExtremosViagens(dados, colPeso, colRota);
 
-  const { tiposCaminhao, caminhoesUnicos, tipoDeduzido } = contarFrotaPorTipoCaminhao(
+  const { tiposCaminhao, placasPorTipo, caminhoesUnicos, tipoDeduzido } = contarFrotaPorTipoCaminhao(
     dados,
     cols.colPlaca,
     colTipo,
@@ -641,6 +671,7 @@ export function analisarPesoColeta(
     tiposCaminhao,
     volumes,
     densidades,
+    { placasPorTipo, densPorPlaca },
   );
   const densidadeOtima = densidadeMedia;
   const perdaTon = ((pesoMedioKg - mediaIdealKg) * totalViagens) / 1000;

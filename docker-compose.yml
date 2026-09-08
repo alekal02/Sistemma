@@ -189,6 +189,9 @@ services:
       WUZAPI_WEBHOOK_SECRET: ${WUZAPI_WEBHOOK_SECRET:-}
       WUZAPI_TIMEOUT_MS: ${WUZAPI_TIMEOUT_MS:-120000}
       WUZAPI_INSTANCE_NAME: ${WUZAPI_INSTANCE_NAME:-Sistemma}
+      # Vazio = integração desligada. Preencha no .env só onde o Manu existir.
+      MANU_WEBHOOK_URL: ${MANU_WEBHOOK_URL:-}
+      MANU_CHATBOT_SECRET: ${MANU_CHATBOT_SECRET:-}
     env_file:
       - .env
     ports:

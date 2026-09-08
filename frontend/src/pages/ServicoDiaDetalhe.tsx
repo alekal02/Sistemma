@@ -362,8 +362,12 @@ export default function ServicoDiaDetalhe() {
       volumeL,
       densidadeResiduoKgL,
       densidadeKgL,
+      densidadeKgLPorPlaca,
     });
-  }, [ehPorUnidade, analiseColeta, registrosDia, volumeL, densidadeResiduoKgL, densidadeKgL]);
+  }, [
+    ehPorUnidade, analiseColeta, registrosDia, volumeL, densidadeResiduoKgL, densidadeKgL,
+    densidadeKgLPorPlaca,
+  ]);
 
   const regua = useReguaDia({
     contractId,
