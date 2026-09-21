@@ -13,12 +13,21 @@ import { buildConfigDashboardPadraoColeta } from '../config/dashboardPadraoColet
 import { invalidarCacheSaudeContratos } from '../controllers/ContractController';
 import PlanilhaService from './PlanilhaService';
 
-/** Tipos do upload CONSOLIDADO (sem coleta). */
+/** Tipos do upload CONSOLIDADO legado (TIPO DE SERVIÇO) — sem coleta. */
 export const TIPOS_SERVICO_PADRAO_UNIFICADO: TipoServico[] = [
   TipoServico.ROCADEIRA,
   TipoServico.CAPINA,
   TipoServico.VARRICAO,
   TipoServico.PODA,
+];
+
+/** Tipos do split da aba CONSOLIDADO (Power Query), incluindo remoção. */
+export const TIPOS_SERVICO_PADRAO_CONSOLIDADO: TipoServico[] = [
+  TipoServico.ROCADEIRA,
+  TipoServico.CAPINA,
+  TipoServico.VARRICAO,
+  TipoServico.PODA,
+  TipoServico.REMOCAO,
 ];
 
 /** Serviços auto-criados ao abrir/criar contrato (todos os tipos, exceto genérico). */
@@ -133,12 +142,22 @@ async function consolidarDuplicatasPorTipo(
     });
 
     const keeper = scored[0].s;
-    if (keeper.nome !== NOMES_PADRAO[tipo]) {
+    const nomeKeeper = String(keeper.nome || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase();
+    const especial = /manual|mecaniz/.test(nomeKeeper);
+    if (!especial && keeper.nome !== NOMES_PADRAO[tipo]) {
       keeper.nome = NOMES_PADRAO[tipo];
       await servicoRepo.save(keeper);
     }
 
     for (const extra of scored.slice(1)) {
+      const nomeExtra = String(extra.s.nome || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase();
+      if (/manual|mecaniz/.test(nomeExtra)) continue;
       // Só remove se estiver vazio — evita apagar dados históricos
       if (extra.uploads > 0) continue;
       try {
@@ -236,4 +255,64 @@ export async function obterServicoPorTipoContrato(
     throw new Error(`Serviço do tipo ${tipo} não encontrado no contrato`);
   }
   return lista[0];
+}
+
+function normNomeServico(nome: string): string {
+  return String(nome || '')
+    .trim()
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^A-Z0-9]+/g, ' ')
+    .trim();
+}
+
+function execucaoDoNome(nome: string): 'manual' | 'mecanizada' | null {
+  const n = normNomeServico(nome);
+  if (n.includes('MANUAL')) return 'manual';
+  if (n.includes('MECANIZ') || n.includes(' MEC')) return 'mecanizada';
+  return null;
+}
+
+/** Cria ou reutiliza um serviço com o nome da aba (Varrição Manual ≠ Varrição Mecanizada). */
+export async function garantirServicoNomeadoContrato(
+  contractId: string,
+  nome: string,
+  tipo: TipoServico | string,
+): Promise<{ servico: Servico; criado: boolean }> {
+  const servicoRepo = AppDataSource.getRepository(Servico);
+  const contractRepo = AppDataSource.getRepository(Contract);
+  const contract = await contractRepo.findOne({ where: { id: contractId } });
+  if (!contract) throw new Error('Contrato não encontrado');
+
+  const existentes = await servicoRepo.find({ where: { contract_id: contractId } });
+  const alvo = normNomeServico(nome);
+  const execAlvo = execucaoDoNome(nome);
+
+  const porNome = existentes.find((s) => normNomeServico(s.nome) === alvo);
+  if (porNome) return { servico: porNome, criado: false };
+
+  const mesmoTipo = existentes.filter((s) => String(s.tipo) === String(tipo));
+  if (execAlvo) {
+    const porExec = mesmoTipo.find((s) => execucaoDoNome(s.nome) === execAlvo);
+    if (porExec) return { servico: porExec, criado: false };
+  } else if (mesmoTipo.length === 1 && !execucaoDoNome(mesmoTipo[0].nome)) {
+    if (mesmoTipo[0].nome !== nome) {
+      mesmoTipo[0].nome = nome;
+      await servicoRepo.save(mesmoTipo[0]);
+    }
+    return { servico: mesmoTipo[0], criado: false };
+  }
+
+  const servico = new Servico();
+  servico.contract_id = contractId;
+  servico.nome = nome;
+  servico.tipo = String(tipo);
+  servico.descricao = TIPOS_SERVICO_META[String(tipo)]?.descricao || null;
+  servico.configDashboard = montarConfigDashboard(String(tipo));
+  servico.configFaturamento = montarConfigFaturamentoPadrao(String(tipo), contract);
+  servico.padraoPlanilha = null;
+  const salvo = await servicoRepo.save(servico);
+  invalidarCacheSaudeContratos(contractId);
+  return { servico: salvo, criado: true };
 }

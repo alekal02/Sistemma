@@ -3,9 +3,16 @@
  */
 import AppDataSource from '../database/data-source';
 import { ColetaData } from '../entities/ColetaData';
+import { Contract } from '../entities/Contract';
 import { PlanilhaUpload } from '../entities/PlanilhaUpload';
+import { Servico } from '../entities/Servico';
 import { aplicarFiltroViagensValidasDashboard } from './validacaoViagemService';
 import { calcularFaturamentoRocadaPorAreas } from '../utils/rocadaTipoExecucao';
+import {
+  calcularCicloMensalContrato,
+  inferirMesReferenciaDeData,
+  normalizarDiaInicioCiclo,
+} from '../utils/periodoCicloContrato';
 
 import { sqlJsonNumero } from './viagensPorRotaService';
 
@@ -16,6 +23,8 @@ export const AREA_M2_SQL = `
     ${sqlJsonNumero('c', 'AREA_M2')},
     ${sqlJsonNumero('c', 'M2')},
     ${sqlJsonNumero('c', 'AREA_ROCADA')},
+    ${sqlJsonNumero('c', 'QUANTITATIVO')},
+    ${sqlJsonNumero('c', 'QUANTIDADE')},
     0
   )
 `;
@@ -68,6 +77,12 @@ export interface ResumoRocadaAgregado {
   equipamentos: number;
 }
 
+export interface FrotaRocadaCiclo {
+  equipes: number;
+  equipamentos: number;
+  labelsEquipamento: string[];
+}
+
 /** Bloco completo de um tipo (Manual ou Mecanizada) para o dashboard separado. */
 export interface BlocoTipoRocada {
   tipo: 'manual' | 'mecanizada';
@@ -82,6 +97,7 @@ export interface BlocoTipoRocada {
   porOperador: LinhaRocadaAgregada[];
   porEquipe: LinhaRocadaAgregada[];
   porEquipamento: LinhaRocadaAgregada[];
+  frotaCiclo?: FrotaRocadaCiclo;
 }
 
 export interface AgregacaoRocadaResult {
@@ -97,6 +113,7 @@ export interface AgregacaoRocadaResult {
   porEquipamento: LinhaRocadaAgregada[];
   dataInicio: string | null;
   dataFim: string | null;
+  frotaCiclo?: FrotaRocadaCiclo;
 }
 
 async function getUploadIds(servicoId: string): Promise<number[]> {
@@ -293,6 +310,34 @@ async function agregarEscopo(
   };
 }
 
+function frotaDeEscopo(escopo: Awaited<ReturnType<typeof agregarEscopo>>): FrotaRocadaCiclo {
+  return {
+    equipes: Number(escopo.resumoRaw?.equipes || 0),
+    equipamentos: Number(escopo.resumoRaw?.equipamentos || 0),
+    labelsEquipamento: escopo.porEquipamento.map((l) => l.label).filter(Boolean),
+  };
+}
+
+async function periodoCicloDoServico(
+  servicoId: string,
+  dataRef: string,
+): Promise<{ dataInicio: string; dataFim: string } | null> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dataRef)) return null;
+  const servico = await AppDataSource.getRepository(Servico).findOne({
+    where: { id: servicoId },
+    select: ['id', 'contract_id'],
+  });
+  if (!servico?.contract_id) return null;
+  const contrato = await AppDataSource.getRepository(Contract).findOne({
+    where: { id: servico.contract_id },
+    select: ['id', 'diaInicioCiclo'],
+  });
+  const diaInicio = normalizarDiaInicioCiclo(contrato?.diaInicioCiclo);
+  const ref = inferirMesReferenciaDeData(dataRef, diaInicio);
+  const ciclo = calcularCicloMensalContrato(ref.ano, ref.mes, diaInicio);
+  return { dataInicio: ciclo.dataInicio, dataFim: ciclo.dataFim };
+}
+
 function blocoDeEscopo(
   tipo: 'manual' | 'mecanizada',
   escopo: Awaited<ReturnType<typeof agregarEscopo>>,
@@ -343,6 +388,7 @@ export async function getAgregacaoRocada(
     porEquipamento: [],
     dataInicio: opts.data || opts.dataInicio || null,
     dataFim: opts.data || opts.dataFim || null,
+    frotaCiclo: { equipes: 0, equipamentos: 0, labelsEquipamento: [] },
   };
   if (!uploadIds.length) return vazio;
 
@@ -431,6 +477,22 @@ export async function getAgregacaoRocada(
     mecanizada = blocoDeEscopo('mecanizada', total);
   }
 
+  const dataRefFrota = dataUnica || (dataInicio && dataFim && dataInicio === dataFim ? dataInicio : null);
+  let frotaCiclo: FrotaRocadaCiclo | undefined;
+  if (dataRefFrota) {
+    const ciclo = await periodoCicloDoServico(servicoId, dataRefFrota);
+    if (ciclo) {
+      const [frotaGeral, frotaMan, frotaMec] = await Promise.all([
+        agregarEscopo(uploadIds, ciclo.dataInicio, ciclo.dataFim, 200, filtro),
+        manual ? agregarEscopo(uploadIds, ciclo.dataInicio, ciclo.dataFim, 200, 'manual') : Promise.resolve(null),
+        mecanizada ? agregarEscopo(uploadIds, ciclo.dataInicio, ciclo.dataFim, 200, 'mecanizada') : Promise.resolve(null),
+      ]);
+      frotaCiclo = frotaDeEscopo(frotaGeral);
+      if (manual && frotaMan) manual.frotaCiclo = frotaDeEscopo(frotaMan);
+      if (mecanizada && frotaMec) mecanizada.frotaCiclo = frotaDeEscopo(frotaMec);
+    }
+  }
+
   return {
     resumo,
     porTipo,
@@ -442,6 +504,7 @@ export async function getAgregacaoRocada(
     porEquipamento: total.porEquipamento,
     dataInicio: dataInicio || toIsoDate(r?.min_d),
     dataFim: dataFim || toIsoDate(r?.max_d),
+    frotaCiclo,
   };
 }
 

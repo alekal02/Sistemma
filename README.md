@@ -17,14 +17,14 @@ cd frontend && npm install && npm run dev  # :5175
 
 | Onde | Comando |
 |------|---------|
-| **Dev** | `.\publicar.ps1 -Tag 2.0.1` |
+| **Dev** | `.\publicar.ps1 -Tag 4.0.4` |
 | **Destino** | Editar `TAG` no `.env` → `docker compose up -d` |
 
 ### Dev — publicar
 
 ```powershell
 Copy-Item env.nexus.example .env.nexus   # primeira vez
-.\publicar.ps1 -Tag 2.0.1
+.\publicar.ps1 -Tag 4.0.4
 ```
 
 Gera `dist\deploy\` para copiar em `C:\Sistemma`.
@@ -90,12 +90,12 @@ assinado. Equivalente manual:
 
 ```powershell
 # Dev
-\.\publicar.ps1 -Tag 3.3.2
+.\publicar.ps1 -Tag 4.0.4
 docker compose pull
 docker compose up -d --force-recreate backend frontend
 ```
 
-### Atualizar para a 3.3.2 sem perder o banco
+### Atualizar para a 4.0.4 sem perder o banco
 
 Na máquina atual, faça um backup antes de desligar ou atualizar:
 
@@ -148,8 +148,8 @@ Na máquina nova, depois de criar os volumes com `docker compose up -d` e parar 
 serviços, copie os arquivos `.tgz` para a pasta `backups` e extraia cada um no
 volume de mesmo nome. O prefixo `sistemma_` pode variar; confirme com `docker volume ls`.
 
-Para uma máquina que já possui os volumes, altere apenas `TAG=3.3.2` no `.env` e
-execute `docker compose pull` seguido de `docker compose up -d --force-recreate`.
+Para uma máquina que já possui os volumes, altere apenas `TAG=4.0.4` no `.env` e
+execute `docker compose pull backend frontend` seguido de `docker compose up -d --force-recreate backend frontend`.
 Não use `docker compose down -v`, não remova volumes e não substitua o `.env`.
 Se for necessário restaurar um dump, pare apenas o backend e restaure no mesmo
 volume PostgreSQL; o dump deve ser usado somente após confirmar o nome do banco e
@@ -158,6 +158,36 @@ do usuário no `.env`.
 O compose **não tem build** — sempre puxa `backend` e `frontend` do Nexus (`pull_policy: always`).
 
 Build local na dev usa override: `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build`
+
+### O que entra na 4.0.4
+
+- WhatsApp: `relatorio` abre um menu curto — *1* operacional (lista de serviços) ou *2* saúde dos dados (PDF da coleta). Atalho: `saude`.
+
+### O que entra na 4.0.3
+
+- Cards de tipo de serviço (Roçada Manual, Varrição, etc.) passam a ter **Excluir** também nos tipos padrão.
+- A exclusão remove o serviço, planilhas, `coleta_dados`, totais do dia e mapeamento WhatsApp. O tipo **não é recriado** ao reabrir o contrato.
+- Configurar → **Voltar ao contrato** volta para o hub do contrato (a tela branca vinha de ir para o dashboard do serviço).
+- Error boundary no layout: se uma página quebrar, mostra o erro em vez de tela branca.
+
+### O que entra na 4.0.2
+
+- WhatsApp: `relatorio` lista os serviços com dado; depois você escolhe **diário** ou **ciclo completo** daquele serviço.
+- Na etapa do serviço, envie `16/09` para o diário de outra data, ou `voltar` para a lista.
+
+### O que entra na 4.0.1
+
+- WhatsApp: `relatorio` varre o contrato e envia o PDF do tipo certo (coleta, roçada, varrição, capina, poda, remoção, feiras) para cada serviço com dado.
+- `dia 16/09` e `ciclo` também percorrem todos os tipos com operação, não só o serviço mapeado no grupo.
+- Atalhos: `relatorio rocada`, `varricao`, `poda`, `ciclo rocada`.
+
+### O que entra na 4.0.0
+
+- Planilha padrão de produção (XLSM/XLSX com Power Query, aba **CONSOLIDADO**): um serviço por aba, Relatórios do dia e do ciclo; coleta continua PLACA/PESO.
+- WhatsApp importa a planilha todo dia e **não envia PDF sozinho** — peça `dia 16/09`.
+- MinIO: `contratos/{contrato}/ciclo-{inicio}_{fim}/consolidado.xlsm` + snapshot em `diario/`.
+- Hub do contrato com abas Operação, Relatórios e Configuração.
+- No startup o banco desliga `responderPdf` nos grupos já mapeados (schema TypeORM continua sincronizando).
 
 ---
 

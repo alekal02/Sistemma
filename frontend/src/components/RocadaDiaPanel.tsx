@@ -1,5 +1,14 @@
 import { FiMap, FiUsers, FiTool, FiLayers, FiActivity, FiDollarSign } from 'react-icons/fi';
-import { fmtAreaM2, type AnaliseRocadaDia, type LinhaRocadaAgrupada } from '../utils/operacaoRocada';
+import {
+  fmtAreaM2,
+  labelStatusVsMedia,
+  resumirProducaoPorUnidade,
+  equipeEhApenasTipo,
+  type AnaliseRocadaDia,
+  type FrotaRocadaCiclo,
+  type LinhaRocadaAgrupada,
+  type ResumoProducaoUnidade,
+} from '../utils/operacaoRocada';
 import { formatarIsoParaBr } from '../utils/periodoDados';
 import GraficosRocadaDia from './GraficosRocadaDia';
 
@@ -16,6 +25,7 @@ export interface BlocoTipoRocadaUi {
   porOperador: LinhaRocadaAgrupada[];
   porEquipe: LinhaRocadaAgrupada[];
   porEquipamento: LinhaRocadaAgrupada[];
+  frotaCiclo?: FrotaRocadaCiclo;
 }
 
 interface Props {
@@ -112,6 +122,106 @@ function BarraParticipacao({
   );
 }
 
+function TabelaProducaoUnidade({
+  titulo,
+  resumo,
+  cor,
+}: {
+  titulo: string;
+  resumo: ResumoProducaoUnidade;
+  cor: string;
+}) {
+  if (!resumo.linhas.length && resumo.frota <= 0) return null;
+  const corStatus = (s: ResumoProducaoUnidade['linhas'][number]['status']) => (
+    s === 'acima' ? '#166534' : s === 'abaixo' ? '#9a3412' : '#475569'
+  );
+  const bgStatus = (s: ResumoProducaoUnidade['linhas'][number]['status']) => (
+    s === 'acima' ? '#dcfce7' : s === 'abaixo' ? '#ffedd5' : '#f1f5f9'
+  );
+  return (
+    <div style={{
+      background: '#fff', border: '1px solid #e2e8f0', borderRadius: '10px',
+      overflow: 'hidden', marginBottom: '0.75rem',
+    }}>
+      <div style={{
+        padding: '0.55rem 0.85rem', background: '#f8fafc', borderBottom: '1px solid #e2e8f0',
+      }}>
+        <div style={{
+          fontSize: '0.75rem', fontWeight: 700, color: '#334155',
+          display: 'flex', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap',
+        }}>
+          <span>{titulo}</span>
+          <span style={{ color: '#64748b', fontWeight: 600 }}>
+            {resumo.ativas} de {resumo.frota} {resumo.unidadePlural} no dia
+          </span>
+        </div>
+        <div style={{ fontSize: '0.68rem', color: '#475569', marginTop: '0.25rem' }}>
+          Total {fmtAreaM2(resumo.total)} m²
+          {resumo.ativas > 0 && ` · média ${fmtAreaM2(resumo.media)} m² / ${resumo.unidadeSingular}`}
+          {resumo.ausentes.length > 0 && ` · ${resumo.ausentes.length} sem registro hoje`}
+        </div>
+      </div>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
+          <thead>
+            <tr style={{ color: '#64748b', background: '#fafbfc' }}>
+              <th style={{ padding: '0.4rem 0.85rem', textAlign: 'left' }}>
+                {resumo.unidadeSingular === 'trator' ? 'Trator' : 'Equipe'}
+              </th>
+              <th style={{ padding: '0.4rem 0.6rem', textAlign: 'center' }}>Registros</th>
+              <th style={{ padding: '0.4rem 0.6rem', textAlign: 'right' }}>Produção (m²)</th>
+              <th style={{ padding: '0.4rem 0.6rem', textAlign: 'right' }}>Vs média</th>
+              <th style={{ padding: '0.4rem 0.85rem', textAlign: 'right' }}>Situação</th>
+            </tr>
+          </thead>
+          <tbody>
+            {resumo.linhas.map((l) => (
+              <tr key={l.label} style={{ borderTop: '1px solid #f1f5f9' }}>
+                <td style={{ padding: '0.45rem 0.85rem', fontWeight: 600, color: '#1e293b' }}>{l.label}</td>
+                <td style={{ padding: '0.45rem 0.6rem', textAlign: 'center', color: '#475569' }}>{l.registros}</td>
+                <td style={{ padding: '0.45rem 0.6rem', textAlign: 'right', fontWeight: 700, color: cor }}>
+                  {fmtAreaM2(l.areaM2)}
+                </td>
+                <td style={{ padding: '0.45rem 0.6rem', textAlign: 'right', color: '#64748b' }}>
+                  {Math.round(l.vsMedia * 100)}%
+                </td>
+                <td style={{ padding: '0.45rem 0.85rem', textAlign: 'right' }}>
+                  <span style={{
+                    fontSize: '0.62rem', fontWeight: 700, padding: '0.15rem 0.4rem',
+                    borderRadius: 999, background: bgStatus(l.status), color: corStatus(l.status),
+                  }}>
+                    {labelStatusVsMedia(l.status)}
+                  </span>
+                </td>
+              </tr>
+            ))}
+            {resumo.linhas.length > 0 && (
+              <tr style={{ borderTop: '2px solid #e2e8f0', background: '#f8fafc' }}>
+                <td style={{ padding: '0.45rem 0.85rem', fontWeight: 800 }}>Total / média</td>
+                <td style={{ padding: '0.45rem 0.6rem', textAlign: 'center', fontWeight: 700 }}>
+                  {resumo.linhas.reduce((s, l) => s + l.registros, 0)}
+                </td>
+                <td style={{ padding: '0.45rem 0.6rem', textAlign: 'right', fontWeight: 800, color: cor }}>
+                  {fmtAreaM2(resumo.total)}
+                </td>
+                <td style={{ padding: '0.45rem 0.6rem', textAlign: 'right', color: '#64748b' }}>—</td>
+                <td style={{ padding: '0.45rem 0.85rem', textAlign: 'right', fontWeight: 700, color: '#334155' }}>
+                  {fmtAreaM2(resumo.media)} m²
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      {resumo.ausentes.length > 0 && resumo.ausentes.length <= 12 && (
+        <div style={{ padding: '0.4rem 0.85rem', fontSize: '0.65rem', color: '#9a3412', background: '#fff7ed' }}>
+          Sem registro hoje: {resumo.ausentes.join(', ')}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TabelaGrupo({ titulo, linhas }: { titulo: string; linhas: { label: string; registros: number; areaM2: number }[] }) {
   if (!linhas.length) return null;
   const totalArea = linhas.reduce((s, l) => s + l.areaM2, 0);
@@ -164,6 +274,12 @@ function TabelaGrupo({ titulo, linhas }: { titulo: string; linhas: { label: stri
 }
 
 function SecaoTipo({ bloco, cor }: { bloco: BlocoTipoRocadaUi; cor: string }) {
+  const producao = resumirProducaoPorUnidade({
+    porEquipamento: bloco.porEquipamento,
+    porEquipe: bloco.porEquipe,
+    frotaCiclo: bloco.frotaCiclo,
+    preferirTrator: bloco.tipo === 'mecanizada',
+  });
   return (
     <div style={{
       flex: '1 1 320px',
@@ -197,15 +313,25 @@ function SecaoTipo({ bloco, cor }: { bloco: BlocoTipoRocadaUi; cor: string }) {
       <div style={{ padding: '0.65rem 0.75rem', display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
         <Kpi label="Bairros" valor={String(bloco.bairros)} cor="#0369a1" icone={<FiMap size={11} />} />
         <Kpi label="Operadores" valor={String(bloco.operadores)} cor="#7c3aed" icone={<FiUsers size={11} />} />
-        <Kpi label="Equipes" valor={String(bloco.equipes)} cor="#b45309" icone={<FiUsers size={11} />} />
-        <Kpi label="Equipamentos" valor={String(bloco.equipamentos)} cor="#0f766e" icone={<FiTool size={11} />} />
+        {producao.ativas > 0 && (
+          <Kpi
+            label={producao.unidadePlural[0].toUpperCase() + producao.unidadePlural.slice(1)}
+            valor={`${producao.ativas}/${producao.frota}`}
+            cor={cor}
+            icone={<FiTool size={11} />}
+            sub={`média ${fmtAreaM2(producao.media)} m²`}
+          />
+        )}
       </div>
 
       <div style={{ padding: '0 0.75rem 0.75rem' }}>
         <TabelaGrupo titulo={`Bairros — ${bloco.label}`} linhas={bloco.porBairro} />
         <TabelaGrupo titulo={`Operadores — ${bloco.label}`} linhas={bloco.porOperador} />
-        <TabelaGrupo titulo={`Equipes — ${bloco.label}`} linhas={bloco.porEquipe} />
-        <TabelaGrupo titulo={`Equipamentos — ${bloco.label}`} linhas={bloco.porEquipamento} />
+        <TabelaProducaoUnidade
+          titulo={`Produção por ${producao.unidadeSingular} — ${bloco.label}`}
+          resumo={producao}
+          cor={cor}
+        />
       </div>
     </div>
   );
@@ -292,6 +418,12 @@ export default function RocadaDiaPanel({
   const linhasSegmento = (analise.porOperador || []).filter((l) => l.label !== 'Não informado' && l.areaM2 > 0);
   const linhasEquipe = (analise.porEquipe || []).filter((l) => l.label !== 'Não informado' && l.areaM2 > 0);
   const linhasEquip = (analise.porEquipamento || []).filter((l) => l.label !== 'Não informado' && l.areaM2 > 0);
+  const producaoUnidade = resumirProducaoPorUnidade({
+    porEquipamento: linhasEquip,
+    porEquipe: linhasEquipe,
+    frotaCiclo: analise.frotaCiclo,
+    preferirTrator: linhasEquip.length > 0,
+  });
 
   // Rótulos conforme o que a planilha realmente trouxe
   const labelLocal = linhasLocal.some((l) => /→/.test(l.label)) ? 'Área por local'
@@ -300,9 +432,6 @@ export default function RocadaDiaPanel({
   const labelSegmento = linhasSegmento.some((l) => /→/.test(l.label))
     ? 'Área por segmento (início → término)'
     : 'Área por operador / endereço';
-  const labelEquipe = linhasEquipe.some((l) => /mensal|semanal|diario|diário|bimestral/i.test(l.label))
-    ? 'Área por periodicidade / equipe'
-    : 'Área por equipe';
 
   return (
     <div>
@@ -387,7 +516,7 @@ export default function RocadaDiaPanel({
             sub="operador / início-término"
           />
         )}
-        {resumo.equipes > 0 && (
+        {!equipeEhApenasTipo(linhasEquipe) && resumo.equipes > 0 && (
           <Kpi
             label="Equipes"
             valor={String(resumo.equipes)}
@@ -396,7 +525,16 @@ export default function RocadaDiaPanel({
             sub="equipe / periodicidade"
           />
         )}
-        {resumo.equipamentos > 0 && (
+        {producaoUnidade.ativas > 0 && (
+          <Kpi
+            label={`${producaoUnidade.unidadePlural[0].toUpperCase()}${producaoUnidade.unidadePlural.slice(1)} no dia`}
+            valor={`${producaoUnidade.ativas}/${producaoUnidade.frota}`}
+            cor="#0f766e"
+            icone={<FiTool size={11} />}
+            sub={`média ${fmtAreaM2(producaoUnidade.media)} m² / ${producaoUnidade.unidadeSingular}`}
+          />
+        )}
+        {resumo.equipamentos > 0 && producaoUnidade.ativas <= 0 && (
           <Kpi
             label="Equipamentos"
             valor={String(resumo.equipamentos)}
@@ -494,8 +632,16 @@ export default function RocadaDiaPanel({
           )}
           <TabelaGrupo titulo={labelLocal} linhas={linhasLocal} />
           <TabelaGrupo titulo={labelSegmento} linhas={linhasSegmento} />
-          <TabelaGrupo titulo={labelEquipe} linhas={linhasEquipe} />
-          <TabelaGrupo titulo="Área por equipamento" linhas={linhasEquip} />
+          <TabelaProducaoUnidade
+            titulo="Produção por trator / equipe"
+            resumo={resumirProducaoPorUnidade({
+              porEquipamento: linhasEquip,
+              porEquipe: linhasEquipe,
+              frotaCiclo: analise.frotaCiclo,
+              preferirTrator: linhasEquip.length > 0,
+            })}
+            cor="#166534"
+          />
         </>
       )}
 

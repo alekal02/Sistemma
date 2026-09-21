@@ -108,13 +108,28 @@ class FileStorageService {
   async uploadArquivo(buffer: Buffer, nomeOriginal: string, mimeType: string): Promise<string> {
     const ext = path.extname(nomeOriginal) || '.bin';
     const filename = `planilhas/${uuidv4()}${ext}`;
+    return this.uploadEmPath(filename, buffer, mimeType, nomeOriginal);
+  }
 
-    await this.client.putObject(this.bucket, filename, buffer, buffer.length, {
+  /** Grava (ou sobrescreve) um objeto num caminho estável do bucket. */
+  async uploadEmPath(
+    objectPath: string,
+    buffer: Buffer,
+    mimeType: string,
+    nomeDownload?: string,
+  ): Promise<string> {
+    const pathNorm = String(objectPath || '')
+      .replace(/\\/g, '/')
+      .replace(/^\/+/, '')
+      .replace(/\/{2,}/g, '/');
+    if (!pathNorm) throw new Error('Caminho MinIO vazio');
+
+    await this.client.putObject(this.bucket, pathNorm, buffer, buffer.length, {
       'Content-Type': mimeType,
-      'Content-Disposition': `attachment; filename="${nomeOriginal}"`,
+      'Content-Disposition': `attachment; filename="${nomeDownload || path.basename(pathNorm)}"`,
     });
 
-    return `${this.publicUrl}/${this.bucket}/${filename}`;
+    return `${this.publicUrl}/${this.bucket}/${pathNorm}`;
   }
 
   /** Extrai bucket + object path de uma URL pública MinIO. */

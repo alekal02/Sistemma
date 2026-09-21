@@ -31,11 +31,11 @@ export default function ConfiguracaoServico() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: 'Visao Geral', href: '/visao-geral' },
       { label: 'Contratos', href: '/contratos' },
-      { label: 'Configuracao do Servico' },
+      { label: 'Contrato', href: contractId ? `/contratos/${contractId}` : '/contratos' },
+      { label: servicoNome !== 'Servico' ? servicoNome : 'Configuração' },
     ]);
-  }, [servicoNome, setBreadcrumbs]);
+  }, [contractId, servicoNome, setBreadcrumbs]);
 
   const carregarDados = useCallback(async () => {
     if (!contractId || !servicoId) return;
@@ -43,11 +43,12 @@ export default function ConfiguracaoServico() {
     try {
       const data = await servicoService.getPadrao(contractId, servicoId);
       setServicoNome(data.servico?.nome || 'Servico');
-      const cols: ColunaDetectada[] = data.servico?.padraoPlanilha?.colunas || [];
+      const colsRaw = data.servico?.padraoPlanilha?.colunas;
+      const cols: ColunaDetectada[] = Array.isArray(colsRaw) ? colsRaw : [];
       setColunas(cols);
       const cfg = data.servico?.configDashboard;
-      if (cfg?.kpis?.length) setKpis(JSON.parse(JSON.stringify(cfg.kpis)));
-      if (cfg?.graficos?.length) setGraficos(JSON.parse(JSON.stringify(cfg.graficos)));
+      if (Array.isArray(cfg?.kpis) && cfg.kpis.length) setKpis(JSON.parse(JSON.stringify(cfg.kpis)));
+      if (Array.isArray(cfg?.graficos) && cfg.graficos.length) setGraficos(JSON.parse(JSON.stringify(cfg.graficos)));
     } catch {
       adicionarToast('Erro ao carregar dados', 'error');
     } finally {
@@ -129,7 +130,7 @@ export default function ConfiguracaoServico() {
             }}
             placeholder="Nome do indicador"
           />
-          <select value={kpi.formato} onChange={e => {
+          <select value={kpi.formato || 'numero'} onChange={e => {
             const nk = kpis.map((k, j) => j === i ? { ...k, formato: e.target.value as KpiConfig['formato'] } : k);
             setKpis(nk);
             salvarConfig(nk, graficos);
@@ -251,9 +252,13 @@ export default function ConfiguracaoServico() {
         marginBottom: '0.75rem', flexWrap: 'wrap', gap: '0.35rem',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <button className="btn btn-ghost" onClick={() => navigate('/contratos/' + contractId + '/servicos/' + servicoId)}
-            style={{ fontSize: '0.72rem', padding: '0.1rem 0.3rem', color: '#6366f1' }}>
-            <FiArrowLeft size={12} /> Servico
+          <button
+            className="btn btn-ghost"
+            type="button"
+            onClick={() => navigate('/contratos/' + contractId)}
+            style={{ fontSize: '0.72rem', padding: '0.1rem 0.3rem', color: '#6366f1' }}
+          >
+            <FiArrowLeft size={12} /> Voltar ao contrato
           </button>
           <h3 style={{ margin: 0, fontSize: '0.95rem', color: '#0f172a' }}>
             <FiSettings size={14} /> Configuracao: {servicoNome}
@@ -274,8 +279,8 @@ export default function ConfiguracaoServico() {
           <FiDatabase size={48} style={{ opacity: 0.2, marginBottom: '0.75rem' }} />
           <h3>Nenhuma planilha encontrada</h3>
           <p style={{ fontSize: '0.85rem' }}>Faca upload de uma planilha na pagina do Servico primeiro.</p>
-          <button className="btn btn-primary btn-sm" onClick={() => navigate('/contratos/' + contractId + '/servicos/' + servicoId)}>
-            Ir para o Servico
+          <button className="btn btn-primary btn-sm" onClick={() => navigate('/contratos/' + contractId)}>
+            Voltar ao contrato
           </button>
         </div>
       ) : (

@@ -166,7 +166,7 @@ const coletaService = {
     })
     return data as ResultadoUpload & {
       modo?: string
-      tipoDetectado?: 'unificado' | 'coleta' | 'rocada' | 'desconhecido'
+      tipoDetectado?: 'consolidado_producao' | 'unificado' | 'coleta' | 'rocada' | 'desconhecido'
       tipoDetectadoLabel?: string
       servicoId?: string
       servicoNome?: string

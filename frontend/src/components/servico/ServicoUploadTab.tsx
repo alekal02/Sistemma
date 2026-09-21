@@ -46,7 +46,7 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
   const { adicionarToast } = useToast();
   const ehRocada = tipoServico === 'rocadeira';
   /** Tipos que podem receber o layout unificado (não altera fluxo legado de roçada) */
-  const aceitaUnificado = ['rocadeira', 'capina', 'varricao', 'poda', 'geral'].includes(tipoServico);
+  const aceitaUnificado = ['rocadeira', 'capina', 'varricao', 'poda', 'geral', 'remocao'].includes(tipoServico);
 
   const [uploading, setUploading] = useState(false);
   const [uploadPct, setUploadPct] = useState(0);
@@ -107,13 +107,23 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
           ?? null;
 
         const modoUnificado = (data as { modo?: string }).modo === 'servicos_unificados'
-          || modeloRocada === 'servicos_unificados';
+          || (data as { modo?: string }).modo === 'consolidado_producao'
+          || modeloRocada === 'servicos_unificados'
+          || modeloRocada === 'consolidado_producao';
+        const labelUnificado = (data as { modo?: string }).modo === 'consolidado_producao'
+          || modeloRocada === 'consolidado_producao'
+          ? 'CONSOLIDADO'
+          : 'Serviços unificados';
+        const modeloUnificado = (data as { modo?: string }).modo === 'consolidado_producao'
+          || modeloRocada === 'consolidado_producao'
+          ? 'consolidado_producao'
+          : 'servicos_unificados';
 
         if (ehRocada && modeloRocada && !modoUnificado) {
           setModeloRocadaUi({ modelo: modeloRocada, label: modeloRocadaLabel || labelModeloRocada(modeloRocada) });
         }
         if (modoUnificado) {
-          setModeloRocadaUi({ modelo: 'servicos_unificados', label: 'Serviços unificados' });
+          setModeloRocadaUi({ modelo: modeloUnificado, label: labelUnificado });
         }
 
         setResumoImportacao({
@@ -122,8 +132,8 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
           inconsistentes,
           uploadsRemovidos,
           registrosRemovidosAusentes,
-          modeloRocada: modoUnificado ? 'servicos_unificados' : modeloRocada,
-          modeloRocadaLabel: modoUnificado ? 'Serviços unificados' : modeloRocadaLabel,
+          modeloRocada: modoUnificado ? modeloUnificado : modeloRocada,
+          modeloRocadaLabel: modoUnificado ? labelUnificado : modeloRocadaLabel,
           areaTotalM2,
         });
         setImportacaoConcluida(true);
@@ -215,7 +225,9 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
       setConferenciaDiaria(null);
       setImportacaoConcluida(false);
       setResumoImportacao(null);
-      setModeloRocadaUi({ modelo: 'servicos_unificados', label: 'Serviços unificados' });
+      const modeloPrev = preview.modelo === 'consolidado_producao' ? 'consolidado_producao' : 'servicos_unificados';
+      const labelPrev = preview.modelo === 'consolidado_producao' ? 'CONSOLIDADO' : 'Serviços unificados';
+      setModeloRocadaUi({ modelo: modeloPrev, label: labelPrev });
       setModoValidacao(true);
 
       const podeImportar = preview.podeImportar !== false && preview.sucesso && (preview.resumo?.registros ?? 0) > 0;
@@ -226,8 +238,8 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
         arquivo: preview.arquivo,
         avisos: preview.avisos,
         abasUsadas: preview.abasUsadas,
-        modelo: 'servicos_unificados',
-        modeloLabel: 'Serviços unificados',
+        modelo: modeloPrev,
+        modeloLabel: labelPrev,
         porTipo: preview.porTipo || preview.resumo?.porTipo || [],
         podeImportar,
         resumoUnificado: preview.resumo,
@@ -243,7 +255,7 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
         `${p.tipoLabel}: ${p.registros}`,
       ).join(' · ');
       adicionarToast(
-        `Layout unificado detectado. ${preview.resumo?.registros ?? 0} registro(s)${partes ? ` (${partes})` : ''}.`,
+        `${preview.modelo === 'consolidado_producao' ? 'CONSOLIDADO' : 'Layout unificado'} detectado. ${preview.resumo?.registros ?? 0} registro(s)${partes ? ` (${partes})` : ''}.`,
         'success',
       );
 
@@ -254,8 +266,8 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
           viagensCompletas: preview.resumo?.registros ?? 0,
         },
         {
-          modelo: 'servicos_unificados',
-          modeloLabel: 'Serviços unificados',
+          modelo: modeloPrev,
+          modeloLabel: labelPrev,
         },
       );
       setValidando(false);
@@ -778,7 +790,7 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
               color: validacaoData?.podeImportar === false || validacaoData?.sucesso === false ? '#9a3412' : '#1e3a8a',
             }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap' }}>
-                <strong style={{ fontSize: '0.85rem' }}>Aba CONSOLIDADO</strong>
+                <strong style={{ fontSize: '0.85rem' }}>Abas de serviço</strong>
                 <span style={{
                   background: '#1e3a8a', color: '#bfdbfe',
                   fontWeight: 800, fontSize: '0.72rem',
@@ -791,8 +803,9 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
                 {validacaoData.mensagem}
               </div>
               <div style={{ marginTop: '0.35rem', fontSize: '0.7rem', opacity: 0.9 }}>
-                Só a aba CONSOLIDADO é importada. Cada linha vai para o serviço do contrato
-                com o mesmo tipo (ROÇADA → Roçada, CAPINA → Capina, etc.).
+                Só as abas de serviço são importadas (Tabela* e mapas operacionais).
+                Cada aba vira um serviço no contrato, com relatório próprio.
+                A aba CONSOLIDADO não entra, para não duplicar.
               </div>
               {Array.isArray(validacaoData.porTipo) && validacaoData.porTipo.length > 0 && (
                 <ul style={{ margin: '0.45rem 0 0', paddingLeft: '1.1rem' }}>
@@ -1535,12 +1548,20 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
         )}
         {planilhas.length > 0 && (
           <div className="planilhas-lista">
-            <p className="planilhas-titulo">Planilhas ({planilhas.length})</p>
+            <p className="planilhas-titulo">
+              {planilhas.length > 0
+                ? `1 consolidado do ciclo · ${planilhas.length} envio${planilhas.length === 1 ? '' : 's'} (histórico)`
+                : 'Planilhas'}
+            </p>
             {planilhas.map(p => (
               <div key={p.id} className="planilha-item">
                 <FiFileText size={14} className="planilha-icon" />
                 <div className="planilha-info">
-                  <div className="planilha-nome">{p.nomeArquivo}</div>
+                  <div className="planilha-nome">
+                    {p.urlDownload?.includes('/diario/')
+                      ? `Envio ${String(p.urlDownload).match(/diario\/(\d{4}-\d{2}-\d{2})/)?.[1]?.split('-').reverse().join('/') || p.nomeArquivo}`
+                      : p.nomeArquivo}
+                  </div>
                   <div className="planilha-data">{new Date(p.criadoEm).toLocaleDateString('pt-BR')} &bull; {p.linhasImportadas}/{p.totalLinhas} linhas</div>
                 </div>
                 <div style={{ display: 'flex', gap: '0.25rem', alignItems: 'center' }}>

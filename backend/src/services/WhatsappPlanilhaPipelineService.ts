@@ -11,10 +11,12 @@ import { TipoServico, TIPOS_SERVICO_META } from '../enums/TipoServico';
 import DeduplicacaoService from './DeduplicacaoService';
 import RocadaImportService from './rocadaImportService';
 import ServicosUnificadosImportService from './servicosUnificadosImportService';
+import ConsolidadoProducaoImportService from './consolidadoProducaoImportService';
 import { classificarPlanilhaContrato } from './planilhaContratoClassifier';
 import { obterServicoPorTipoContrato } from './servicosPadraoContratoService';
 import PlanilhaService from './PlanilhaService';
 import { invalidarCacheSaudeContratos } from '../controllers/ContractController';
+import { marcarOrigemPlanilhaUpload } from './planilhaOriginalStorage';
 import { htmlToPdf } from './PdfGeneratorService';
 import { gerarHtmlSaudeDadosServer } from './PdfSaudeDadosHtml';
 import { gerarHtmlRelatorioDiaRocadaServer } from './PdfRelatorioDiaHtml';
@@ -22,6 +24,13 @@ import { analisarViagensPlanilha } from './analisarViagensPlanilhaService';
 import { getAgregacaoRocada } from './rocadaAgregacaoService';
 import { extrairCadastroOperacional } from '../utils/configOperacional';
 import { montarHtmlRelatorioDiaColeta } from './relatorioDia/montarRelatorioDiaColeta';
+import { montarPacoteConsolidado } from './consolidadoProducaoRelatorio';
+import { gerarHtmlRelatorioDiaServicoProducao, gerarHtmlRelatorioCicloServicoProducao } from './relatorioDia/gerarHtmlRelatorioDiaConsolidado';
+import { gerarNomePdfDiaServicoProducao, gerarNomePdfCicloServicoProducao } from './relatorioDia/gerarNomePdf';
+import {
+  parsearPlanilhaConsolidadoProducao,
+  agruparLinhasPorServicoAba,
+} from './consolidadoProducaoPlanilhaParser';
 import wuzapiService from './WuzapiService';
 import {
   extrairTextoMensagem,
@@ -241,6 +250,42 @@ async function importarPlanilha(
   const est = (estrategia || 'atualizar_data') as 'ignorar' | 'substituir' | 'atualizar_data' | 'inserir_data';
   const substituir = est !== 'ignorar';
 
+  if (classificacao.tipo === 'consolidado_producao') {
+    const r = await ConsolidadoProducaoImportService.importarPorContrato(
+      buffer,
+      nomeArquivo,
+      contractId,
+      undefined,
+      substituir,
+    );
+    invalidarCacheSaudeContratos(contractId);
+    const alvos = (r.splitPorServico || [])
+      .filter((s) => s.importados > 0)
+      .map((s) => ({
+        servicoId: s.servicoId,
+        servicoNome: s.servicoNome,
+        tipo: String(s.tipoSistema),
+        importados: s.importados,
+      }));
+    const partes = alvos.map((s) => `${s.servicoNome}: ${s.importados} reg.`);
+    return {
+      planilhaUploadId: r.planilhaUploadId,
+      importadas: r.importados,
+      totalLinhas: r.totalLinhas,
+      tipoDetectado: classificacao.tipo,
+      tipoDetectadoLabel: classificacao.label,
+      mensagem: `Produção: ${r.importados} registro(s). ${partes.join(' · ')}`,
+      alvos: alvos.length
+        ? alvos
+        : [{
+            servicoId: servicoMapa.id,
+            servicoNome: servicoMapa.nome,
+            tipo: String(servicoMapa.tipo || ''),
+            importados: r.importados,
+          }],
+    };
+  }
+
   if (classificacao.tipo === 'unificado') {
     const r = await ServicosUnificadosImportService.importarPorContrato(
       buffer,
@@ -280,13 +325,14 @@ async function importarPlanilha(
   if (classificacao.tipo === 'coleta') {
     const alvo = await obterServicoPorTipoContrato(contractId, TipoServico.COLETA_CAMINHAO);
     const r = (est === 'atualizar_data' || est === 'inserir_data')
-      ? await DeduplicacaoService.importarPorData(buffer, nomeArquivo, est, undefined, alvo.id)
+      ? await DeduplicacaoService.importarPorData(buffer, nomeArquivo, est, undefined, alvo.id, 'whatsapp')
       : await DeduplicacaoService.importarComDedup(
         buffer,
         nomeArquivo,
         est === 'substituir' ? 'substituir' : 'ignorar',
         undefined,
         alvo.id,
+        'whatsapp',
       );
     const qtd = Number((r as { importados?: number }).importados ?? 0);
     await atualizarPadraoServicoAposImport(alvo.id, buffer, nomeArquivo, r.planilhaUploadId, r.totalLinhas);
@@ -328,7 +374,7 @@ async function importarPlanilha(
   }
 
   throw new Error(
-    'Formato de planilha não reconhecido. Use CONSOLIDADO (DATA/UND/QUANTITATIVO/TIPO DE SERVIÇO), Coleta (PLACA/PESO) ou Roçada.',
+    'Formato de planilha não reconhecido. Use CONSOLIDADO (SERVIÇO/DATA/QUANTIDADE), unificado (TIPO DE SERVIÇO), Coleta (PLACA/PESO) ou Roçada.',
   );
 }
 
@@ -519,6 +565,9 @@ export class WhatsappPlanilhaPipelineService {
     const { buffer, nomeArquivo: nomeRaw } = await obterBufferPlanilha(payload, doc);
     const nomeArquivo = EXT_PLANILHA.test(nomeRaw) ? nomeRaw : `${nomeRaw.replace(/\.[^.]+$/, '') || 'planilha'}.xlsx`;
     const importResult = await importarPlanilha(buffer, nomeArquivo, servico, mapa.estrategia);
+    if (importResult.planilhaUploadId) {
+      await marcarOrigemPlanilhaUpload(importResult.planilhaUploadId, 'whatsapp');
+    }
 
     return this.posImport(mapa, servico, grupoJid, nomeArquivo, importResult, buffer);
   }
@@ -666,22 +715,89 @@ export class WhatsappPlanilhaPipelineService {
     return { pdfSaude, pdfDiario, ultimoDia, erros };
   }
 
+  private async enviarRelatoriosPorAbaProducao(
+    contrato: Contract | null,
+    grupoJid: string,
+    bufferPlanilha: Buffer,
+  ): Promise<{ pdfDiario: boolean; ultimoDia: string | null; erros: string[]; dias: Array<{ nome: string; dia: string | null }> }> {
+    const erros: string[] = [];
+    const dias: Array<{ nome: string; dia: string | null }> = [];
+    try {
+      const parsed = parsearPlanilhaConsolidadoProducao(bufferPlanilha);
+      const grupos = agruparLinhasPorServicoAba(parsed.linhas);
+      if (grupos.size === 0) {
+        return { pdfDiario: false, ultimoDia: null, erros: ['Produção: nenhuma aba com dados'], dias };
+      }
+      let pdfDiario = false;
+      let ultimoDia: string | null = null;
+      for (const [, linhasAba] of grupos) {
+        const meta = linhasAba[0];
+        const pacote = montarPacoteConsolidado(linhasAba, parsed.avisos.filter((a) => /repetiu|Power Query/i.test(a)));
+        if (!pacote) continue;
+        const htmlDia = gerarHtmlRelatorioDiaServicoProducao({
+          contratoNome: String(contrato?.numeroContrato || '—'),
+          servicoNome: meta.nomeServico,
+          pacote,
+        });
+        const htmlCiclo = gerarHtmlRelatorioCicloServicoProducao({
+          contratoNome: String(contrato?.numeroContrato || '—'),
+          servicoNome: meta.nomeServico,
+          pacote,
+        });
+        const pdfDiaBuf = await htmlToPdf(htmlDia, {
+          margin: { top: '10mm', bottom: '10mm', left: '8mm', right: '8mm' },
+        });
+        const pdfCicloBuf = await htmlToPdf(htmlCiclo, {
+          margin: { top: '10mm', bottom: '10mm', left: '8mm', right: '8mm' },
+        });
+        const nomeDia = gerarNomePdfDiaServicoProducao({
+          servicoNome: meta.nomeServico,
+          dataIso: pacote.dia.dataIso,
+        });
+        const nomeCiclo = gerarNomePdfCicloServicoProducao({
+          servicoNome: meta.nomeServico,
+          dataInicio: pacote.ciclo.dataInicio,
+          dataFim: pacote.ciclo.dataFim,
+        });
+        const dataBr = pacote.dia.dataIso.split('-').reverse().join('/');
+        const cicloBr = `${pacote.ciclo.dataInicio.split('-').reverse().join('/')} a ${pacote.ciclo.dataFim.split('-').reverse().join('/')}`;
+        await wuzapiService.enviarDocumento(
+          grupoJid,
+          `${nomeDia}.pdf`,
+          pdfDiaBuf,
+          `${meta.nomeServico} — operação ${dataBr}`,
+        );
+        await wuzapiService.enviarDocumento(
+          grupoJid,
+          `${nomeCiclo}.pdf`,
+          pdfCicloBuf,
+          `${meta.nomeServico} — ciclo ${cicloBr}`,
+        );
+        pdfDiario = true;
+        ultimoDia = pacote.dia.dataIso;
+        dias.push({ nome: meta.nomeServico, dia: pacote.dia.dataIso });
+      }
+      if (!pdfDiario) {
+        return { pdfDiario: false, ultimoDia: null, erros: ['Produção: sem dia operacional nas abas'], dias };
+      }
+      return { pdfDiario, ultimoDia, erros, dias };
+    } catch (err: any) {
+      console.error('[WhatsappPipeline] PDF por aba:', err?.message || err);
+      return { pdfDiario: false, ultimoDia: null, erros: [`PDF por aba: ${err?.message || 'erro'}`], dias };
+    }
+  }
+
   private async posImport(
-    mapa: WhatsappGrupoMapa,
+    _mapa: WhatsappGrupoMapa,
     servicoMapa: Servico,
     grupoJid: string,
     nomeArquivo: string,
     importResult: ResultadoImportWhatsapp,
-    bufferPlanilha: Buffer,
+    _bufferPlanilha: Buffer,
   ) {
     const contrato = (servicoMapa as Servico & { contract?: Contract }).contract
       || await AppDataSource.getRepository(Contract).findOne({ where: { id: servicoMapa.contract_id } });
     const contratoNome = contrato?.numeroContrato || '—';
-    const servicoRepo = AppDataSource.getRepository(Servico);
-
-    let pdfSaudeEnviado = false;
-    let pdfDiarioEnviado = false;
-    const errosPdf: string[] = [];
     const diasPorServico: Array<{ nome: string; dia: string | null }> = [];
 
     for (const alvo of importResult.alvos) {
@@ -694,39 +810,13 @@ export class WhatsappPlanilhaPipelineService {
       }
     }
 
-    if (mapa.responderPdf) {
-      for (const alvo of importResult.alvos) {
-        if (alvo.importados <= 0) continue;
-        const servico = await servicoRepo.findOne({
-          where: { id: alvo.servicoId },
-          relations: ['contract'],
-        });
-        if (!servico) {
-          errosPdf.push(`${alvo.servicoNome}: serviço não encontrado`);
-          continue;
-        }
-        const contratoAlvo = (servico as Servico & { contract?: Contract }).contract || contrato;
-        const envio = await this.enviarRelatorioUltimoDia(
-          servico,
-          contratoAlvo || null,
-          grupoJid,
-          bufferPlanilha,
-          nomeArquivo,
-          importResult.planilhaUploadId,
-        );
-        if (envio.pdfSaude) pdfSaudeEnviado = true;
-        if (envio.pdfDiario) pdfDiarioEnviado = true;
-        errosPdf.push(...envio.erros);
-        diasPorServico.push({ nome: servico.nome, dia: envio.ultimoDia });
-      }
-
-      if (errosPdf.length && (!pdfSaudeEnviado || !pdfDiarioEnviado)) {
-        try {
-          await wuzapiService.enviarTexto(
-            grupoJid,
-            `⚠️ Importação ok, mas falhou parte do relatório (${errosPdf.slice(0, 4).join('; ')})`,
-          );
-        } catch { /* ignore */ }
+    for (const alvo of importResult.alvos) {
+      if (alvo.importados <= 0) continue;
+      try {
+        const periodo = await PlanilhaService.getPeriodoDadosPorServico(alvo.servicoId);
+        diasPorServico.push({ nome: alvo.servicoNome, dia: periodo?.dataFim || null });
+      } catch {
+        diasPorServico.push({ nome: alvo.servicoNome, dia: null });
       }
     }
 
@@ -738,20 +828,16 @@ export class WhatsappPlanilhaPipelineService {
       .filter((d) => d.dia)
       .map((d) => `${d.nome}: ${String(d.dia).split('-').reverse().join('/')}`)
       .join(' · ');
-    const relatoriosEnviados = mapa.responderPdf && (pdfSaudeEnviado || pdfDiarioEnviado);
-
-    // Com PDF/relatório no grupo, o arquivo já confirma o sucesso — não manda recap.
-    if (!relatoriosEnviados) {
-      const resumo = [
-        `✅ ${importResult.importadas} registro(s) importado(s)`,
-        servicosTxt ? servicosTxt : null,
-        `Contrato: ${contratoNome}`,
-        diasTxt ? `Último dia: ${diasTxt}` : null,
-      ].filter(Boolean).join('\n');
-      try {
-        await wuzapiService.enviarTexto(grupoJid, resumo);
-      } catch { /* ignore */ }
-    }
+    const resumo = [
+      `✅ ${importResult.importadas} registro(s) importado(s)`,
+      servicosTxt ? servicosTxt : null,
+      `Contrato: ${contratoNome}`,
+      diasTxt ? `Último dia: ${diasTxt}` : null,
+      'Para o PDF, envie *dia 16/09* com a data desejada.',
+    ].filter(Boolean).join('\n');
+    try {
+      await wuzapiService.enviarTexto(grupoJid, resumo);
+    } catch { /* ignore */ }
 
     return {
       processado: true,
@@ -764,8 +850,8 @@ export class WhatsappPlanilhaPipelineService {
         planilhaUploadId: importResult.planilhaUploadId,
         alvos: importResult.alvos,
         diasPorServico,
-        pdfSaudeEnviado,
-        pdfDiarioEnviado,
+        pdfSaudeEnviado: false,
+        pdfDiarioEnviado: false,
       },
     };
   }

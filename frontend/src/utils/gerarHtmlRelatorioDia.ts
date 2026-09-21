@@ -52,12 +52,17 @@ function esc(s: string): string {
 const ESTILOS = `
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 8.5px; color: #1e293b; padding: 12px 14px; line-height: 1.35; width: 100%; }
-  .header { background: linear-gradient(135deg,#0f172a,#1e3a5f); color: #fff; border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
-  .header h1 { font-size: 14px; font-weight: 800; color: #fbbf24; }
-  .header .sub { font-size: 7.5px; color: #94a3b8; margin-top: 2px; }
-  .header .tipo { display: inline-block; margin-top: 4px; font-size: 7px; font-weight: 700; padding: 2px 8px; border-radius: 4px; text-transform: uppercase; }
-  .header .tipo.op { color: #a5b4fc; background: rgba(99,102,241,0.2); }
-  .header .tipo.rec { color: #6ee7b7; background: rgba(16,185,129,0.2); }
+  .header { background: linear-gradient(135deg,#0f172a,#1e3a5f); color: #fff; border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
+  .header .hd-tbl { width: 100%; border-collapse: collapse; }
+  .header .hd-tbl td { vertical-align: middle; padding: 0; }
+  .header .eyebrow { font-size: 6.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #94a3b8; }
+  .header h1 { font-size: 15px; font-weight: 800; color: #fbbf24; margin-top: 2px; line-height: 1.15; }
+  .header .data { font-size: 9.5px; font-weight: 700; color: #e2e8f0; margin-top: 4px; }
+  .header .hd-meta { text-align: right; width: 36%; }
+  .header .tipo { display: inline-block; font-size: 6.5px; font-weight: 700; padding: 2px 8px; border-radius: 4px; text-transform: uppercase; }
+  .header .tipo.op { color: #c7d2fe; background: rgba(99,102,241,0.28); }
+  .header .tipo.rec { color: #6ee7b7; background: rgba(16,185,129,0.22); }
+  .header .gerado { font-size: 6.5px; color: #94a3b8; margin-top: 5px; }
   .banner { background: linear-gradient(135deg,#fffbeb,#fef3c7); border: 1px solid #fde68a; border-radius: 8px; padding: 6px 8px; margin-bottom: 8px; font-size: 7.5px; color: #92400e; }
   .tbl-layout { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
   .tbl-layout td { vertical-align: top; padding: 0; }
@@ -274,6 +279,9 @@ export interface ViagemPesoRotaPdf {
   semPesagem?: boolean;
   horasProdutivasViagem: number;
   horasProdutivasRota: number;
+  horasTotaisRota?: number;
+  kmTotalRota?: number;
+  kmViagem?: number;
   origemHora: 'trecho' | 'rateio';
   tempoEqEncher: number | null;
   estimado: boolean;
@@ -389,7 +397,15 @@ function agruparViagensPesoPdf(itens: ViagemPesoRotaPdf[]) {
   return Array.from(mapa.values()).map((g) => {
     g.viagens.sort((a, b) => a.nViagem - b.nViagem);
     const horas = g.viagens.reduce((s, v) => s + (v.horasProdutivasViagem || 0), 0);
-    return { ...g, horasProdutivasRota: Math.round(horas * 100) / 100 };
+    const horasTotaisRota = Math.max(...g.viagens.map((v) => v.horasTotaisRota || 0), 0);
+    const kmLinha = Math.max(...g.viagens.map((v) => v.kmTotalRota || 0), 0);
+    const kmSlots = g.viagens.reduce((s, v) => s + (v.kmViagem || 0), 0);
+    return {
+      ...g,
+      horasProdutivasRota: Math.round(horas * 100) / 100,
+      horasTotaisRota: Math.round(horasTotaisRota * 100) / 100,
+      kmTotalRota: Math.round((kmLinha > 0 ? kmLinha : kmSlots) * 100) / 100,
+    };
   }).sort((a, b) => a.rota.localeCompare(b.rota, 'pt-BR') || a.placa.localeCompare(b.placa, 'pt-BR'));
 }
 
@@ -470,7 +486,7 @@ function blocoViagensPesoRotaHtml(itens?: ViagemPesoRotaPdf[] | null): string {
       <div class="vg-item">
         <table class="vg-hd-tbl"><tr>
           <td><strong>Viagem ${v.nViagem}</strong> ${semPeso ? '' : badgeStatusViagemHtml(v.pctIdeal)}</td>
-          <td class="r"><span class="vg-hora">${fmtNum(v.horasProdutivasViagem, 1)} h produtivas</span>${pill}</td>
+          <td class="r"><span class="vg-hora">${fmtNum(v.horasProdutivasViagem, 1)} h produtivas</span>${(v.kmViagem || 0) > 0 ? `<span class="vg-hora" style="background:#e0e7ff;color:#3730a3">${fmtNum(v.kmViagem || 0, 0)} km</span>` : ''}${pill}</td>
         </tr></table>
         <div class="bar-row">
           <div class="bar-track" style="height:10px"><span class="bar-fill" style="width:${pct}%;background:${cor};height:10px"></span></div>
@@ -484,6 +500,8 @@ function blocoViagensPesoRotaHtml(itens?: ViagemPesoRotaPdf[] | null): string {
     return `
     <div class="bloco" style="margin-bottom:6px">
       <div class="bloco-hd">${esc(g.rota)} · ${esc(g.placa)}${tipo}
+        ${g.kmTotalRota > 0 ? ` · ${fmtNum(g.kmTotalRota, 0)} km` : ''}
+        ${g.horasTotaisRota > 0 ? ` · ${fmtNum(g.horasTotaisRota, 1)} h totais` : ''}
         · ${fmtNum(g.horasProdutivasRota, 1)} h produtivas
         · ${g.viagens.length} viagem(ns)${mixTxt ? ` · ${mixTxt}` : ''}
       </div>
@@ -832,12 +850,20 @@ function blocoIndicadoresDiaHtml(
   dens?: number | null,
 ): string {
   const densFmt = resolverDensidadeResiduoKgL(cenario?.densidadeKgL ?? dens);
+  const tonH = op.horas > 0 ? op.toneladas / op.horas : 0;
+  const kmH = op.horas > 0 ? op.km / op.horas : 0;
   const cards: { label: string; valor: string; cor: string }[] = [
     { label: 'Viagens', valor: fmtNum(op.viagens, 0), cor: '#6366f1' },
     { label: 'Toneladas', valor: `${fmtNum(op.toneladas, 1)} t`, cor: '#16a34a' },
     { label: 't / viagem', valor: `${fmtNum(op.tonMediaColeta, 2)} t`, cor: '#0891b2' },
     { label: 'Caminhões', valor: fmtNum(op.caminhoes ?? op.coletores, 0), cor: '#7c3aed' },
   ];
+  if (op.horas > 0) {
+    cards.push(
+      { label: 'Ton./hora', valor: `${fmtNum(tonH, 2)} t/h`, cor: '#8b5cf6' },
+      { label: 'Veloc. operacional', valor: `${fmtNum(kmH, 1)} km/h`, cor: '#0f766e' },
+    );
+  }
   if (cenario && cenario.pesoIdealKg > 0) {
     cards.push(
       { label: '% ideal frota', valor: `${fmtNum(cenario.ocupacaoVsIdealPct ?? 0, 0)}%`, cor: '#5b21b6' },
@@ -1202,7 +1228,16 @@ function blocoOperacao(opts: {
   trechosPorRota?: TrechosDimensaoPdf[] | null;
   baselineDia?: BaselineDia | null;
 }): string {
-  const op = opts.operacao.resumo;
+  const op = { ...opts.operacao.resumo };
+  const horasJornada = Number(opts.mapeamentoResumo?.horasProdutivas || 0);
+  if (horasJornada > 0) op.horas = horasJornada;
+  const kmMapeamento = Number(opts.mapeamentoResumo?.kmTotal || opts.mapeamentoResumo?.kmProdutivo || 0);
+  if (!(op.km > 0) && kmMapeamento > 0) op.km = kmMapeamento;
+  if (!(op.km > 0) && opts.viagensPesoRota?.length) {
+    const kmDasRotas = agruparViagensPesoPdf(opts.viagensPesoRota)
+      .reduce((s, g) => s + (g.kmTotalRota || 0), 0);
+    if (kmDasRotas > 0) op.km = kmDasRotas;
+  }
   const limOpts: OptsAnaliseContratoDia = {
     limitesPesoKg: opts.limitesPesoKg,
     volumeL: opts.volumeL,
@@ -1217,17 +1252,11 @@ function blocoOperacao(opts: {
     opts.placasReserva,
   );
   const frotaReservaTxt = opts.placasReserva?.length
-    ? ` · ${frota.titulares} titular${frota.titulares !== 1 ? 'es' : ''}${frota.reserva > 0 ? ` + ${frota.reserva} reserva` : ''}`
+    ? `${frota.titulares} titular${frota.titulares !== 1 ? 'es' : ''}${frota.reserva > 0 ? ` + ${frota.reserva} reserva` : ''}`
     : '';
 
   return `
-  <div class="banner op">
-    <strong>${fmtNum(op.viagens, 0)} viagem${op.viagens !== 1 ? 's' : ''}</strong>
-    em ${esc(formatarIsoParaBr(opts.dataIso))}
-    · ${opts.operacao.registrosConsiderados} registro${opts.operacao.registrosConsiderados !== 1 ? 's' : ''}
-    · ${op.caminhoes ?? op.coletores} caminhão${(op.caminhoes ?? op.coletores) !== 1 ? 'es' : ''}${frotaReservaTxt}
-  </div>
-
+  ${frotaReservaTxt ? `<p style="font-size:7px;color:#64748b;margin:0 0 6px">Frota: ${esc(frotaReservaTxt)}</p>` : ''}
   ${blocoIndicadoresDiaHtml(op, opts.cenarioCaixaMedia, opts.densidadeResiduoKgL)}
   ${blocoReguaTemporalHtml(opts.baselineDia)}
   ${blocoGraficoViagemPorTipoHtml(opts.operacao, limOpts)}
@@ -1312,6 +1341,38 @@ function blocoReceita(opts: { receita: ReceitaDiaAnalise; dataIso: string }): st
 }
 
 /** PDF do dia — somente a aba Operação ou Receita ativa. */
+function diaSemanaCabecalho(dia: string): string {
+  if (/feira$/i.test(dia) || /s[áa]bado|domingo/i.test(dia)) return dia;
+  if (/^(segunda|terça|terca|quarta|quinta|sexta)$/i.test(dia)) return `${dia}-feira`;
+  return dia;
+}
+
+function cabecalhoRelatorioHtml(opts: {
+  servicoNome: string;
+  titulo: string;
+  selo: string;
+  variante: 'op' | 'rec';
+  dataIso: string;
+  diaSemana: string;
+  dataGeracao: string;
+  horaGeracao: string;
+}): string {
+  return `
+  <div class="header">
+    <table class="hd-tbl"><tr>
+      <td>
+        <div class="eyebrow">${esc(opts.servicoNome)}</div>
+        <h1>${esc(opts.titulo)}</h1>
+        <div class="data">${esc(formatarIsoParaBr(opts.dataIso))} · ${esc(diaSemanaCabecalho(opts.diaSemana))}</div>
+      </td>
+      <td class="hd-meta">
+        <div class="tipo ${opts.variante}">${esc(opts.selo)}</div>
+        <div class="gerado">Gerado em ${esc(opts.dataGeracao)} às ${esc(opts.horaGeracao)}</div>
+      </td>
+    </tr></table>
+  </div>`;
+}
+
 export function gerarHtmlRelatorioDia(opts: {
   aba: AbaRelatorioDia;
   servicoNome: string;
@@ -1340,13 +1401,12 @@ export function gerarHtmlRelatorioDia(opts: {
   const { aba, servicoNome, dataIso, diaSemana, operacao, receita } = opts;
   const gerado = opts.geradoEm ?? new Date();
   const stamp = gerado.getTime();
-  const dataGeracao = gerado.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' });
+  const dataGeracao = gerado.toLocaleDateString('pt-BR');
   const horaGeracao = gerado.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 
   const ehReceita = aba === 'receita';
   const tituloAba = ehReceita ? 'Relatório de Receita do dia' : 'Relatório de Operação do dia';
   const tituloPagina = ehReceita ? 'Receita' : 'Operação';
-  const classeTipo = ehReceita ? 'rec' : 'op';
 
   const corpo = ehReceita
     ? blocoReceita({ receita: receita!, dataIso })
@@ -1384,12 +1444,16 @@ export function gerarHtmlRelatorioDia(opts: {
   <style>${ESTILOS}</style>
 </head>
 <body>
-  <div class="header">
-    <h1>${esc(servicoNome)}</h1>
-    <div class="sub">${esc(formatarIsoParaBr(dataIso))} · ${esc(diaSemana)}</div>
-    <div class="tipo ${classeTipo}">${esc(tituloAba)}</div>
-    <div class="sub" style="margin-top:4px">Gerado ${dataGeracao} às ${horaGeracao}</div>
-  </div>
+  ${cabecalhoRelatorioHtml({
+    servicoNome,
+    titulo: ehReceita ? 'Receita do dia' : 'Operação do dia',
+    selo: ehReceita ? 'Receita' : 'Diário',
+    variante: ehReceita ? 'rec' : 'op',
+    dataIso,
+    diaSemana,
+    dataGeracao,
+    horaGeracao,
+  })}
   ${corpo}
   <div class="footer">
     Sistemma · ${esc(tituloAba)} · ${footerExtra} · ${esc(formatarIsoParaBr(dataIso))}

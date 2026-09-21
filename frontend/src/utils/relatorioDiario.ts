@@ -378,7 +378,7 @@ export function agruparCicloPorDiaFromApi(
   void valorToco;
   void valorBasculante;
 
-  const mapa = consolidarDiasApi(diasApi);
+  const mapa = consolidarDiasApi(Array.isArray(diasApi) ? diasApi : []);
   const todasDatas = listarDatasIntervalo(dataInicio, dataFim);
   if (!todasDatas.length) {
     return {

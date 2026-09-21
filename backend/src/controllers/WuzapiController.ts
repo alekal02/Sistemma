@@ -307,7 +307,7 @@ export class WuzapiController {
         nomeGrupo: nomeGrupo || null,
         servicoId,
         estrategia: estrategia || 'atualizar_data',
-        responderPdf: responderPdf !== false,
+        responderPdf: responderPdf === true,
         ativo: ativo !== false,
       });
       const salvo = await repo.save(criado);

@@ -3,10 +3,15 @@ import PlanilhaService from '../services/PlanilhaService';
 import DeduplicacaoService from '../services/DeduplicacaoService';
 import RocadaImportService from '../services/rocadaImportService';
 import ServicosUnificadosImportService from '../services/servicosUnificadosImportService';
+import ConsolidadoProducaoImportService from '../services/consolidadoProducaoImportService';
 import {
   detectarPlanilhaServicosUnificados,
   TIPOS_ACEITA_UNIFICADO,
 } from '../services/servicosUnificadosPlanilhaParser';
+import {
+  detectarPlanilhaConsolidadoProducao,
+  TIPOS_ACEITA_CONSOLIDADO,
+} from '../services/consolidadoProducaoPlanilhaParser';
 import QualidadeDadosService from '../services/QualidadeDadosService';
 import { analisarQualidadePlanilha } from '../services/QualidadePlanilhaPreviewService';
 import AppDataSource from '../database/data-source';
@@ -104,6 +109,44 @@ export class ColetaController {
       const { classificarPlanilhaContrato } = await import('../services/planilhaContratoClassifier');
       const { obterServicoPorTipoContrato } = await import('../services/servicosPadraoContratoService');
       const classificacao = classificarPlanilhaContrato(file.buffer);
+
+      if (classificacao.tipo === 'consolidado_producao') {
+        const resultado = await ConsolidadoProducaoImportService.importarPorContrato(
+          file.buffer,
+          file.originalname,
+          contractId,
+          usuarioIdValido ?? undefined,
+          substituir,
+        );
+
+        const partes = resultado.splitPorServico.map((s) => {
+          const und = resultado.porTipo.find((p) => p.tipoSistema === s.tipoSistema)?.undPrincipal || '';
+          return `${s.servicoNome}: ${s.importados} reg. (${s.quantitativoTotal.toLocaleString('pt-BR')}${und ? ' ' + und : ''})`;
+        });
+        let mensagem = `Produção importada: ${resultado.importados} registro(s). ${partes.join(' · ')}`;
+        if (resultado.tiposSemServico.length) {
+          mensagem += ` (${resultado.tiposSemServico.map((t) => `${t.registros} ${t.tipoSistema} sem serviço`).join(', ')})`;
+        }
+        const avisoCiclo = (resultado.avisos || []).find((a) => a.includes('ciclo já fechado') || a.includes('ciclo anterior'));
+        if (avisoCiclo) mensagem += ` ${avisoCiclo}`;
+
+        for (const s of resultado.splitPorServico || []) {
+          if (s.importados > 0) {
+            await tentarMergePlacasContrato(s.servicoId, s.planilhaUploadId);
+          }
+        }
+
+        invalidarCacheSaudeContratos(contractId);
+        res.json({
+          sucesso: true,
+          tipoDetectado: classificacao.tipo,
+          tipoDetectadoLabel: classificacao.label,
+          ...resultado,
+          importadas: resultado.importados,
+          mensagem,
+        });
+        return;
+      }
 
       if (classificacao.tipo === 'unificado') {
         const resultado = await ServicosUnificadosImportService.importarPorContrato(
@@ -216,7 +259,7 @@ export class ColetaController {
       }
 
       res.status(400).json({
-        error: 'Não foi possível identificar o tipo da planilha. Use layout unificado (DATA/UND/QUANTITATIVO/TIPO DE SERVIÇO), Coleta (PLACA/PESO) ou Roçada legada.',
+        error: 'Não foi possível identificar o tipo da planilha. Use CONSOLIDADO (SERVIÇO/DATA/QUANTIDADE), layout unificado (TIPO DE SERVIÇO), Coleta (PLACA/PESO) ou Roçada legada.',
         tipoDetectado: classificacao.tipo,
         tipoDetectadoLabel: classificacao.label,
       });
@@ -259,14 +302,58 @@ export class ColetaController {
       // Validar usuarioId contra o banco (evita FK violation se banco foi resetado)
       const usuarioIdValido = await this.validarUsuarioId(req.usuario?.id);
 
-      // Layout unificado (DATA|UND|QUANTITATIVO|TIPO DE SERVIÇO) — pipeline próprio.
-      // NÃO altera o fluxo de roçada legado: só entra se o cabeçalho unificado for detectado.
+      // CONSOLIDADO Power Query e layout unificado legado — pipelines próprios.
       if (servico_id) {
         const servicoRepo = AppDataSource.getRepository(Servico);
         const servicoTipo = await servicoRepo.findOne({
           where: { id: servico_id },
-          select: ['id', 'tipo', 'nome'],
+          select: ['id', 'tipo', 'nome', 'contract_id'],
         });
+
+        if (servicoTipo && detectarPlanilhaConsolidadoProducao(file.buffer)) {
+          const temPlanilhaAnterior = await AppDataSource.getRepository(PlanilhaUpload).count({
+            where: { servico_id },
+          });
+          const substituirCons = temPlanilhaAnterior > 0 || estrategiaRaw === 'atualizar_data';
+          const resultadoCons = TIPOS_ACEITA_CONSOLIDADO.has(String(servicoTipo.tipo))
+            ? await ConsolidadoProducaoImportService.importar(
+              file.buffer,
+              file.originalname,
+              servico_id,
+              usuarioIdValido ?? undefined,
+              substituirCons,
+            )
+            : await ConsolidadoProducaoImportService.importarPorContrato(
+              file.buffer,
+              file.originalname,
+              servicoTipo.contract_id,
+              usuarioIdValido ?? undefined,
+              substituirCons,
+            );
+
+          const partes = resultadoCons.splitPorServico.map((s) => {
+            const und = resultadoCons.porTipo.find((p) => p.tipoSistema === s.tipoSistema)?.undPrincipal || '';
+            return `${s.servicoNome}: ${s.importados} reg. (${s.quantitativoTotal.toLocaleString('pt-BR')}${und ? ' ' + und : ''})`;
+          });
+          let mensagem = `Produção importada: ${resultadoCons.importados} registro(s). ${partes.join(' · ')}`;
+          if (resultadoCons.tiposSemServico.length) {
+            mensagem += ` (${resultadoCons.tiposSemServico.map((t) => `${t.registros} ${t.tipoSistema} sem serviço`).join(', ')})`;
+          }
+
+          for (const s of resultadoCons.splitPorServico || []) {
+            if (s.importados > 0) {
+              await tentarMergePlacasContrato(s.servicoId, s.planilhaUploadId);
+            }
+          }
+
+          res.json({
+            sucesso: true,
+            ...resultadoCons,
+            importadas: resultadoCons.importados,
+            mensagem,
+          });
+          return;
+        }
 
         if (
           servicoTipo
@@ -509,12 +596,40 @@ export class ColetaController {
         return;
       }
 
+      const ehConsolidado = detectarPlanilhaConsolidadoProducao(file.buffer);
+      if (ehConsolidado) {
+        const preview = ConsolidadoProducaoImportService.preview(file.buffer);
+        const podeImportar = preview.resumo.podeImportar;
+        const partes = preview.porTipo.map((p) =>
+          `${p.tipoLabel}: ${p.registros} reg. (${p.quantitativoTotal.toLocaleString('pt-BR')}${p.undPrincipal ? ' ' + p.undPrincipal : ''})`,
+        );
+        const mensagem = podeImportar
+          ? `Produção: ${preview.resumo.registros} registro(s). ${partes.join(' · ')}. Cada aba vira um serviço no contrato.`
+          : (preview.avisos[0] || 'Nenhuma linha válida na aba CONSOLIDADO.');
+
+        res.json({
+          sucesso: podeImportar,
+          ehUnificado: true,
+          ehConsolidadoProducao: true,
+          arquivo: file.originalname,
+          mensagem,
+          modelo: preview.modelo,
+          modeloLabel: preview.resumo.modeloLabel,
+          abasUsadas: preview.abasUsadas,
+          avisos: preview.avisos,
+          porTipo: preview.porTipo,
+          podeImportar,
+          resumo: preview.resumo,
+        });
+        return;
+      }
+
       const ehUnificado = detectarPlanilhaServicosUnificados(file.buffer);
       if (!ehUnificado) {
         res.json({
           sucesso: false,
           ehUnificado: false,
-          mensagem: 'Planilha não está no layout unificado (DATA, UND, QUANTITATIVO, TIPO DE SERVIÇO).',
+          mensagem: 'Planilha não está no layout CONSOLIDADO (SERVIÇO/QUANTIDADE) nem unificado (TIPO DE SERVIÇO).',
         });
         return;
       }

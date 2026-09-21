@@ -30,7 +30,7 @@ $envFile = Join-Path $DeployDir "env.docker.example"
 
 $instrucoes = Join-Path $DeployDir "INSTRUCOES-WHATSAPP.txt"
 if (Test-Path $instrucoes) {
-    (Get-Content $instrucoes -Raw) -replace 'TAG=2\.3\.\d+', "TAG=$Tag" | Set-Content $instrucoes -NoNewline
+    (Get-Content $instrucoes -Raw) -replace 'TAG=\d+\.\d+\.\d+', "TAG=$Tag" | Set-Content $instrucoes -NoNewline
 }
 
 Compress-Archive -Path "$DeployDir\*" -DestinationPath "dist\deploy.zip" -Force

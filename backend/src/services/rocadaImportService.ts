@@ -32,6 +32,7 @@ import { recalcularTotaisDiaServicoSilencioso } from './coletaTotaisDiaService';
 import { invalidarCacheSaudeContratos } from '../controllers/ContractController';
 import { dashboardCache } from './DashboardCacheManager';
 import { agendarWarmupPosUpload } from './executivoCacheWarmupService';
+import { persistirArquivoOriginalUpload } from './planilhaOriginalStorage';
 
 export interface ResultadoImportRocadaServico {
   servicoId: string;
@@ -165,12 +166,13 @@ class RocadaImportService {
     substituirPorData: boolean;
     parsedMeta: Pick<ResultadoParseRocada, 'modelo' | 'abasUsadas' | 'totalLinhasBrutas'>;
     filtroTipo: 'manual' | 'mecanizada' | null;
+    buffer: Buffer;
   }): Promise<ResultadoImportRocadaServico & {
     datasApagadas: { data: string; registrosRemovidos: number }[];
     uploadsRemovidosIds: number[];
     avisosCiclo: string[];
   }> {
-    const { servico, linhas: linhasBrutas, nomeArquivo, usuarioId, substituirPorData, parsedMeta, filtroTipo } = opts;
+    const { servico, linhas: linhasBrutas, nomeArquivo, usuarioId, substituirPorData, parsedMeta, filtroTipo, buffer } = opts;
     const servicoId = servico.id;
     const datasTodas = [...new Set(
       linhasBrutas
@@ -206,6 +208,11 @@ class RocadaImportService {
       resumo: null,
     });
     const uploadSalvo = await this.uploadRepo.save(upload);
+    const dataOp = [...new Set(
+      linhas.map((l) => (l.dataSaida ? l.dataSaida.toISOString().slice(0, 10) : null)).filter((d): d is string => !!d),
+    )].sort().pop();
+    const urlOriginal = await persistirArquivoOriginalUpload(uploadSalvo.id, buffer, nomeArquivo, dataOp);
+    if (urlOriginal) uploadSalvo.urlDownload = urlOriginal;
 
     const datasApagadas: { data: string; registrosRemovidos: number }[] = [];
     const uploadIds = await obterUploadIdsModificaveis(servicoId);
@@ -403,6 +410,7 @@ class RocadaImportService {
           substituirPorData,
           parsedMeta: meta,
           filtroTipo: 'manual',
+          buffer,
         });
         const rMec = await this.persistirLinhasEmServico({
           servico: alvos.mecanizada,
@@ -412,6 +420,7 @@ class RocadaImportService {
           substituirPorData,
           parsedMeta: meta,
           filtroTipo: 'mecanizada',
+          buffer,
         });
 
         const splitPorServico: ResultadoImportRocadaServico[] = [
@@ -485,6 +494,7 @@ class RocadaImportService {
       substituirPorData,
       parsedMeta: meta,
       filtroTipo,
+      buffer,
     });
 
     const avisos = [...parsed.avisos, ...r.avisosCiclo];

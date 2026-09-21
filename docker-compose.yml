@@ -14,6 +14,9 @@
 # Erros comuns:
 #   "path backend not found" — remova docker-compose.dev.yml da pasta destino
 #   "no matching manifest linux/amd64" — republique: .\publicar.ps1 -Tag X
+#   "pull access denied for minio/minio" — não precisa puxar MinIO/Postgres.
+#     docker compose pull backend frontend
+#     docker compose up -d --force-recreate backend frontend
 #
 # DEV (build local — requer packages/shared, backend/ e frontend/):
 #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
@@ -24,7 +27,7 @@ name: sistemma
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: docker.io/library/postgres:16-alpine
     container_name: sistemma-postgres
     restart: unless-stopped
     command: >
@@ -51,7 +54,7 @@ services:
       - sistemma-net
 
   minio:
-    image: minio/minio:latest
+    image: quay.io/minio/minio:latest
     container_name: sistemma-minio
     restart: unless-stopped
     command: server /data --console-address ":9001"
@@ -73,7 +76,7 @@ services:
 
   # ─── WuzAPI (WhatsApp) — sobe junto com o Sistemma ───
   wuzapi-db:
-    image: postgres:16-alpine
+    image: docker.io/library/postgres:16-alpine
     container_name: sistemma-wuzapi-db
     restart: unless-stopped
     environment:
@@ -91,7 +94,7 @@ services:
       - sistemma-net
 
   wuzapi:
-    image: asternic/wuzapi:latest
+    image: docker.io/asternic/wuzapi:latest
     platform: linux/amd64
     container_name: sistemma-wuzapi
     restart: unless-stopped
@@ -189,6 +192,7 @@ services:
       WUZAPI_WEBHOOK_SECRET: ${WUZAPI_WEBHOOK_SECRET:-}
       WUZAPI_TIMEOUT_MS: ${WUZAPI_TIMEOUT_MS:-120000}
       WUZAPI_INSTANCE_NAME: ${WUZAPI_INSTANCE_NAME:-Sistemma}
+      PLANILHAS_BACKUP_HOST_DIR: ${PLANILHAS_BACKUP_HOST_DIR:-./planilhas-ciclo}
       # Vazio = integração desligada. Preencha no .env só onde o Manu existir.
       MANU_WEBHOOK_URL: ${MANU_WEBHOOK_URL:-}
       MANU_CHATBOT_SECRET: ${MANU_CHATBOT_SECRET:-}
@@ -206,9 +210,7 @@ services:
       retries: 5
     volumes:
       - uploads_data:/app/uploads
-      # Pasta de backup das planilhas ao fechar ciclo (host → container)
-      # Host: crie C:\Sistemma\planilhas-ciclo\NomeDoContrato
-      # No contrato cole: /data/planilhas-ciclo/NomeDoContrato
+      # Pasta na raiz do Docker (C:\Sistemma\planilhas-ciclo\{contrato}\{datas}.xlsx)
       - ${PLANILHAS_BACKUP_HOST_DIR:-./planilhas-ciclo}:/data/planilhas-ciclo
     networks:
       - sistemma-net

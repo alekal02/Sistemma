@@ -13,24 +13,35 @@
    ============================================ */
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   FiPlus, FiTrash2, FiArrowLeft,
   FiAlertCircle, FiCheck, FiX,
   FiDatabase, FiBarChart2, FiRefreshCw,
   FiClock, FiSettings, FiFolder,
-  FiUpload, FiDollarSign, FiTruck, FiUsers, FiMessageSquare,
+  FiUpload, FiDollarSign, FiTruck, FiUsers, FiMessageSquare, FiFileText,
 } from 'react-icons/fi';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { useBreadcrumbs } from '../contexts/BreadcrumbContext';
 import type { EtapasStatus } from '../components/ServicoMiniFlow';
 import ContratoOperacaoUnificada from '../components/ContratoOperacaoUnificada';
+import RelatoriosMenu from '../components/RelatoriosMenu';
+import { relatoriosDoContexto } from '../relatorios/catalogoRelatorios';
 import DataTable from '../components/DataTable';
 import { TIPOS_SERVICO, TIPOS_SERVICO_LABELS, TIPOS_SERVICO_OPCOES, TIPOS_SERVICO_META } from '../types';
 import type { TipoServico } from '../types';
 import contractService from '../services/contractService';
 import servicoService from '../services/servicoService';
+import pdfService from '../services/pdfService';
+import { gerarHtmlRelatorioCicloConsolidado } from '../utils/gerarHtmlRelatorioCicloConsolidado';
+import { gerarNomePdfRelatorioCicloConsolidado } from '../utils/gerarNomePdf';
+import {
+  calcularCicloMensalContrato,
+  inferirMesReferenciaAtual,
+  normalizarDiaInicioCiclo,
+  recortarPeriodoAteReferencia,
+} from '../utils/periodoCicloContrato';
 
 const ORDEM_TIPOS_PADRAO = [
   'coleta_caminhao',
@@ -44,25 +55,56 @@ const ORDEM_TIPOS_PADRAO = [
 
 const TIPOS_PADRAO_CONTRATO = new Set<string>(ORDEM_TIPOS_PADRAO);
 
-/** Um card por tipo padrão (mantém o com mais registros); extras (geral etc.) passam todos. */
+function execucaoDoNomeServico(nome?: string): 'manual' | 'mecanizada' | null {
+  const n = String(nome || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase();
+  if (n.includes('MANUAL')) return 'manual';
+  if (n.includes('MECANIZ')) return 'mecanizada';
+  return null;
+}
+
+/**
+ * Mantém Varrição/Roçada Manual e Mecanizada como cards separados
+ * (são abas distintas da planilha padrão). Só esconde o card genérico
+ * vazio do mesmo tipo quando já existe a variante nomeada.
+ */
 function deduplicarServicosPadrao<T extends { tipo: string; nome?: string; totalRegistros?: number }>(lista: T[]): T[] {
-  const vistos = new Map<string, T>();
+  const porChave = new Map<string, T>();
   const extras: T[] = [];
+
   for (const s of lista) {
     if (!TIPOS_PADRAO_CONTRATO.has(s.tipo)) {
       extras.push(s);
       continue;
     }
-    const atual = vistos.get(s.tipo);
+    const exec = execucaoDoNomeServico(s.nome);
+    const chave = exec ? `${s.tipo}:${exec}` : s.tipo;
+    const atual = porChave.get(chave);
     if (!atual) {
-      vistos.set(s.tipo, s);
+      porChave.set(chave, s);
       continue;
     }
     const regAtual = Number(atual.totalRegistros || 0);
     const regNovo = Number(s.totalRegistros || 0);
-    if (regNovo > regAtual) vistos.set(s.tipo, s);
+    if (regNovo > regAtual) porChave.set(chave, s);
   }
-  return ordenarServicosPadrao([...vistos.values(), ...extras]);
+
+  const temVariante = new Set(
+    [...porChave.keys()].filter((k) => k.includes(':')).map((k) => k.split(':')[0]),
+  );
+
+  const visiveis = [...porChave.entries()]
+    .filter(([chave, s]) => {
+      if (chave.includes(':')) return true;
+      const tipo = chave;
+      if (!temVariante.has(tipo)) return true;
+      return Number(s.totalRegistros || 0) > 0;
+    })
+    .map(([, s]) => s);
+
+  return ordenarServicosPadrao([...visiveis, ...extras]);
 }
 
 function ordenarServicosPadrao<T extends { tipo: string; nome?: string }>(lista: T[]): T[] {
@@ -148,6 +190,7 @@ interface PlanilhaItem {
   totalLinhas: number;
   linhasImportadas: number;
   criadoEm: string;
+  urlDownload?: string | null;
 }
 
 function normalizarPlanilhasContrato(raw: unknown[] | undefined): PlanilhaItem[] {
@@ -161,6 +204,7 @@ function normalizarPlanilhasContrato(raw: unknown[] | undefined): PlanilhaItem[]
         totalLinhas: Number(u.totalLinhas ?? u.linhas ?? 0),
         linhasImportadas: Number(u.linhasImportadas ?? u.importados ?? 0),
         criadoEm: String(u.criadoEm ?? ''),
+        urlDownload: typeof u.urlDownload === 'string' ? u.urlDownload : null,
       };
     })
     .filter(u => Number.isFinite(u.id) && u.id > 0);
@@ -279,6 +323,7 @@ function buildConfigFaturamento(
 export default function ContratoDetalhe() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { token } = useAuth();
   const { adicionarToast } = useToast();
 
@@ -308,6 +353,17 @@ export default function ContratoDetalhe() {
   const [salvandoLimites, setSalvandoLimites] = useState(false);
   const [salvandoDensidade, setSalvandoDensidade] = useState(false);
   const [salvandoDensidadePlaca, setSalvandoDensidadePlaca] = useState(false);
+  const [exportandoCicloTodos, setExportandoCicloTodos] = useState(false);
+  const [dataRelatorio, setDataRelatorio] = useState('');
+  const abaHub = (['operacao', 'relatorios', 'config'].includes(searchParams.get('aba') || '')
+    ? searchParams.get('aba')
+    : 'operacao') as 'operacao' | 'relatorios' | 'config';
+  const setAbaHub = (aba: 'operacao' | 'relatorios' | 'config') => {
+    const next = new URLSearchParams(searchParams);
+    if (aba === 'operacao') next.delete('aba');
+    else next.set('aba', aba);
+    setSearchParams(next, { replace: true });
+  };
 
   // ─── Valores (modal de criação) ───
   const [tipoValor, setTipoValor] = useState<TipoValor>('caminhao');
@@ -340,7 +396,6 @@ export default function ContratoDetalhe() {
   const [nomeServico, setNomeServico] = useState('');
   const [tipoSelecionado, setTipoSelecionado] = useState<string>(TIPOS_SERVICO.COLETA_CAMINHAO);
   const [salvandoServico, setSalvandoServico] = useState(false);
-  const [configAberta, setConfigAberta] = useState(false);
   const [servicoRegistrosId, setServicoRegistrosId] = useState<string | null>(null);
 
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -355,23 +410,11 @@ export default function ContratoDetalhe() {
     if (!id) return;
     if (!opts?.silencioso) setCarregando(true);
     try {
-      // Contrato e lista primeiro: o POST de tipos padrão não precisa travar a tela
-      // quando o contrato já tem serviços. Só espera se a lista vier vazia.
       const [contratoData, listaRaw] = await Promise.all([
         contractService.buscar(id),
         servicoService.listarServicosContrato(id, { force: !opts?.aproveitarCache }),
       ]);
-      let lista = Array.isArray(listaRaw) ? listaRaw : (listaRaw as any)?.servicos || [];
-      if (lista.length === 0) {
-        try {
-          await servicoService.garantirServicosPadrao(id);
-          lista = await servicoService.listarServicosContrato(id);
-        } catch {
-          /* contrato inexistente ou rede — cards vazios abaixo */
-        }
-      } else {
-        void servicoService.garantirServicosPadrao(id).catch(() => undefined);
-      }
+      const lista = Array.isArray(listaRaw) ? listaRaw : (listaRaw as any)?.servicos || [];
 
       setContrato(contratoData);
       setPastaBackupPlanilhas(String(contratoData.configOperacional?.pastaBackupPlanilhas || '').trim());
@@ -693,6 +736,17 @@ export default function ContratoDetalhe() {
   const totalServicos = servicos.length;
   const totalRegistros = servicos.reduce((acc, s) => acc + (s.totalRegistros || 0), 0);
   const totalPlanilhas = servicos.reduce((acc, s) => acc + (s.planilhas?.length || 0), 0);
+  const enviosCiclo = (() => {
+    const datas = new Set<string>();
+    for (const s of servicos) {
+      for (const p of s.planilhas || []) {
+        const m = String(p.urlDownload || '').match(/diario\/(\d{4}-\d{2}-\d{2})/);
+        const dia = m?.[1] || String(p.criadoEm || '').slice(0, 10);
+        if (dia) datas.add(dia);
+      }
+    }
+    return datas.size || totalPlanilhas;
+  })();
   const ultimoUploadGeral = servicos
     .map(s => s.ultimoUpload)
     .filter(Boolean)
@@ -706,6 +760,17 @@ export default function ContratoDetalhe() {
   }).length;
 
   const temAlertas = servicosUploadPendente > 0 || servicosSemKpi > 0 || servicosDesatualizados > 0;
+
+  useEffect(() => {
+    if (dataRelatorio) return;
+    if (ultimoUploadGeral) {
+      setDataRelatorio(String(ultimoUploadGeral).slice(0, 10));
+      return;
+    }
+    const hoje = new Date();
+    const iso = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}-${String(hoje.getDate()).padStart(2, '0')}`;
+    setDataRelatorio(iso);
+  }, [ultimoUploadGeral, dataRelatorio]);
 
   const resetValoresModal = (tipoServico: string) => {
     setTipoValor(tipoValorPadrao(tipoServico));
@@ -885,6 +950,140 @@ export default function ContratoDetalhe() {
     }
   };
 
+  const metricaDoTipo = (
+    tipo: string,
+    d: {
+      rotas?: number;
+      viagens?: number;
+      pesoTotalTon?: number;
+      pesoTotalKg?: number;
+      kmTotal?: number;
+      areaM2?: number;
+      metroLinear?: number;
+      kmLinear?: number;
+      qtdArvore?: number;
+      quantitativo?: number;
+    },
+  ): { valor: number; und: string; extra?: string } => {
+    const t = String(tipo || '');
+    if (t === 'coleta_caminhao') {
+      const ton = Number(d.pesoTotalTon || 0) || Number(d.pesoTotalKg || 0) / 1000;
+      const extra = [
+        Number(d.viagens || 0) > 0 ? `${Number(d.viagens).toLocaleString('pt-BR')} viag.` : '',
+        Number(d.kmTotal || 0) > 0 ? `${Math.round(Number(d.kmTotal)).toLocaleString('pt-BR')} km` : '',
+      ].filter(Boolean).join(' · ');
+      return { valor: ton, und: 't', extra: extra || undefined };
+    }
+    if (t === 'rocadeira') return { valor: Number(d.areaM2 || d.quantitativo || 0), und: 'm²' };
+    if (t === 'varricao') return { valor: Number(d.kmLinear || d.quantitativo || 0), und: 'km' };
+    if (t === 'capina') {
+      if (Number(d.kmLinear || 0) > 0) return { valor: Number(d.kmLinear), und: 'km' };
+      return { valor: Number(d.metroLinear || d.quantitativo || 0), und: 'm' };
+    }
+    if (t === 'poda') return { valor: Number(d.qtdArvore || d.quantitativo || d.rotas || 0), und: 'arv' };
+    if (t === 'pintura_meio_fio') return { valor: Number(d.metroLinear || d.quantitativo || 0), und: 'm' };
+    return { valor: Number(d.quantitativo || d.qtdArvore || d.rotas || 0), und: 'pts' };
+  };
+
+  const exportarPdfCicloTodosServicos = async () => {
+    if (!id || !contrato) return;
+    if (exportandoCicloTodos) return;
+    setExportandoCicloTodos(true);
+    try {
+      const diaInicio = normalizarDiaInicioCiclo(contrato.diaInicioCiclo);
+      const ref = inferirMesReferenciaAtual(diaInicio);
+      const ciclo = calcularCicloMensalContrato(ref.ano, ref.mes, diaInicio);
+      const recorte = recortarPeriodoAteReferencia(ciclo.dataInicio, ciclo.dataFim);
+      const tipos: Array<{
+        tipo: string;
+        nome: string;
+        und: string;
+        registros: number;
+        quantitativo: number;
+        diasComDados: number;
+        dias: Array<{ data: string; registros: number; quantitativo: number }>;
+        extra?: string;
+      }> = [];
+      const avisos: string[] = [];
+
+      for (const s of servicos) {
+        const resumo = await servicoService.getResumoCicloPorDia(id, s.id, {
+          dataInicio: recorte.dataInicio,
+          dataFim: recorte.dataFim,
+        }, { abortKey: `pdf-ciclo-todos:${s.id}` });
+        const dias = (resumo.dias || [])
+          .map((d) => {
+            const m = metricaDoTipo(s.tipo, d);
+            return {
+              data: d.data,
+              registros: Number(d.rotas || 0),
+              quantitativo: m.valor,
+              und: m.und,
+            };
+          })
+          .filter((d) => d.registros > 0 || d.quantitativo > 0);
+        if (dias.length === 0) {
+          avisos.push(`${s.nome} — sem operação neste ciclo`);
+          continue;
+        }
+        const tot = dias.reduce(
+          (a, d) => ({ registros: a.registros + d.registros, quantitativo: a.quantitativo + d.quantitativo }),
+          { registros: 0, quantitativo: 0 },
+        );
+        const extra = metricaDoTipo(s.tipo, {
+          rotas: resumo.totais?.rotas,
+          viagens: resumo.totais?.viagens,
+          pesoTotalTon: resumo.totais?.pesoTotalTon,
+          pesoTotalKg: resumo.totais?.pesoTotalKg,
+          kmTotal: resumo.totais?.kmTotal,
+          areaM2: resumo.totais?.areaM2,
+          metroLinear: resumo.totais?.metroLinear,
+          kmLinear: resumo.totais?.kmLinear,
+          qtdArvore: resumo.totais?.qtdArvore,
+          quantitativo: resumo.totais?.quantitativo,
+        }).extra;
+        tipos.push({
+          tipo: s.tipo,
+          nome: s.nome,
+          und: dias[0].und,
+          registros: tot.registros,
+          quantitativo: tot.quantitativo,
+          diasComDados: dias.length,
+          dias: dias.map(({ data, registros, quantitativo }) => ({ data, registros, quantitativo })),
+          extra,
+        });
+      }
+
+      if (tipos.length === 0) {
+        adicionarToast('Nenhum serviço do contrato tem operação neste ciclo', 'warning');
+        return;
+      }
+
+      const html = gerarHtmlRelatorioCicloConsolidado({
+        contratoNome: contrato.numeroContrato,
+        cicloLabel: recorte.emAndamento
+          ? `${ciclo.label} — ${recorte.diasDecorridos} dias decorridos`
+          : ciclo.label,
+        dataInicio: recorte.dataInicio,
+        dataFim: recorte.dataFim,
+        tipos,
+        avisos,
+      });
+      const nomeArquivo = gerarNomePdfRelatorioCicloConsolidado({
+        contratoNome: contrato.numeroContrato,
+        dataInicio: recorte.dataInicio,
+        dataFim: recorte.dataFim,
+      });
+      await pdfService.gerarEBaixar(html, nomeArquivo, 'default', false);
+      adicionarToast(`PDF do ciclo com ${tipos.length} serviço(s) gerado`, 'success');
+    } catch (err) {
+      console.error('Erro PDF ciclo todos serviços:', err);
+      adicionarToast('Erro ao gerar o relatório do ciclo', 'error');
+    } finally {
+      setExportandoCicloTodos(false);
+    }
+  };
+
   /* ═══ Render: Carregando ═══ */
   if (carregando) {
     return (
@@ -935,7 +1134,7 @@ export default function ContratoDetalhe() {
         <div className="contrato-page-meta">
           <span><FiDatabase size={12} /> {totalServicos} serviços</span>
           <span><FiBarChart2 size={12} /> {totalRegistros.toLocaleString('pt-BR')} registros</span>
-          <span><FiUpload size={12} /> {totalPlanilhas} planilhas</span>
+          <span><FiUpload size={12} /> {totalPlanilhas > 0 ? `1 consolidado · ${enviosCiclo} envio${enviosCiclo === 1 ? '' : 's'}` : 'sem envios'}</span>
           <span>
             <FiClock size={12} />{' '}
             {ultimoUploadGeral ? new Date(ultimoUploadGeral).toLocaleDateString('pt-BR') : 'sem upload'}
@@ -943,7 +1142,65 @@ export default function ContratoDetalhe() {
         </div>
       </header>
 
-      {id && totalServicos > 0 && (
+      <nav className="contrato-hub-tabs" aria-label="Seções do contrato">
+        <button type="button" className={abaHub === 'operacao' ? 'is-on' : ''} onClick={() => setAbaHub('operacao')}>
+          Operação
+        </button>
+        <button type="button" className={abaHub === 'relatorios' ? 'is-on' : ''} onClick={() => setAbaHub('relatorios')}>
+          Relatórios
+        </button>
+        <button type="button" className={abaHub === 'config' ? 'is-on' : ''} onClick={() => setAbaHub('config')}>
+          Configuração
+        </button>
+      </nav>
+
+      {abaHub === 'relatorios' && (
+        <section className="contrato-relatorios-hub">
+          <div className="contrato-relatorios-bloco">
+            <h2>Ciclo do contrato</h2>
+            <p>PDF com todos os serviços do ciclo de medição.</p>
+            <RelatoriosMenu
+              opcoes={relatoriosDoContexto({ escopo: 'contrato' }).map((r) => ({
+                id: r.id,
+                label: r.label,
+                descricao: r.descricao,
+              }))}
+              marcados={['ciclo_contrato']}
+              onToggle={() => {}}
+              onGerar={() => { void exportarPdfCicloTodosServicos(); }}
+              gerando={exportandoCicloTodos}
+              disabled={totalServicos === 0}
+            />
+          </div>
+          <div className="contrato-relatorios-bloco">
+            <h2>Relatório do dia</h2>
+            <label className="contrato-relatorios-data">
+              Dia
+              <input
+                type="date"
+                value={dataRelatorio}
+                onChange={(e) => setDataRelatorio(e.target.value)}
+              />
+            </label>
+            <p>Abra o PDF do dia em cada serviço. No WhatsApp, peça com <code>dia 16/09</code>.</p>
+            <div className="contrato-relatorios-servicos">
+              {servicos.map((s) => (
+                <button
+                  key={s.id}
+                  type="button"
+                  className="btn btn-sm"
+                  disabled={!dataRelatorio}
+                  onClick={() => navigate(`/contratos/${id}/servicos/${s.id}/dia/${dataRelatorio}`)}
+                >
+                  <FiFileText size={12} /> {s.nome}
+                </button>
+              ))}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {abaHub === 'operacao' && id && totalServicos > 0 && (
         <ContratoOperacaoUnificada
           contractId={id}
           servicos={servicos}
@@ -952,7 +1209,7 @@ export default function ContratoDetalhe() {
         />
       )}
 
-      {temAlertas && (
+      {abaHub === 'operacao' && temAlertas && (
         <div className="contrato-page-alert">
           <FiAlertCircle size={14} />
           {[
@@ -963,23 +1220,16 @@ export default function ContratoDetalhe() {
         </div>
       )}
 
-      {/* Configurações avançadas — recolhidas por padrão */}
+      {abaHub === 'config' && (
       <section className="contrato-config-panel">
-        <button
-          type="button"
-          className="contrato-config-toggle"
-          onClick={() => setConfigAberta((v) => !v)}
-          aria-expanded={configAberta}
-        >
+        <div className="contrato-config-toggle" aria-hidden="true">
           <span>
             <FiSettings size={15} />
             Configurações do contrato
             <small>Ciclo, frota, limites e cadastro operacional</small>
           </span>
-          <span className="contrato-hub-collapse-chevron">{configAberta ? '−' : '+'}</span>
-        </button>
-        {configAberta && (
-          <div className="contrato-config-body">
+        </div>
+        <div className="contrato-config-body">
       <div className="contrato-config-grid-topo">
         <div className="contrato-config-mini">
           <label>
@@ -1005,13 +1255,14 @@ export default function ContratoDetalhe() {
             value={pastaBackupPlanilhas}
             disabled={salvandoPastaBackup}
             onChange={(e) => setPastaBackupPlanilhas(e.target.value)}
-            placeholder="vazio = planilhas-ciclo no repositório"
-            title="Deixe em branco para gravar em planilhas-ciclo na pasta do sistema. Caminho absoluto visto pelo backend."
+            placeholder="vazio = planilhas-ciclo/NumeroDoContrato na raiz do Docker"
+            title="No Docker o backup vai para C:\Sistemma\planilhas-ciclo\NumeroDoContrato. Este campo só vale no npm run dev."
           />
           <small className="contrato-config-hint">
-            Ao fechar o ciclo, a planilha é salva aqui. Se ficar vazio, usa
-            {' '}<code>planilhas-ciclo/NumeroDoContrato</code> no repositório (na sua máquina).
-            Em Docker o volume já aponta essa pasta para <code>/data/planilhas-ciclo</code>.
+            Ao fechar o ciclo, cria a pasta do contrato em
+            {' '}<code>planilhas-ciclo/NumeroDoContrato</code> na raiz do Docker
+            {' '}(<code>C:\Sistemma</code>) e salva a planilha com as datas do ciclo.
+            Não precisa preencher este campo na máquina Docker.
           </small>
           <button
             type="button"
@@ -1423,10 +1674,10 @@ export default function ContratoDetalhe() {
         </div>
       </div>
           </div>
-        )}
       </section>
+      )}
 
-      {totalServicos === 0 ? (
+      {abaHub === 'operacao' && (totalServicos === 0 ? (
         <div className="welcome-section">
           <div className="welcome-icon">
             <FiBarChart2 size={32} />
@@ -1465,7 +1716,6 @@ export default function ContratoDetalhe() {
               };
               const temUpload = (servico.totalRegistros || 0) > 0 || (servico.planilhas?.length || 0) > 0;
               const temKpi = etapas.config === 'done';
-              const ehPadraoContrato = TIPOS_PADRAO_CONTRATO.has(servico.tipo);
               const selecionado = servicoRegistrosId === servico.id;
               const statusCls = !temUpload ? 'is-empty' : temKpi ? 'is-ok' : 'is-warn';
 
@@ -1502,16 +1752,14 @@ export default function ContratoDetalhe() {
                     >
                       <FiSettings size={13} />
                     </button>
-                    {!ehPadraoContrato && (
-                      <button
-                        type="button"
-                        title="Excluir"
-                        className="is-danger"
-                        onClick={() => prepararExclusao(servico)}
-                      >
-                        <FiTrash2 size={13} />
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      title="Excluir tipo de serviço e dados"
+                      className="is-danger"
+                      onClick={() => prepararExclusao(servico)}
+                    >
+                      <FiTrash2 size={13} />
+                    </button>
                   </div>
                 </article>
               );
@@ -1571,7 +1819,7 @@ export default function ContratoDetalhe() {
           })()}
 
         </section>
-      )}
+      ))}
 
       {/* ══ MODAL CRIAÇÃO ══ */}
       {modalCriacaoAberto && (
@@ -1804,8 +2052,8 @@ export default function ContratoDetalhe() {
               <h3 id="titulo-excluir-servico">Excluir serviço?</h3>
               <p className="exclusao-sub">
                 {servicoExclusaoInfo.temDados
-                  ? 'Isso apaga o serviço, planilhas e registros do banco. Ação permanente.'
-                  : 'Este serviço ainda não tem dados importados. A exclusão é permanente.'}
+                  ? 'Isso apaga o tipo de serviço, planilhas, registros e totais do banco. Não será recriado ao reabrir o contrato.'
+                  : 'Este tipo ainda não tem dados importados. A exclusão é permanente e o card não volta sozinho.'}
               </p>
             </div>
 

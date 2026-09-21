@@ -31,6 +31,10 @@ export function unidadeOperacionalDoTipo(tipoServico?: string | null): UnidadeOp
       return { modo: 'km_linear', labelMetrica: 'KM linear', sufixo: 'km', semViagemColeta: true };
     case 'poda':
       return { modo: 'arvores', labelMetrica: 'Árvores', sufixo: 'arv', semViagemColeta: true };
+    case 'remocao':
+      return { modo: 'arvores', labelMetrica: 'Pontos', sufixo: 'pts', semViagemColeta: true };
+    case 'geral':
+      return { modo: 'arvores', labelMetrica: 'Pontos', sufixo: 'pts', semViagemColeta: true };
     case 'pintura_meio_fio':
       return { modo: 'metro_linear', labelMetrica: 'Metro linear', sufixo: 'm', semViagemColeta: true };
     default:

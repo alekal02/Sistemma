@@ -53,12 +53,107 @@ export interface LinhaRocadaAgrupada {
   areaM2: number;
 }
 
+export type StatusVsMediaRocada = 'acima' | 'na_media' | 'abaixo';
+
+export interface FrotaRocadaCiclo {
+  equipes: number;
+  equipamentos: number;
+  labelsEquipamento?: string[];
+}
+
+export interface LinhaProducaoUnidade extends LinhaRocadaAgrupada {
+  vsMedia: number;
+  status: StatusVsMediaRocada;
+}
+
+export interface ResumoProducaoUnidade {
+  unidadeSingular: string;
+  unidadePlural: string;
+  ativas: number;
+  frota: number;
+  total: number;
+  media: number;
+  ausentes: string[];
+  linhas: LinhaProducaoUnidade[];
+}
+
+function normalizarRotuloTipo(s: string): string {
+  return String(s || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .trim();
+}
+
+export function equipeEhApenasTipo(linhas: LinhaRocadaAgrupada[]): boolean {
+  const uteis = (linhas || []).filter((l) => l.label && l.label !== 'Não informado' && l.areaM2 > 0);
+  if (uteis.length === 0) return true;
+  return uteis.every((l) => {
+    const n = normalizarRotuloTipo(l.label);
+    return n === 'MANUAL' || n === 'MECANIZADA' || n === 'ROCADA' || n === 'ROCAD';
+  });
+}
+
+function statusVsMedia(area: number, media: number): StatusVsMediaRocada {
+  if (!(media > 0)) return 'na_media';
+  if (area >= media * 1.1) return 'acima';
+  if (area <= media * 0.9) return 'abaixo';
+  return 'na_media';
+}
+
+/** Produção por trator (equipamento) ou equipe, com média do dia e cobertura da frota do ciclo. */
+export function resumirProducaoPorUnidade(opts: {
+  porEquipamento?: LinhaRocadaAgrupada[];
+  porEquipe?: LinhaRocadaAgrupada[];
+  frotaCiclo?: FrotaRocadaCiclo | null;
+  preferirTrator?: boolean;
+}): ResumoProducaoUnidade {
+  const equipeSoTipo = equipeEhApenasTipo(opts.porEquipe || []);
+  const equips = (opts.porEquipamento || []).filter((l) => l.label && l.label !== 'Não informado' && l.areaM2 > 0);
+  const equipes = (opts.porEquipe || []).filter((l) => l.label && l.label !== 'Não informado' && l.areaM2 > 0);
+  const usarTrator = Boolean(opts.preferirTrator || equips.length > 0 || equipeSoTipo);
+  const ativas = usarTrator ? equips : equipes;
+  const n = ativas.length;
+  const total = ativas.reduce((s, l) => s + Number(l.areaM2 || 0), 0);
+  const media = n > 0 ? total / n : 0;
+  const frotaInformada = usarTrator
+    ? Number(opts.frotaCiclo?.equipamentos || 0)
+    : Number(opts.frotaCiclo?.equipes || 0);
+  const frota = Math.max(frotaInformada, n);
+  const labelsFrota = usarTrator ? (opts.frotaCiclo?.labelsEquipamento || []) : [];
+  const presentes = new Set(ativas.map((l) => l.label));
+  const ausentes = labelsFrota.filter((lab) => lab && !presentes.has(lab));
+  return {
+    unidadeSingular: usarTrator ? 'trator' : 'equipe',
+    unidadePlural: usarTrator ? 'tratores' : 'equipes',
+    ativas: n,
+    frota,
+    total,
+    media,
+    ausentes,
+    linhas: [...ativas]
+      .sort((a, b) => b.areaM2 - a.areaM2)
+      .map((l) => ({
+        ...l,
+        vsMedia: media > 0 ? l.areaM2 / media : 1,
+        status: statusVsMedia(l.areaM2, media),
+      })),
+  };
+}
+
+export function labelStatusVsMedia(status: StatusVsMediaRocada): string {
+  if (status === 'acima') return 'Acima da média';
+  if (status === 'abaixo') return 'Abaixo da média';
+  return 'Na média';
+}
+
 export interface AnaliseRocadaDia {
   resumo: ResumoRocadaDia;
   porBairro: LinhaRocadaAgrupada[];
   porOperador: LinhaRocadaAgrupada[];
   porEquipe: LinhaRocadaAgrupada[];
   porEquipamento: LinhaRocadaAgrupada[];
+  frotaCiclo?: FrotaRocadaCiclo;
 }
 
 function agregar(

@@ -24,8 +24,9 @@ if [ -n "$MINIO_ENDPOINT" ]; then
   echo "MinIO disponivel."
 fi
 
-mkdir -p /app/uploads
+mkdir -p /app/uploads /data/planilhas-ciclo
 chown -R appuser:appgroup /app/uploads 2>/dev/null || true
+chown -R appuser:appgroup /data/planilhas-ciclo 2>/dev/null || true
 
 if [ -n "${WUZAPI_URL}" ] && [ -n "${WUZAPI_TOKEN}" ]; then
   echo "WuzAPI: configurada (URL=${WUZAPI_URL})"

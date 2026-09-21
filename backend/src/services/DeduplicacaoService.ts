@@ -23,6 +23,11 @@ import {
   prepararDatasImportacaoCiclo,
   verificarDatasEmCicloFechado,
 } from './cicloPlanilhaService';
+import {
+  marcarOrigemPlanilhaUpload,
+  persistirArquivoOriginalUpload,
+  type OrigemPlanilhaUpload,
+} from './planilhaOriginalStorage';
 import { limitarDiasAusentesAoPeriodoDaPlanilha, normalizarDiaInicioCiclo } from '../utils/periodoCicloContrato';
 import { invalidarCacheDadosServico } from './servicoDadosCache';
 import { invalidarCacheDashboardServico } from '../controllers/ServicoController';
@@ -769,7 +774,8 @@ export class DeduplicacaoService {
     nomeArquivo: string,
     estrategia: 'ignorar' | 'substituir',
     usuarioId?: string,
-    servicoId?: string
+    servicoId?: string,
+    origem?: OrigemPlanilhaUpload,
   ): Promise<ResultadoImportacaoDedup> {
     const linhas = this.parsearLinhas(buffer);
     await this.validarImportacaoNaoInvadeCicloFechado(servicoId, linhas);
@@ -797,7 +803,9 @@ export class DeduplicacaoService {
       },
     });
     const uploadSalvo = await this.uploadRepo.save(upload);
-
+    const urlOriginal = await persistirArquivoOriginalUpload(uploadSalvo.id, buffer, nomeArquivo);
+    if (urlOriginal) uploadSalvo.urlDownload = urlOriginal;
+    if (origem) await marcarOrigemPlanilhaUpload(uploadSalvo.id, origem);
     let importados = 0;
     let ignorados = 0;
     let substituidos = 0;
@@ -1280,7 +1288,8 @@ export class DeduplicacaoService {
     nomeArquivo: string,
     estrategia: 'atualizar_data' | 'inserir_data',
     usuarioId?: string,
-    servicoId?: string
+    servicoId?: string,
+    origem?: OrigemPlanilhaUpload,
   ): Promise<{
     planilhaUploadId: number;
     totalLinhas: number;
@@ -1348,6 +1357,14 @@ export class DeduplicacaoService {
       resumo: null,
     });
     const uploadSalvo = await this.uploadRepo.save(upload);
+    const urlOriginal = await persistirArquivoOriginalUpload(
+      uploadSalvo.id,
+      buffer,
+      nomeArquivo,
+      datasUnicas.length ? datasUnicas[datasUnicas.length - 1] : undefined,
+    );
+    if (urlOriginal) uploadSalvo.urlDownload = urlOriginal;
+    if (origem) await marcarOrigemPlanilhaUpload(uploadSalvo.id, origem);
 
     const datasApagadas: { data: string; registrosRemovidos: number }[] = [];
     const diasRemovidosAusentes: { data: string; registrosRemovidos: number }[] = [];

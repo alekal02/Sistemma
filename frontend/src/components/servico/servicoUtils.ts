@@ -68,6 +68,7 @@ export function normalizarPlanilhasUploads(raw: unknown[] | undefined): Planilha
         totalLinhas: Number(u.totalLinhas ?? u.linhas ?? 0),
         linhasImportadas: Number(u.linhasImportadas ?? u.importados ?? 0),
         criadoEm: String(u.criadoEm ?? ''),
+        urlDownload: typeof u.urlDownload === 'string' ? u.urlDownload : null,
       };
     })
     .filter(u => Number.isFinite(u.id) && u.id > 0);

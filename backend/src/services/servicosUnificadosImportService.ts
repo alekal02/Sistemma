@@ -31,6 +31,7 @@ import {
   type ResultadoParseServicosUnificados,
   type TipoServicoUnificado,
 } from './servicosUnificadosPlanilhaParser';
+import { persistirArquivoOriginalUpload } from './planilhaOriginalStorage';
 
 export interface ResultadoImportUnificadoServico {
   servicoId: string;
@@ -139,13 +140,14 @@ class ServicosUnificadosImportService {
     substituirPorData: boolean;
     totalLinhasBrutas: number;
     abasUsadas: string[];
+    buffer: Buffer;
   }): Promise<ResultadoImportUnificadoServico & {
     datasApagadas: { data: string; registrosRemovidos: number }[];
     uploadsRemovidosIds: number[];
     avisosCiclo: string[];
     datasIgnoradasCicloFechado: string[];
   }> {
-    const { servico, linhas: linhasBrutas, nomeArquivo, usuarioId, substituirPorData, totalLinhasBrutas, abasUsadas } = opts;
+    const { servico, linhas: linhasBrutas, nomeArquivo, usuarioId, substituirPorData, totalLinhasBrutas, abasUsadas, buffer } = opts;
     const datasTodas = [...new Set(
       linhasBrutas
         .map((l) => (l.dataSaida ? l.dataSaida.toISOString().slice(0, 10) : null))
@@ -196,6 +198,11 @@ class ServicosUnificadosImportService {
       resumo: null,
     });
     const uploadSalvo = await this.uploadRepo.save(upload);
+    const dataOp = [...new Set(
+      linhas.map((l) => (l.dataSaida ? l.dataSaida.toISOString().slice(0, 10) : null)).filter((d): d is string => !!d),
+    )].sort().pop();
+    const urlOriginal = await persistirArquivoOriginalUpload(uploadSalvo.id, buffer, nomeArquivo, dataOp);
+    if (urlOriginal) uploadSalvo.urlDownload = urlOriginal;
 
     const datasApagadas: { data: string; registrosRemovidos: number }[] = [];
     const uploadIds = await obterUploadIdsModificaveis(servico.id);
@@ -454,6 +461,7 @@ class ServicosUnificadosImportService {
         substituirPorData,
         totalLinhasBrutas: parsed.totalLinhasBrutas,
         abasUsadas: parsed.abasUsadas,
+        buffer,
       });
 
       splitPorServico.push({

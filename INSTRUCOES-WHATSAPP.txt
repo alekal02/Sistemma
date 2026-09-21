@@ -8,7 +8,7 @@ Passos:
 1. SUBSTITUA o docker-compose.yml pelo deste pacote (obrigatório)
 2. No .env:
 
-TAG=2.3.5
+TAG=4.0.4
 WUZAPI_TOKEN=sistemma_wuzapi_token_local
 WUZAPI_ADMIN_TOKEN=1234ABCD
 WUZAPI_INSTANCE_NAME=Sistemma

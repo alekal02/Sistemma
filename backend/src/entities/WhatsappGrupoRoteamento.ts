@@ -33,7 +33,7 @@ export class WhatsappGrupoRoteamento {
   @Column('varchar', { length: 30, default: 'atualizar_data' })
   estrategia!: string;
 
-  @Column('boolean', { default: true })
+  @Column('boolean', { default: false })
   responderPdf!: boolean;
 
   @CreateDateColumn()

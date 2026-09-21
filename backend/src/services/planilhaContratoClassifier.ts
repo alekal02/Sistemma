@@ -3,9 +3,15 @@
  */
 import * as XLSX from 'xlsx';
 import { detectarPlanilhaServicosUnificados } from './servicosUnificadosPlanilhaParser';
+import { detectarPlanilhaConsolidadoProducao } from './consolidadoProducaoPlanilhaParser';
 import { parsearPlanilhaRocada, resumoParseRocada } from './rocadaPlanilhaParser';
 
-export type TipoPlanilhaContrato = 'unificado' | 'rocada' | 'coleta' | 'desconhecido';
+export type TipoPlanilhaContrato =
+  | 'consolidado_producao'
+  | 'unificado'
+  | 'rocada'
+  | 'coleta'
+  | 'desconhecido';
 
 function normHeader(h: unknown): string {
   return String(h ?? '')
@@ -60,6 +66,9 @@ export function classificarPlanilhaContrato(buffer: Buffer): {
   tipo: TipoPlanilhaContrato;
   label: string;
 } {
+  if (detectarPlanilhaConsolidadoProducao(buffer)) {
+    return { tipo: 'consolidado_producao', label: 'Produção padrão (CONSOLIDADO — um serviço cada)' };
+  }
   if (detectarPlanilhaServicosUnificados(buffer)) {
     return { tipo: 'unificado', label: 'Serviços unificados (por TIPO DE SERVIÇO)' };
   }

@@ -40,7 +40,7 @@ export class WhatsappGrupoMapa {
   estrategia!: string;
 
   /** Se true, responde no grupo com o PDF após importar */
-  @Column('boolean', { default: true })
+  @Column('boolean', { default: false })
   responderPdf!: boolean;
 
   @CreateDateColumn()

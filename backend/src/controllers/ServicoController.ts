@@ -33,6 +33,7 @@ import { calcularHorasProdutivasTotal } from '../services/horasProdutivasService
 import { isNomeColunaInvalido, detectarPadraoDeObjetos } from '../services/PadraoPlanilhaDetector';
 import { ColetaData } from '../entities/ColetaData';
 import { WhatsappGrupoMapa } from '../entities/WhatsappGrupoMapa';
+import { removerRoteamentoPorServico } from '../services/whatsappRoteamentoService';
 import ValidacaoViagemService from '../services/validacaoViagemService';
 import { verificarContagemViagens } from '../services/verificarContagemViagensService';
 import {
@@ -893,6 +894,7 @@ export class ServicoController {
             totalLinhas: u.totalLinhas,
             linhasImportadas: u.linhasImportadas,
             criadoEm: u.criadoEm,
+            urlDownload: u.urlDownload || null,
           })),
         },
         tipoServico: servico.tipo || 'coleta_caminhao',
@@ -3693,7 +3695,7 @@ export class ServicoController {
         ids.length ? PlanilhaService.getContagemRegistrosPorServicos(ids) : Promise.resolve(new Map()),
         ids.length ? PlanilhaService.getUltimosUploadsPorServicos(ids) : Promise.resolve(new Map()),
         ids.length
-          ? this.uploadRepo.find({ where: { servico_id: In(ids) }, select: ['id', 'servico_id', 'nomeArquivo', 'linhasImportadas', 'criadoEm'] })
+          ? this.uploadRepo.find({ where: { servico_id: In(ids) }, select: ['id', 'servico_id', 'nomeArquivo', 'linhasImportadas', 'criadoEm', 'urlDownload'] })
           : Promise.resolve([]),
       ]);
 
@@ -4395,6 +4397,11 @@ async getModeloExecutivo(req: Request, res: Response): Promise<any> {
 
       // Remove mapeamentos WhatsApp ligados ao serviço
       await AppDataSource.getRepository(WhatsappGrupoMapa).delete({ servicoId: id });
+      try {
+        await removerRoteamentoPorServico(id);
+      } catch {
+        /* controle multi-tenant indisponível */
+      }
 
       await this.repository.remove(servico);
 

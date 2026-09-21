@@ -119,6 +119,20 @@ export function gerarNomePdfRelatorioUnidadeCiclo(opts: {
   ].filter(Boolean).join('_');
 }
 
+/** Nome do PDF gerencial multi-serviço. Ex.: ap_Ciclo_Todos_Servicos_25-08-2026_a_18-09-2026 */
+export function gerarNomePdfRelatorioCicloConsolidado(opts: {
+  dataInicio: string;
+  dataFim: string;
+  contratoNome?: string;
+}): string {
+  const periodo = sufixoPeriodoPdf({ dataInicio: opts.dataInicio, dataFim: opts.dataFim });
+  return [
+    sanitizarParteNome(opts.contratoNome || 'CONSOLIDADO'),
+    'Ciclo_Todos_Servicos',
+    periodo ? sanitizarParteNome(periodo.replace(/^Ciclo_/, '')) : null,
+  ].filter(Boolean).join('_');
+}
+
 /** Nome do PDF comparativo de análise de peso. Ex.: Comparativo_Analise_Peso_Coleta_1a_Quinzena_18-06-2026 */
 export function gerarNomePdfAnalisePesoComparativo(opts?: {
   tipoServico?: string;

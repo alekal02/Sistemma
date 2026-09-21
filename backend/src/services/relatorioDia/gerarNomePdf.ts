@@ -37,3 +37,42 @@ export function gerarNomePdfRelatorioDia(opts: {
     sanitizarParteNome(dataFmt),
   ].join('_');
 }
+
+/** Ex.: CONSOLIDADO_Operacao_Ciclo_25-08-2026_a_16-09-2026 */
+export function gerarNomePdfPacoteConsolidado(opts: {
+  dataInicio: string;
+  dataFim: string;
+}): string {
+  const periodo = sufixoPeriodoPdf({ dataInicio: opts.dataInicio, dataFim: opts.dataFim }) || opts.dataFim;
+  return [
+    'CONSOLIDADO',
+    'Operacao_Ciclo',
+    sanitizarParteNome(periodo.replace(/^Ciclo_/, '')),
+  ].join('_');
+}
+
+/** Ex.: Rocada_Manual_Operacao_16-09-2026 */
+export function gerarNomePdfDiaServicoProducao(opts: {
+  servicoNome: string;
+  dataIso: string;
+}): string {
+  return gerarNomePdfRelatorioDia({
+    servicoNome: opts.servicoNome,
+    aba: 'operacao',
+    dataIso: opts.dataIso,
+  });
+}
+
+/** Ex.: Rocada_Manual_Ciclo_25-08-2026_a_16-09-2026 */
+export function gerarNomePdfCicloServicoProducao(opts: {
+  servicoNome: string;
+  dataInicio: string;
+  dataFim: string;
+}): string {
+  const periodo = sufixoPeriodoPdf({ dataInicio: opts.dataInicio, dataFim: opts.dataFim }) || opts.dataFim;
+  return [
+    sanitizarParteNome(opts.servicoNome || 'Servico'),
+    'Ciclo',
+    sanitizarParteNome(periodo.replace(/^Ciclo_/, '')),
+  ].join('_');
+}

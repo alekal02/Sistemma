@@ -41,6 +41,11 @@ export async function removerRoteamentoWhatsapp(grupoJid: string): Promise<void>
   await getControlDataSource().getRepository(WhatsappGrupoRoteamento).delete({ grupoJid });
 }
 
+export async function removerRoteamentoPorServico(servicoId: string): Promise<void> {
+  if (!isMultiTenant() || !servicoId) return;
+  await getControlDataSource().getRepository(WhatsappGrupoRoteamento).delete({ servicoId });
+}
+
 export async function buscarRoteamentoGrupo(grupoJid: string): Promise<WhatsappGrupoRoteamento | null> {
   if (!isMultiTenant()) return null;
   return getControlDataSource().getRepository(WhatsappGrupoRoteamento).findOne({

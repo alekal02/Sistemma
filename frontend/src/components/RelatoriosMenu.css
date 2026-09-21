@@ -1,0 +1,81 @@
+.relatorios-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  min-width: 260px;
+}
+
+.relatorios-menu-titulo {
+  font-size: 0.68rem;
+  font-weight: 800;
+  color: #0f172a;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.relatorios-menu-lista {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.relatorios-menu-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.4rem 0.45rem;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.relatorios-menu-item.is-on {
+  background: #eef2ff;
+}
+
+.relatorios-menu-item input {
+  margin-top: 0.15rem;
+  accent-color: #4f46e5;
+}
+
+.relatorios-menu-label {
+  display: block;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.relatorios-menu-desc {
+  display: block;
+  font-size: 0.65rem;
+  color: #64748b;
+  line-height: 1.35;
+}
+
+.relatorios-menu-btn {
+  margin-top: 0.35rem;
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  padding: 0.45rem 0.7rem;
+  border-radius: 8px;
+  border: none;
+  background: #4f46e5;
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.relatorios-menu-btn.is-compact {
+  width: auto;
+  margin-top: 0;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.relatorios-menu-btn:disabled {
+  background: #cbd5e1;
+  cursor: not-allowed;
+}

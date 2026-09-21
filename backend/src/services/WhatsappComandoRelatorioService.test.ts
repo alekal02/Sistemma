@@ -3,7 +3,79 @@ import assert from 'node:assert/strict';
 import {
   resolverQualCicloMenu,
   textoPedeCicloAnterior,
+  extrairDataIsoComando,
+  ehPedidoRelatorioDia,
+  extrairTipoServicoComando,
+  ehPedidoMenuRelatorio,
+  resolverEscolhaIndice,
+  ehPedidoFormatoDiario,
+  ehPedidoFormatoCiclo,
+  ehPedidoSaude,
+  ehPedidoOperacional,
 } from './WhatsappComandoRelatorioTexto';
+
+describe('WhatsApp — data no comando do dia', () => {
+  it('lê 16/09, 16/09/2026 e ISO', () => {
+    assert.equal(extrairDataIsoComando('dia 16/09', '2026-09-21'), '2026-09-16');
+    assert.equal(extrairDataIsoComando('relatorio 16/09/2026'), '2026-09-16');
+    assert.equal(extrairDataIsoComando('diario 2026-09-16'), '2026-09-16');
+    assert.equal(extrairDataIsoComando('ciclo'), null);
+  });
+
+  it('reconhece pedido de relatório do dia', () => {
+    assert.equal(ehPedidoRelatorioDia('dia 16/09'), true);
+    assert.equal(ehPedidoRelatorioDia('relatorio'), false);
+    assert.equal(ehPedidoRelatorioDia('ciclo'), false);
+    assert.equal(ehPedidoRelatorioDia('relatorio anterior'), false);
+    assert.equal(ehPedidoRelatorioDia('relatorio rocada'), false);
+    assert.equal(ehPedidoRelatorioDia('relatorio ciclo'), false);
+  });
+});
+
+describe('WhatsApp — menu relatorio (serviço → diário/ciclo)', () => {
+  it('abre o menu com relatorio e com o nome do tipo', () => {
+    assert.equal(ehPedidoMenuRelatorio('relatorio'), true);
+    assert.equal(ehPedidoMenuRelatorio('relatorio rocada'), true);
+    assert.equal(ehPedidoMenuRelatorio('rocada'), true);
+    assert.equal(ehPedidoMenuRelatorio('dia 16/09'), false);
+    assert.equal(ehPedidoMenuRelatorio('ciclo'), false);
+    assert.equal(ehPedidoMenuRelatorio('relatorio ciclo'), false);
+    assert.equal(ehPedidoMenuRelatorio('relatorio saude'), false);
+    assert.equal(ehPedidoMenuRelatorio('saude'), false);
+  });
+
+  it('reconhece pedido de saúde e de operacional', () => {
+    assert.equal(ehPedidoSaude('saude'), true);
+    assert.equal(ehPedidoSaude('relatorio saude'), true);
+    assert.equal(ehPedidoSaude('relatorio de saude'), true);
+    assert.equal(ehPedidoSaude('relatorio'), false);
+    assert.equal(ehPedidoOperacional('operacional'), true);
+    assert.equal(ehPedidoOperacional('relatorio operacional'), true);
+    assert.equal(ehPedidoOperacional('relatorio'), false);
+  });
+
+  it('lê o número da opção e o formato diário/ciclo', () => {
+    assert.equal(resolverEscolhaIndice('1', 4), 1);
+    assert.equal(resolverEscolhaIndice('3 — roçada', 4), 3);
+    assert.equal(resolverEscolhaIndice('9', 4), null);
+    assert.equal(ehPedidoFormatoDiario('1'), true);
+    assert.equal(ehPedidoFormatoDiario('diario'), true);
+    assert.equal(ehPedidoFormatoCiclo('2'), true);
+    assert.equal(ehPedidoFormatoCiclo('ciclo completo'), true);
+    assert.equal(ehPedidoFormatoCiclo('diario'), false);
+  });
+});
+
+describe('WhatsApp — tipo de serviço no comando', () => {
+  it('lê o tipo pedido no texto', () => {
+    assert.equal(extrairTipoServicoComando('relatorio rocada'), 'rocadeira');
+    assert.equal(extrairTipoServicoComando('relatorio varricao'), 'varricao');
+    assert.equal(extrairTipoServicoComando('pdf poda 16/09'), 'poda');
+    assert.equal(extrairTipoServicoComando('capina'), 'capina');
+    assert.equal(extrairTipoServicoComando('relatorio'), null);
+    assert.equal(extrairTipoServicoComando('ciclo'), null);
+  });
+});
 
 describe('WhatsApp — ciclo anterior nos relatórios', () => {
   it('reconhece pedido de ciclo anterior no texto', () => {

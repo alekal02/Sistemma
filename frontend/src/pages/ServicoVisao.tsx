@@ -75,11 +75,11 @@ export default function ServicoVisao() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: 'Visao Geral', href: '/visao-geral' },
       { label: 'Contratos', href: '/contratos' },
-      { label: servicoNome !== 'Servico' ? servicoNome : 'Servico' },
+      { label: 'Contrato', href: contractId ? `/contratos/${contractId}` : '/contratos' },
+      { label: servicoNome !== 'Servico' ? servicoNome : 'Serviço' },
     ]);
-  }, [servicoNome, setBreadcrumbs]);
+  }, [contractId, servicoNome, setBreadcrumbs]);
 
   const carregarDados = useCallback(async (opts?: { silencioso?: boolean; revalidarInconsistencias?: boolean }) => {
     if (!contractId || !servicoId) {
@@ -99,7 +99,8 @@ export default function ServicoVisao() {
       setTipoServico(tipoAtual);
       setServicoNome(data.servico?.nome || 'Servico');
       setConfigFaturamento(data.servico?.configFaturamento ?? null);
-      const cols: ColunaDetectada[] = data.servico?.padraoPlanilha?.colunas || [];
+      const colsRaw = data.servico?.padraoPlanilha?.colunas;
+      const cols: ColunaDetectada[] = Array.isArray(colsRaw) ? colsRaw : [];
       setColunas(cols);
       setTotalRegistros(data.uploads?.registrosValidos ?? data.uploads?.totalImportados ?? 0);
       setRegistrosTotais(data.uploads?.registrosTotais ?? data.uploads?.totalImportados ?? 0);

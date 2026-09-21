@@ -5,7 +5,10 @@ import { formatarIsoParaBr } from './periodoDados';
 import { fmtNum } from './relatorioDiario';
 import {
   fmtAreaM2,
+  labelStatusVsMedia,
+  resumirProducaoPorUnidade,
   type AnaliseRocadaDia,
+  type FrotaRocadaCiclo,
   type LinhaRocadaAgrupada,
 } from './operacaoRocada';
 
@@ -22,6 +25,7 @@ export interface BlocoTipoRocadaPdf {
   porOperador: LinhaRocadaAgrupada[];
   porEquipe: LinhaRocadaAgrupada[];
   porEquipamento: LinhaRocadaAgrupada[];
+  frotaCiclo?: FrotaRocadaCiclo;
 }
 
 function esc(s: string): string {
@@ -148,6 +152,65 @@ function filtrarLinhasPdf(linhas: LinhaRocadaAgrupada[] | undefined): LinhaRocad
   );
 }
 
+function tabelaProducaoHtml(
+  titulo: string,
+  porEquipamento: LinhaRocadaAgrupada[],
+  porEquipe: LinhaRocadaAgrupada[],
+  frotaCiclo: FrotaRocadaCiclo | undefined,
+  preferirTrator: boolean,
+  barColor = '#22c55e',
+): string {
+  const r = resumirProducaoPorUnidade({
+    porEquipamento,
+    porEquipe,
+    frotaCiclo,
+    preferirTrator,
+  });
+  if (!r.linhas.length) return '';
+  const max = Math.max(...r.linhas.map((l) => l.areaM2), 0.01);
+  return `
+    <div class="bloco">
+      <div class="bloco-hd">${esc(titulo)} · ${r.ativas} de ${r.frota} ${esc(r.unidadePlural)} no dia · média ${fmtAreaM2(r.media)} m²</div>
+      <table class="data">
+        <thead>
+          <tr>
+            <th style="width:28%">${r.unidadeSingular === 'trator' ? 'Trator' : 'Equipe'}</th>
+            <th class="c" style="width:12%">Reg.</th>
+            <th class="r" style="width:22%">Produção (m²)</th>
+            <th class="r" style="width:14%">Vs média</th>
+            <th style="width:24%">Situação</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${r.linhas.slice(0, 20).map((l) => {
+            const pct = Math.max(3, Math.round((l.areaM2 / max) * 100));
+            return `
+              <tr>
+                <td>${esc(l.label)}</td>
+                <td class="c">${fmtNum(l.registros, 0)}</td>
+                <td class="r">${fmtAreaM2(l.areaM2)}</td>
+                <td class="r">${fmtNum(l.vsMedia * 100, 0)}%</td>
+                <td>
+                  ${esc(labelStatusVsMedia(l.status))}
+                  <span class="bar-mini"><span style="width:${pct}%;background:${barColor}"></span></span>
+                </td>
+              </tr>`;
+          }).join('')}
+          <tr>
+            <td><strong>Total / média</strong></td>
+            <td class="c"><strong>${fmtNum(r.linhas.reduce((s, l) => s + l.registros, 0), 0)}</strong></td>
+            <td class="r"><strong>${fmtAreaM2(r.total)}</strong></td>
+            <td class="r">—</td>
+            <td><strong>${fmtAreaM2(r.media)} m² / ${esc(r.unidadeSingular)}</strong></td>
+          </tr>
+        </tbody>
+      </table>
+      ${r.ausentes.length && r.ausentes.length <= 12
+        ? `<div style="font-size:6px;color:#9a3412;margin-top:3px">Sem registro hoje: ${esc(r.ausentes.join(', '))}</div>`
+        : ''}
+    </div>`;
+}
+
 function tabelaGrupoHtml(
   titulo: string,
   linhas: LinhaRocadaAgrupada[],
@@ -213,11 +276,15 @@ function secaoTipoHtml(bloco: BlocoTipoRocadaPdf, cor: string): string {
             <td>${tabelaGrupoHtml('Locais', locais, bloco.areaM2, cor)}</td>
             <td>${tabelaGrupoHtml('Segmentos', segmentos, bloco.areaM2, cor)}</td>
           </tr>
-          <tr>
-            <td>${tabelaGrupoHtml('Equipes', equipes, bloco.areaM2, cor)}</td>
-            <td>${tabelaGrupoHtml('Equipamentos', equips, bloco.areaM2, cor)}</td>
-          </tr>
         </table>
+        ${tabelaProducaoHtml(
+          `Produção por ${bloco.tipo === 'mecanizada' ? 'trator' : 'equipe'}`,
+          equips,
+          equipes,
+          bloco.frotaCiclo,
+          bloco.tipo === 'mecanizada',
+          cor,
+        )}
       </div>
     </div>`;
 }
@@ -266,6 +333,15 @@ export function gerarHtmlRelatorioRocadaDia(p: ParamsRelatorioRocadaDia): string
     }))
     .filter((t) => t.areaM2 > 0);
 
+  const porEquipe = filtrarLinhasPdf(p.analise.porEquipe);
+  const porEquip = filtrarLinhasPdf(p.analise.porEquipamento);
+  const producao = resumirProducaoPorUnidade({
+    porEquipamento: porEquip,
+    porEquipe: porEquipe,
+    frotaCiclo: p.analise.frotaCiclo,
+    preferirTrator: porEquip.length > 0,
+  });
+
   const cards = cardsHtml([
     { label: 'Área total', valor: `${fmtAreaM2(areaTotal)} m²`, cor: '#22c55e' },
     { label: 'Registros', valor: fmtNum(r.registros, 0), cor: '#6366f1' },
@@ -276,9 +352,16 @@ export function gerarHtmlRelatorioRocadaDia(p: ParamsRelatorioRocadaDia): string
       ? [{ label: 'Mecanizada', valor: `${fmtAreaM2(areaMec)} m² (${fmtNum(regMec, 0)})`, cor: '#f59e0b' }]
       : []),
     { label: 'Bairros', valor: String(r.bairros), cor: '#14b8a6' },
-    { label: 'Operadores', valor: String(r.operadores), cor: '#8b5cf6' },
-    { label: 'Equipes', valor: String(r.equipes), cor: '#ef4444' },
-    { label: 'Equipamentos', valor: String(r.equipamentos), cor: '#64748b' },
+    ...(producao.ativas > 0
+      ? [
+          { label: `${producao.unidadePlural[0].toUpperCase()}${producao.unidadePlural.slice(1)} no dia`, valor: `${producao.ativas} / ${producao.frota}`, cor: '#0f766e' },
+          { label: `Média / ${producao.unidadeSingular}`, valor: `${fmtAreaM2(producao.media)} m²`, cor: '#8b5cf6' },
+        ]
+      : [
+          { label: 'Operadores', valor: String(r.operadores), cor: '#8b5cf6' },
+          { label: 'Equipes', valor: String(r.equipes), cor: '#ef4444' },
+          { label: 'Equipamentos', valor: String(r.equipamentos), cor: '#64748b' },
+        ]),
     ...(receita > 0
       ? [{
           label: 'Receita estimada',
@@ -295,17 +378,12 @@ export function gerarHtmlRelatorioRocadaDia(p: ParamsRelatorioRocadaDia): string
 
   const porLocal = filtrarLinhasPdf(p.analise.porBairro);
   const porSegmento = filtrarLinhasPdf(p.analise.porOperador);
-  const porEquipe = filtrarLinhasPdf(p.analise.porEquipe);
-  const porEquip = filtrarLinhasPdf(p.analise.porEquipamento);
   const tituloLocal = porLocal.some((l) => /→/.test(l.label))
     ? 'Top locais por área'
     : 'Top locais / trechos / bairros por área';
   const tituloSegmento = porSegmento.some((l) => /→/.test(l.label))
     ? 'Top segmentos (início → término)'
     : 'Top operadores / endereços por área';
-  const tituloEquipe = porEquipe.some((l) => /mensal|semanal|diario|diário|bimestral/i.test(l.label))
-    ? 'Top periodicidade / equipes por área'
-    : 'Top equipes por área';
 
   const rankingsGerais = !temSplit
     ? `
@@ -314,11 +392,8 @@ export function gerarHtmlRelatorioRocadaDia(p: ParamsRelatorioRocadaDia): string
           <td>${tabelaGrupoHtml(tituloLocal, porLocal, areaTotal)}</td>
           <td>${tabelaGrupoHtml(tituloSegmento, porSegmento, areaTotal)}</td>
         </tr>
-        <tr>
-          <td>${tabelaGrupoHtml(tituloEquipe, porEquipe, areaTotal)}</td>
-          <td>${tabelaGrupoHtml('Top equipamentos por área', porEquip, areaTotal)}</td>
-        </tr>
-      </table>`
+      </table>
+      ${tabelaProducaoHtml('Produção por trator / equipe', porEquip, porEquipe, p.analise.frotaCiclo, porEquip.length > 0)}`
     : '';
 
   return `<!DOCTYPE html>

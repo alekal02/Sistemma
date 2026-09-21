@@ -53,11 +53,17 @@ function placaComReservaHtml(placa: string, ehReserva?: boolean): string {
 const ESTILOS = `
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 8.5px; color: #1e293b; padding: 12px 14px; line-height: 1.35; width: 100%; }
-  .header { background: linear-gradient(135deg,#0f172a,#1e3a5f); color: #fff; border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
-  .header h1 { font-size: 14px; font-weight: 800; color: #fbbf24; }
-  .header .sub { font-size: 7.5px; color: #94a3b8; margin-top: 2px; }
-  .header .tipo { display: inline-block; margin-top: 4px; font-size: 7px; font-weight: 700; padding: 2px 8px; border-radius: 4px; text-transform: uppercase; }
-  .header .tipo.op { color: #a5b4fc; background: rgba(99,102,241,0.2); }
+  .header { background: linear-gradient(135deg,#0f172a,#1e3a5f); color: #fff; border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
+  .header .hd-tbl { width: 100%; border-collapse: collapse; }
+  .header .hd-tbl td { vertical-align: middle; padding: 0; }
+  .header .eyebrow { font-size: 6.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #94a3b8; }
+  .header h1 { font-size: 15px; font-weight: 800; color: #fbbf24; margin-top: 2px; line-height: 1.15; }
+  .header .data { font-size: 9.5px; font-weight: 700; color: #e2e8f0; margin-top: 4px; }
+  .header .hd-meta { text-align: right; width: 36%; }
+  .header .tipo { display: inline-block; font-size: 6.5px; font-weight: 700; padding: 2px 8px; border-radius: 4px; text-transform: uppercase; }
+  .header .tipo.op { color: #c7d2fe; background: rgba(99,102,241,0.28); }
+  .header .tipo.rec { color: #6ee7b7; background: rgba(16,185,129,0.22); }
+  .header .gerado { font-size: 6.5px; color: #94a3b8; margin-top: 5px; }
   .banner { background: linear-gradient(135deg,#fffbeb,#fef3c7); border: 1px solid #fde68a; border-radius: 8px; padding: 6px 8px; margin-bottom: 8px; font-size: 7.5px; color: #92400e; }
   .tbl-layout { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
   .tbl-layout td { vertical-align: top; padding: 0; }
@@ -270,7 +276,7 @@ function blocoViagensPesoRotaHtml(itens?: ViagemPesoRotaItem[] | null): string {
       <div class="vg-item">
         <table class="vg-hd-tbl"><tr>
           <td><strong>Viagem ${v.nViagem}</strong> ${badgeStatusViagemHtml(v.pctIdeal)}</td>
-          <td class="r"><span class="vg-hora">${fmtNum(v.horasProdutivasViagem, 1)} h produtivas</span>${pill}</td>
+          <td class="r"><span class="vg-hora">${fmtNum(v.horasProdutivasViagem, 1)} h produtivas</span>${v.kmViagem > 0 ? `<span class="vg-hora" style="background:#e0e7ff;color:#3730a3">${fmtNum(v.kmViagem, 0)} km</span>` : ''}${pill}</td>
         </tr></table>
         <div class="bar-row">
           <div class="bar-track" style="height:10px"><span class="bar-fill" style="width:${pct}%;background:${cor};height:10px"></span></div>
@@ -284,6 +290,8 @@ function blocoViagensPesoRotaHtml(itens?: ViagemPesoRotaItem[] | null): string {
     return `
     <div class="bloco" style="margin-bottom:6px">
       <div class="bloco-hd">${esc(g.rota)} · ${esc(g.placa)}${tipo}
+        ${g.kmTotalRota > 0 ? ` · ${fmtNum(g.kmTotalRota, 0)} km` : ''}
+        ${g.horasTotaisRota > 0 ? ` · ${fmtNum(g.horasTotaisRota, 1)} h totais` : ''}
         · ${fmtNum(g.horasProdutivasRota, 1)} h produtivas
         · ${g.viagens.length} viagem(ns)${mixTxt ? ` · ${mixTxt}` : ''}
       </div>
@@ -311,7 +319,39 @@ function blocoViagensPesoRotaHtml(itens?: ViagemPesoRotaItem[] | null): string {
   ${blocos}`;
 }
 
-function heroOperacaoHtml(op: OperacaoDiaAnalise['resumo']) {
+function diaSemanaCabecalho(dia: string): string {
+  if (/feira$/i.test(dia) || /s[áa]bado|domingo/i.test(dia)) return dia;
+  if (/^(segunda|terça|terca|quarta|quinta|sexta)$/i.test(dia)) return `${dia}-feira`;
+  return dia;
+}
+
+function cabecalhoRelatorioHtml(opts: {
+  servicoNome: string;
+  titulo: string;
+  selo: string;
+  variante: 'op' | 'rec';
+  dataIso: string;
+  diaSemana: string;
+  dataGeracao: string;
+  horaGeracao: string;
+}): string {
+  return `
+  <div class="header">
+    <table class="hd-tbl"><tr>
+      <td>
+        <div class="eyebrow">${esc(opts.servicoNome)}</div>
+        <h1>${esc(opts.titulo)}</h1>
+        <div class="data">${esc(formatarIsoParaBr(opts.dataIso))} · ${esc(diaSemanaCabecalho(opts.diaSemana))}</div>
+      </td>
+      <td class="hd-meta">
+        <div class="tipo ${opts.variante}">${esc(opts.selo)}</div>
+        <div class="gerado">Gerado em ${esc(opts.dataGeracao)} às ${esc(opts.horaGeracao)}</div>
+      </td>
+    </tr></table>
+  </div>`;
+}
+
+function heroOperacaoHtml(op: OperacaoDiaAnalise['resumo'], extraSub = '') {
   const tonH = op.horas > 0 ? op.toneladas / op.horas : 0;
   const kmH = op.horas > 0 ? op.km / op.horas : 0;
   return `
@@ -321,7 +361,7 @@ function heroOperacaoHtml(op: OperacaoDiaAnalise['resumo']) {
         <div class="hero-dark hero-op">
           <div class="lbl">Viagens do dia</div>
           <div class="val">${fmtNum(op.viagens, 0)}</div>
-          <div class="sub">${op.caminhoes ?? op.coletores} caminhão(ões) · ${op.motoristas} motorista(s) · ${op.registros} registro(s)</div>
+          <div class="sub">${op.caminhoes ?? op.coletores} caminhão(ões) · ${op.motoristas} motorista(s) · ${op.registros} registro(s)${extraSub}</div>
         </div>
       </td>
       <td style="width:42%">
@@ -570,14 +610,7 @@ function blocoOperacao(opts: {
   const insightsAll = [...insightsCap, ...insights].slice(0, 6);
 
   return `
-  <div class="banner op">
-    <strong>${fmtNum(op.viagens, 0)} viagem${op.viagens !== 1 ? 's' : ''}</strong>
-    em ${esc(formatarIsoParaBr(opts.dataIso))}
-    · ${opts.operacao.registrosConsiderados} registro${opts.operacao.registrosConsiderados !== 1 ? 's' : ''}
-    · ${op.caminhoes ?? op.coletores} caminhão${(op.caminhoes ?? op.coletores) !== 1 ? 'es' : ''}${frotaReservaTxt}
-  </div>
-
-  ${heroOperacaoHtml(op)}
+  ${heroOperacaoHtml(op, frotaReservaTxt)}
   ${insightsHtml(insightsAll)}
 
   ${blocoDesempenhoPorTipoHtml(opts.capacidade)}
@@ -634,7 +667,7 @@ export function gerarHtmlRelatorioDia(opts: {
   const { servicoNome, dataIso, diaSemana, operacao } = opts;
   const gerado = opts.geradoEm ?? new Date();
   const stamp = gerado.getTime();
-  const dataGeracao = gerado.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' });
+  const dataGeracao = gerado.toLocaleDateString('pt-BR');
   const horaGeracao = gerado.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 
   const tituloAba = 'Relatório de Operação do dia';
@@ -665,12 +698,16 @@ export function gerarHtmlRelatorioDia(opts: {
   <style>${ESTILOS}</style>
 </head>
 <body>
-  <div class="header">
-    <h1>${esc(servicoNome)}</h1>
-    <div class="sub">${esc(formatarIsoParaBr(dataIso))} · ${esc(diaSemana)}</div>
-    <div class="tipo op">${esc(tituloAba)}</div>
-    <div class="sub" style="margin-top:4px">Gerado ${dataGeracao} às ${horaGeracao}</div>
-  </div>
+  ${cabecalhoRelatorioHtml({
+    servicoNome,
+    titulo: 'Operação do dia',
+    selo: 'Diário',
+    variante: 'op',
+    dataIso,
+    diaSemana,
+    dataGeracao,
+    horaGeracao,
+  })}
   ${corpo}
   <div class="footer">
     Sistemma · ${esc(tituloAba)} · ${footerExtra} · ${esc(formatarIsoParaBr(dataIso))}

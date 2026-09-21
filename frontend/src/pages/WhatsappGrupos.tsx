@@ -37,7 +37,7 @@ const formVazio: FormGrupo = {
   nomeGrupo: '',
   servicoId: '',
   estrategia: 'atualizar_data',
-  responderPdf: true,
+  responderPdf: false,
   ativo: true,
 }
 
@@ -574,7 +574,7 @@ export default function WhatsappGrupos() {
               <div className="wa-checks">
                 <label className="wa-check">
                   <input type="checkbox" checked={form.responderPdf} onChange={(e) => setForm((f) => ({ ...f, responderPdf: e.target.checked }))} />
-                  Responder PDF no grupo
+                  Enviar PDF automaticamente após importar
                 </label>
                 <label className="wa-check">
                   <input type="checkbox" checked={form.ativo} onChange={(e) => setForm((f) => ({ ...f, ativo: e.target.checked }))} />

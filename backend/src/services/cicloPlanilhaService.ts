@@ -16,8 +16,13 @@ import { dashboardCache } from './DashboardCacheManager';
 import { agendarWarmupPosUpload } from './executivoCacheWarmupService';
 import FileStorageService from './FileStorageService';
 import PlanilhaService from './PlanilhaService';
+import {
+  escolherUploadParaBackup,
+  garantirPastaBackup,
+  nomeArquivoBackupCiclo,
+  pastaDestinoBackupCiclo,
+} from './planilhaOriginalStorage';
 import fs from 'fs/promises';
-import { existsSync } from 'fs';
 import path from 'path';
 
 export interface CicloFechadoInfo {
@@ -34,6 +39,8 @@ export interface CicloFechadoInfo {
 export interface BackupPlanilhaCicloResultado {
   ok: boolean;
   caminho?: string;
+  /** Caminho visível na máquina (ex.: C:\\Sistemma\\planilhas-ciclo\\Contrato\\...) */
+  caminhoHost?: string;
   uploadId?: number;
   erro?: string;
   /** true se não havia pasta configurada — backup ignorado de propósito */
@@ -392,21 +399,14 @@ export async function fecharCicloServico(opts: {
   dashboardCache.invalidar(servicoId);
   agendarWarmupPosUpload(servicoId);
 
-  if (!String(contract.configOperacional?.pastaBackupPlanilhas || '').trim()) {
-    const pasta = pastaBackupPadrao(contract);
-    contract.configOperacional = {
-      ...(contract.configOperacional || {}),
-      pastaBackupPlanilhas: pasta,
-    };
-    await contractRepo.save(contract);
-  }
-
   const backupPlanilha = await salvarUltimaPlanilhaNaPastaBackup({
     contract,
     servicoId,
     uploadIds,
     mesReferencia,
     anoReferencia,
+    dataInicio: periodo.dataInicio,
+    dataFim: periodo.dataFim,
   });
 
   return { ciclo: periodo, uploadIds, totalRegistros, backupPlanilha };
@@ -528,19 +528,10 @@ async function separarRegistrosForaDoCiclo(
 }
 
 function pastaBackupPadrao(contract: Contract): string {
-  const nome = sanitizarParteNome(contract.numeroContrato || 'contrato');
-  const volumeDocker = '/data/planilhas-ciclo';
-  if (existsSync(volumeDocker)) {
-    return path.join(volumeDocker, nome);
-  }
-  const cwd = process.cwd();
-  const raiz = path.basename(cwd) === 'backend' ? path.resolve(cwd, '..') : cwd;
-  return path.join(raiz, 'planilhas-ciclo', nome);
-}
-
-function sanitizarNomeArquivo(nome: string): string {
-  const base = path.basename(String(nome || '').trim()) || 'planilha.xlsx';
-  return base.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/\s+/g, ' ').trim() || 'planilha.xlsx';
+  return pastaDestinoBackupCiclo({
+    numeroContrato: contract.numeroContrato || 'contrato',
+    pastaConfigurada: contract.configOperacional?.pastaBackupPlanilhas,
+  }).pastaAbs;
 }
 
 function sanitizarParteNome(parte: string): string {
@@ -560,18 +551,23 @@ async function salvarUltimaPlanilhaNaPastaBackup(opts: {
   uploadIds: number[];
   mesReferencia: number;
   anoReferencia: number;
+  dataInicio: string;
+  dataFim: string;
 }): Promise<BackupPlanilhaCicloResultado> {
-  const pastaRaw = String(opts.contract.configOperacional?.pastaBackupPlanilhas || '').trim()
-    || pastaBackupPadrao(opts.contract);
+  const destino = pastaDestinoBackupCiclo({
+    numeroContrato: opts.contract.numeroContrato || 'contrato',
+    pastaConfigurada: opts.contract.configOperacional?.pastaBackupPlanilhas,
+  });
 
   try {
     const uploadRepo = AppDataSource.getRepository(PlanilhaUpload);
-    const ultimo = await uploadRepo
+    const candidatos = await uploadRepo
       .createQueryBuilder('u')
       .where('u.id IN (:...ids)', { ids: opts.uploadIds })
       .orderBy('u.criadoEm', 'DESC')
-      .getOne();
+      .getMany();
 
+    const ultimo = escolherUploadParaBackup(candidatos);
     if (!ultimo) {
       return { ok: false, erro: 'Nenhum upload encontrado para backup' };
     }
@@ -582,9 +578,12 @@ async function salvarUltimaPlanilhaNaPastaBackup(opts: {
       select: ['id', 'nome'],
     });
     const nomeServico = sanitizarParteNome(servico?.nome || 'Servico');
-    const mes = String(opts.mesReferencia).padStart(2, '0');
-    const nomeOriginal = sanitizarNomeArquivo(ultimo.nomeArquivo);
-    const nomeDestino = `${opts.anoReferencia}-${mes}_${nomeServico}_${nomeOriginal}`;
+    const nomeDestino = nomeArquivoBackupCiclo({
+      dataInicio: opts.dataInicio,
+      dataFim: opts.dataFim,
+      nomeServico,
+      nomeOriginal: ultimo.nomeArquivo,
+    });
 
     let buffer: Buffer;
     if (ultimo.urlDownload) {
@@ -600,13 +599,13 @@ async function salvarUltimaPlanilhaNaPastaBackup(opts: {
       buffer = exp.buffer;
     }
 
-    const pastaAbs = path.resolve(pastaRaw);
-    await fs.mkdir(pastaAbs, { recursive: true });
-    const caminhoFinal = path.join(pastaAbs, nomeDestino);
+    await garantirPastaBackup(destino.pastaAbs);
+    const caminhoFinal = path.join(destino.pastaAbs, nomeDestino);
     await fs.writeFile(caminhoFinal, buffer);
+    const caminhoHost = path.join(destino.caminhoHost, nomeDestino);
 
-    console.log(`[cicloPlanilha] Backup da planilha salvo: ${caminhoFinal}`);
-    return { ok: true, caminho: caminhoFinal, uploadId: ultimo.id };
+    console.log(`[cicloPlanilha] Backup da planilha salvo: ${caminhoFinal} → ${caminhoHost} (upload ${ultimo.id})`);
+    return { ok: true, caminho: caminhoHost, caminhoHost, uploadId: ultimo.id };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[cicloPlanilha] Erro ao salvar backup da planilha:', msg);

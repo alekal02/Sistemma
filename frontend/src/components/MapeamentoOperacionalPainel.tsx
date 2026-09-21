@@ -91,7 +91,15 @@ function agruparViagensPeso(itens: ViagemPesoRotaItem[]) {
   return Array.from(mapa.values()).map((g) => {
     g.viagens.sort((a, b) => a.nViagem - b.nViagem);
     const horas = g.viagens.reduce((s, v) => s + (v.horasProdutivasViagem || 0), 0);
-    return { ...g, horasProdutivasRota: Math.round(horas * 100) / 100 };
+    const horasTotaisRota = Math.max(...g.viagens.map((v) => v.horasTotaisRota || 0), 0);
+    const kmLinha = Math.max(...g.viagens.map((v) => v.kmTotalRota || 0), 0);
+    const kmSlots = g.viagens.reduce((s, v) => s + (v.kmViagem || 0), 0);
+    return {
+      ...g,
+      horasProdutivasRota: Math.round(horas * 100) / 100,
+      horasTotaisRota: Math.round(horasTotaisRota * 100) / 100,
+      kmTotalRota: Math.round((kmLinha > 0 ? kmLinha : kmSlots) * 100) / 100,
+    };
   }).sort((a, b) => a.rota.localeCompare(b.rota, 'pt-BR') || a.placa.localeCompare(b.placa, 'pt-BR'));
 }
 
@@ -433,8 +441,26 @@ export default function MapeamentoOperacionalPainel({
                             background: '#ccfbf1', padding: '1px 7px', borderRadius: '5px',
                             fontFamily: 'ui-monospace, monospace',
                           }}>
-                            {fmtNum(g.horasProdutivasRota, 1)} h na rota
+                            {fmtNum(g.horasProdutivasRota, 1)} h produtivas
                           </span>
+                          {g.horasTotaisRota > 0 && (
+                            <span style={{
+                              fontSize: '0.72rem', fontWeight: 800, color: '#334155',
+                              background: '#f1f5f9', padding: '1px 7px', borderRadius: '5px',
+                              fontFamily: 'ui-monospace, monospace',
+                            }}>
+                              {fmtNum(g.horasTotaisRota, 1)} h totais
+                            </span>
+                          )}
+                          {g.kmTotalRota > 0 && (
+                            <span style={{
+                              fontSize: '0.72rem', fontWeight: 800, color: '#3730a3',
+                              background: '#e0e7ff', padding: '1px 7px', borderRadius: '5px',
+                              fontFamily: 'ui-monospace, monospace',
+                            }}>
+                              {fmtNum(g.kmTotalRota, 0)} km
+                            </span>
+                          )}
                           <span style={{ fontSize: '0.65rem', color: '#64748b' }}>
                             {g.viagens.length} viagem{g.viagens.length !== 1 ? 'ns' : ''}
                             {g.origemHora === 'rateio' ? ' · hora rateada' : ' · hora do trecho'}
@@ -476,6 +502,15 @@ export default function MapeamentoOperacionalPainel({
                                     }}>
                                       {fmtNum(v.horasProdutivasViagem, 1)} h produtivas
                                     </span>
+                                    {(v.kmViagem || 0) > 0 && (
+                                      <span style={{
+                                        fontSize: '0.78rem', fontWeight: 800, color: '#3730a3',
+                                        background: '#e0e7ff', padding: '2px 8px', borderRadius: '6px',
+                                        fontFamily: 'ui-monospace, monospace',
+                                      }}>
+                                        {fmtNum(v.kmViagem || 0, 0)} km
+                                      </span>
+                                    )}
                                     {!viagemTemPesagem(v) ? (
                                       <span style={{
                                         fontSize: '0.65rem', fontWeight: 800, padding: '2px 7px', borderRadius: '6px',

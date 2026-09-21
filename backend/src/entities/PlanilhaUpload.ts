@@ -48,6 +48,8 @@ export class PlanilhaUpload {
     viagensCorrigidas?: number;
     /** Ex.: servicos_unificados, rocada, coleta */
     modelo?: string;
+    /** De onde veio o arquivo original (chatbot WhatsApp vs tela). */
+    origem?: 'whatsapp' | 'web';
     consolidacao?: {
       registrosRemovidosAusentes: number;
       uploadsRemovidos: number;

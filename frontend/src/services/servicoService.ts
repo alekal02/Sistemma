@@ -126,6 +126,9 @@ export interface ViagemPesoRotaItem {
   semPesagem?: boolean;
   horasProdutivasViagem: number;
   horasProdutivasRota: number;
+  horasTotaisRota?: number;
+  kmTotalRota?: number;
+  kmViagem?: number;
   origemHora: 'trecho' | 'rateio';
   tempoEqEncher: number | null;
   estimado: boolean;
@@ -908,6 +911,7 @@ const servicoService = {
         porOperador: { chave: string; label: string; registros: number; areaM2: number }[];
         porEquipe: { chave: string; label: string; registros: number; areaM2: number }[];
         porEquipamento: { chave: string; label: string; registros: number; areaM2: number }[];
+        frotaCiclo?: { equipes: number; equipamentos: number; labelsEquipamento?: string[] };
       } | null;
       mecanizada?: {
         tipo: 'mecanizada';
@@ -922,6 +926,7 @@ const servicoService = {
         porOperador: { chave: string; label: string; registros: number; areaM2: number }[];
         porEquipe: { chave: string; label: string; registros: number; areaM2: number }[];
         porEquipamento: { chave: string; label: string; registros: number; areaM2: number }[];
+        frotaCiclo?: { equipes: number; equipamentos: number; labelsEquipamento?: string[] };
       } | null;
       porBairro: { chave: string; label: string; registros: number; areaM2: number }[];
       porOperador: { chave: string; label: string; registros: number; areaM2: number }[];
@@ -929,6 +934,7 @@ const servicoService = {
       porEquipamento: { chave: string; label: string; registros: number; areaM2: number }[];
       dataInicio: string | null;
       dataFim: string | null;
+      frotaCiclo?: { equipes: number; equipamentos: number; labelsEquipamento?: string[] };
       tipoServico?: string;
     };
   },
@@ -1091,6 +1097,7 @@ const servicoService = {
       backupPlanilha?: {
         ok: boolean;
         caminho?: string;
+        caminhoHost?: string;
         uploadId?: number;
         erro?: string;
         ignorado?: boolean;

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import {
-  FiArrowLeft, FiCalendar, FiDownload,
+  FiArrowLeft, FiCalendar,
 } from 'react-icons/fi';
+import RelatoriosMenu from '../components/RelatoriosMenu';
 import { useToast } from '../contexts/ToastContext';
 import { useBreadcrumbs } from '../contexts/BreadcrumbContext';
 import { useKpiCalculator } from '../hooks/useKpiCalculator';
@@ -209,6 +210,7 @@ export default function ServicoDiaDetalhe() {
           porOperador: agg.porOperador,
           porEquipe: agg.porEquipe,
           porEquipamento: agg.porEquipamento,
+          frotaCiclo: agg.frotaCiclo,
         });
         setBlocoManualRocada(agg.manual || null);
         setBlocoMecanizadaRocada(agg.mecanizada || null);
@@ -563,25 +565,15 @@ export default function ServicoDiaDetalhe() {
                 ? 'PDF do Dia'
                 : 'PDF Operação';
             return (
-              <button
-                type="button"
-                onClick={exportarPdfDia}
+              <RelatoriosMenu
+                variant="compact"
+                opcoes={[{ id: 'dia', label: labelPdf, descricao: tituloPdf }]}
+                marcados={['dia']}
+                onToggle={() => {}}
+                onGerar={() => { void exportarPdfDia(); }}
+                gerando={exportandoPdf}
                 disabled={exportandoPdf || carregandoPainel || semDadosPdf}
-                title={tituloPdf}
-                style={{
-                  display: 'inline-flex', alignItems: 'center', gap: '0.35rem',
-                  fontSize: '0.72rem', fontWeight: 600, padding: '0.45rem 0.75rem',
-                  borderRadius: '8px', border: '1px solid rgba(255,255,255,0.2)',
-                  background: exportandoPdf ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.12)',
-                  color: semDadosPdf ? '#64748b' : '#fff',
-                  cursor: exportandoPdf || carregandoPainel || semDadosPdf
-                    ? 'not-allowed'
-                    : 'pointer',
-                }}
-              >
-                <FiDownload size={14} />
-                {exportandoPdf ? 'Gerando...' : labelPdf}
-              </button>
+              />
             );
           })()}
         </div>

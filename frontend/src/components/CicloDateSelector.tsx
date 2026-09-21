@@ -7,11 +7,13 @@ import {
   FiCalendar, FiChevronLeft, FiChevronRight, FiChevronDown, FiList, FiDownload,
   FiTruck, FiTrendingUp, FiArrowRight, FiEye, FiEyeOff, FiLock, FiUnlock,
 } from 'react-icons/fi';
+import RelatoriosMenu from './RelatoriosMenu';
 import { useToast } from '../contexts/ToastContext';
 import pdfService from '../services/pdfService';
 import { gerarHtmlRelatorioOperacionalPeriodo } from '../utils/gerarHtmlRelatorioOperacionalPeriodo';
 import { gerarHtmlRelatorioRocadaCiclo } from '../utils/gerarHtmlRelatorioRocadaCiclo';
 import { gerarHtmlRelatorioUnidadeCiclo } from '../utils/gerarHtmlRelatorioUnidadeCiclo';
+import { gerarHtmlRelatorioCicloConsolidado } from '../utils/gerarHtmlRelatorioCicloConsolidado';
 import { gerarHtmlRelatorioHodometroSaude } from '../utils/gerarHtmlRelatorioHodometroSaude';
 import { gerarHtmlRelatorioMelhoriaCicloOperacao } from '../utils/gerarHtmlRelatorioMelhoriaCicloOperacao';
 import { analisarHodometroSaude } from '../utils/relatorioHodometroSaude';
@@ -43,6 +45,7 @@ import {
   gerarNomePdfRelatorioOperacionalPeriodo,
   gerarNomePdfRelatorioRocadaCiclo,
   gerarNomePdfRelatorioUnidadeCiclo,
+  gerarNomePdfRelatorioCicloConsolidado,
   gerarNomePdfRelatorioHodometroSaude,
   gerarNomePdfRelatorioMelhoriaCicloOperacao,
 } from '../utils/gerarNomePdf';
@@ -51,7 +54,7 @@ import ProjecaoCicloPainel from './ProjecaoCicloPainel';
 import { montarProjecaoCiclo, type TotaisCicloProjecao } from '@sistemma/shared';
 
 type ExportandoPdf = TipoPeriodoOperacional | 'hodometro' | 'melhoria' | null;
-type PdfRelatorioId = 'melhoria' | 'ciclo' | 'semanal' | 'quinzenal' | 'hodometro';
+type PdfRelatorioId = 'melhoria' | 'ciclo' | 'ciclo_gerencial' | 'semanal' | 'quinzenal' | 'hodometro';
 
 interface OpcaoPdfCiclo {
   id: PdfRelatorioId;
@@ -101,9 +104,12 @@ interface CicloDateSelectorProps {
 
 const DIAS_SEM = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
 
-function diaSemana(iso: string): string {
-  const [y, m, d] = iso.split('-').map(Number);
-  return DIAS_SEM[new Date(y, m - 1, d).getDay()];
+function diaSemana(iso: string | null | undefined): string {
+  if (!iso || typeof iso !== 'string') return '';
+  const partes = iso.split('-').map(Number);
+  if (partes.length < 3 || partes.some((n) => !Number.isFinite(n))) return '';
+  const [y, m, d] = partes;
+  return DIAS_SEM[new Date(y, m - 1, d).getDay()] || '';
 }
 
 function hojeISO(): string {
@@ -248,7 +254,7 @@ export default function CicloDateSelector({
       }).then((resp) => {
         if (cancelado) return;
         setRelatorioApi(agruparCicloPorDiaFromApi(
-          resp.dias,
+          Array.isArray(resp?.dias) ? resp.dias : [],
           ciclo.dataInicio,
           ciclo.dataFim,
           tarifas.valorTonelada,
@@ -350,8 +356,8 @@ export default function CicloDateSelector({
       `Fechar o ciclo "${ciclo.label}"?\n\n`
       + 'As planilhas deste período ficarão protegidas. '
       + 'Novos uploads não alterarão estes dados.\n'
-      + 'A planilha será salva na pasta de backup do contrato '
-      + '(se estiver vazia, usa planilhas-ciclo no repositório).',
+      + 'A última planilha enviada pelo chatbot neste ciclo será copiada '
+      + 'para a pasta de backup configurada no contrato.',
     );
     if (!ok) return;
 
@@ -363,8 +369,11 @@ export default function CicloDateSelector({
       });
       setCicloFechado(true);
       const backup = resp.backupPlanilha;
-      if (backup?.ok && backup.caminho) {
-        adicionarToast(`Ciclo fechado. Planilha salva em: ${backup.caminho}`, 'success');
+      if (backup?.ok && (backup.caminhoHost || backup.caminho)) {
+        adicionarToast(
+          `Ciclo fechado. Planilha salva em: ${backup.caminhoHost || backup.caminho}`,
+          'success',
+        );
       } else if (backup && !backup.ignorado && backup.erro) {
         adicionarToast(
           `${resp.message || 'Ciclo fechado'} — backup da planilha falhou: ${backup.erro}`,
@@ -711,6 +720,100 @@ export default function CicloDateSelector({
     adicionarToast, servicoNome, ciclo, tarifas, contractId, servicoId, modoCiclo, tipoServico,
   ]);
 
+  const exportarRelatorioCicloGerencial = useCallback(async () => {
+    if (!contractId) {
+      adicionarToast('Contrato não disponível para exportar', 'warning');
+      return;
+    }
+    setExportando('ciclo');
+    try {
+      const recorte = recortarPeriodoAteReferencia(ciclo.dataInicio, ciclo.dataFim);
+      const servicos = await servicoService.listarServicosContrato(contractId, { force: true });
+      const tiposOk = new Set(['rocadeira', 'capina', 'varricao', 'poda', 'remocao', 'geral']);
+      const alvos = servicos.filter((s) => tiposOk.has(String(s.tipo)));
+      const tipos: Array<{
+        tipo: string;
+        nome: string;
+        und: string;
+        registros: number;
+        quantitativo: number;
+        diasComDados: number;
+        dias: Array<{ data: string; registros: number; quantitativo: number }>;
+      }> = [];
+
+      const undDe = (tipo: string, kmLinear?: number, metroLinear?: number) => {
+        if (tipo === 'rocadeira') return 'm²';
+        if (tipo === 'varricao') return 'km';
+        if (tipo === 'capina') return (kmLinear || 0) > 0 ? 'km' : 'm';
+        if (tipo === 'poda') return 'arv';
+        return 'pts';
+      };
+      const qtdDe = (tipo: string, d: {
+        rotas?: number; areaM2?: number; kmLinear?: number; metroLinear?: number; qtdArvore?: number; quantitativo?: number;
+      }) => {
+        if (tipo === 'rocadeira') return Number(d.areaM2 || 0);
+        if (tipo === 'varricao') return Number(d.kmLinear || 0);
+        if (tipo === 'capina') return Number(d.kmLinear || d.metroLinear || 0);
+        if (tipo === 'poda') return Number(d.qtdArvore || d.rotas || 0);
+        return Number(d.quantitativo || d.rotas || 0);
+      };
+
+      for (const s of alvos) {
+        const resumoApi = await servicoService.getResumoCicloPorDia(contractId, s.id, {
+          dataInicio: recorte.dataInicio,
+          dataFim: recorte.dataFim,
+        });
+        const dias = (resumoApi.dias || [])
+          .map((d) => ({
+            data: d.data,
+            registros: Number(d.rotas || 0),
+            quantitativo: qtdDe(String(s.tipo), d),
+          }))
+          .filter((d) => d.registros > 0 || d.quantitativo > 0);
+        const registros = dias.reduce((acc, d) => acc + d.registros, 0);
+        const quantitativo = dias.reduce((acc, d) => acc + d.quantitativo, 0);
+        if (registros <= 0 && quantitativo <= 0) continue;
+        tipos.push({
+          tipo: String(s.tipo),
+          nome: s.nome,
+          und: undDe(String(s.tipo), resumoApi.totais?.kmLinear, resumoApi.totais?.metroLinear),
+          registros,
+          quantitativo,
+          diasComDados: dias.length,
+          dias,
+        });
+      }
+
+      if (tipos.length === 0) {
+        adicionarToast(
+          `Nenhum serviço da CONSOLIDADO com dados entre ${formatarIsoParaBr(recorte.dataInicio)} e ${formatarIsoParaBr(recorte.dataFim)}`,
+          'warning',
+        );
+        return;
+      }
+
+      const html = gerarHtmlRelatorioCicloConsolidado({
+        cicloLabel: recorte.emAndamento
+          ? `${ciclo.label} — ${recorte.diasDecorridos} dias decorridos`
+          : ciclo.label,
+        dataInicio: recorte.dataInicio,
+        dataFim: recorte.dataFim,
+        tipos,
+      });
+      const nomeArquivo = gerarNomePdfRelatorioCicloConsolidado({
+        dataInicio: recorte.dataInicio,
+        dataFim: recorte.dataFim,
+      });
+      await pdfService.gerarEBaixar(html, nomeArquivo, 'default', false);
+      adicionarToast('Relatório gerencial do ciclo exportado em PDF', 'success');
+    } catch (err) {
+      console.error('Erro PDF ciclo gerencial:', err);
+      adicionarToast('Erro ao gerar relatório gerencial do ciclo', 'error');
+    } finally {
+      setExportando(null);
+    }
+  }, [adicionarToast, contractId, ciclo]);
+
   const exportarRelatorioOperacional = useCallback(async (tipo: TipoPeriodoOperacional) => {
     if (ehRocada) {
       if (tipo === 'ciclo') await exportarRelatorioRocadaCiclo();
@@ -996,6 +1099,7 @@ export default function CicloDateSelector({
     for (const id of pdfsMarcados) {
       if (id === 'melhoria') await exportarRelatorioMelhoriaCiclo();
       else if (id === 'hodometro') await exportarRelatorioHodometroSaude();
+      else if (id === 'ciclo_gerencial') await exportarRelatorioCicloGerencial();
       else if (id === 'ciclo' && ehRocada) await exportarRelatorioRocadaCiclo();
       else if (id === 'ciclo' && ehUnidadeNaoRocada) await exportarRelatorioUnidadeCiclo();
       else if (id === 'ciclo' || id === 'semanal' || id === 'quinzenal') {
@@ -1005,6 +1109,7 @@ export default function CicloDateSelector({
   }, [
     pdfsMarcados, adicionarToast, ehRocada, ehUnidadeNaoRocada,
     exportarRelatorioMelhoriaCiclo, exportarRelatorioHodometroSaude,
+    exportarRelatorioCicloGerencial,
     exportarRelatorioRocadaCiclo, exportarRelatorioUnidadeCiclo,
     exportarRelatorioOperacional,
   ]);
@@ -1116,61 +1221,14 @@ export default function CicloDateSelector({
               </button>
               {menuPdfAberto && (
                 <div style={menuPdfPainel}>
-                  <div style={{
-                    fontSize: '0.68rem', fontWeight: 800, color: '#0f172a',
-                    textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '0.45rem',
-                  }}>
-                    Selecione os relatórios
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-                    {opcoesPdf.map((op) => {
-                      const marcado = pdfsMarcados.includes(op.id);
-                      return (
-                        <label
-                          key={op.id}
-                          style={{
-                            display: 'flex', alignItems: 'flex-start', gap: '0.5rem',
-                            padding: '0.4rem 0.45rem', borderRadius: '8px',
-                            background: marcado ? '#eef2ff' : 'transparent',
-                            cursor: 'pointer',
-                          }}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={marcado}
-                            onChange={() => alternarPdfMarcado(op.id)}
-                            style={{ marginTop: '0.15rem', accentColor: '#4f46e5' }}
-                          />
-                          <span>
-                            <span style={{ display: 'block', fontSize: '0.78rem', fontWeight: 700, color: '#0f172a' }}>
-                              {op.label}
-                            </span>
-                            <span style={{ display: 'block', fontSize: '0.65rem', color: '#64748b', lineHeight: 1.35 }}>
-                              {op.descricao}
-                            </span>
-                          </span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => gerarPdfsMarcados()}
-                    disabled={pdfsMarcados.length === 0 || exportando !== null || semDados}
-                    style={{
-                      marginTop: '0.55rem', width: '100%',
-                      display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '0.35rem',
-                      padding: '0.45rem 0.7rem', borderRadius: '8px', border: 'none',
-                      background: pdfsMarcados.length === 0 ? '#cbd5e1' : '#4f46e5',
-                      color: '#fff', fontSize: '0.75rem', fontWeight: 700,
-                      cursor: pdfsMarcados.length === 0 || exportando ? 'not-allowed' : 'pointer',
-                    }}
-                  >
-                    <FiDownload size={13} />
-                    {pdfsMarcados.length <= 1
-                      ? 'Gerar PDF'
-                      : `Gerar ${pdfsMarcados.length} PDFs`}
-                  </button>
+                  <RelatoriosMenu
+                    opcoes={opcoesPdf}
+                    marcados={pdfsMarcados}
+                    onToggle={(id) => alternarPdfMarcado(id as PdfRelatorioId)}
+                    onGerar={() => gerarPdfsMarcados()}
+                    gerando={exportando !== null}
+                    disabled={semDados}
+                  />
                 </div>
               )}
             </div>

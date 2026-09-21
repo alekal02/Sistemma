@@ -6,7 +6,7 @@
 
 /* ─── Página limpa do contrato ─── */
 .contrato-page-clean {
-  max-width: 1100px;
+  max-width: 1600px;
 }
 
 .contrato-page-head {
@@ -2365,7 +2365,7 @@
 
 /* ─── Refinamento premium da página do contrato ─── */
 .contrato-page-clean {
-  max-width: 1440px;
+  max-width: 1600px;
   margin: 0 auto;
 }
 
@@ -2502,6 +2502,87 @@
 
 @media (max-width: 480px) {
   .contrato-servicos-tiles {
+    grid-template-columns: 1fr;
+  }
+}
+
+.contrato-hub-tabs {
+  display: flex;
+  gap: 0.35rem;
+  margin: 0 0 1.1rem;
+  padding: 0.25rem;
+  background: #eef2f7;
+  border-radius: 10px;
+  width: fit-content;
+}
+
+.contrato-hub-tabs button {
+  border: none;
+  background: transparent;
+  padding: 0.45rem 0.9rem;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #475569;
+  cursor: pointer;
+}
+
+.contrato-hub-tabs button.is-on {
+  background: #fff;
+  color: #0f172a;
+}
+
+.contrato-relatorios-hub {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.contrato-relatorios-bloco {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 1rem 1.1rem;
+}
+
+.contrato-relatorios-bloco h2 {
+  margin: 0 0 0.35rem;
+  font-size: 0.95rem;
+}
+
+.contrato-relatorios-bloco p {
+  margin: 0 0 0.75rem;
+  font-size: 0.78rem;
+  color: #64748b;
+}
+
+.contrato-relatorios-data {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #475569;
+  margin-bottom: 0.75rem;
+  max-width: 220px;
+}
+
+.contrato-relatorios-data input {
+  padding: 0.4rem 0.5rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  font-weight: 600;
+}
+
+.contrato-relatorios-servicos {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+@media (max-width: 900px) {
+  .contrato-relatorios-hub {
     grid-template-columns: 1fr;
   }
 }

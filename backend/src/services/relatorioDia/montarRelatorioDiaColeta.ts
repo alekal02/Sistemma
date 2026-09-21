@@ -6,6 +6,7 @@ import { Contract } from '../../entities/Contract';
 import { Servico } from '../../entities/Servico';
 import { normalizarListaPlacasReserva } from '../../utils/placasReserva';
 import { getAgregacaoColeta, getMapeamentoOperacional } from '../coletaAgregacaoService';
+import { agruparViagensPesoPorLinha } from '../viagemPesoRotaService';
 import { buildValoresFixosFaturamento } from '../configFaturamentoValores';
 import { carregarViagensCapacidadeDia } from './capacidadeViagemDia';
 import { diaSemanaPt } from './fmt';
@@ -26,6 +27,33 @@ export async function montarHtmlRelatorioDiaColeta(opts: {
     topN: 50,
     valoresFixos,
   });
+  const cfgOp = contrato?.configOperacional;
+
+  let viagensPesoRota: Awaited<ReturnType<typeof getMapeamentoOperacional>>['viagensPesoRota'] = [];
+  let horasJornada = 0;
+  try {
+    const mapeamento = await getMapeamentoOperacional(servico.id, { data: dataIso });
+    viagensPesoRota = mapeamento.viagensPesoRota || [];
+    horasJornada = Number(mapeamento.resumo?.horasProdutivas || 0);
+  } catch (err: any) {
+    console.warn('[RelatorioDiaColeta] Mapeamento operacional:', err?.message || err);
+  }
+  if (!(horasJornada > 0) && viagensPesoRota.length) {
+    horasJornada = Math.round(
+      viagensPesoRota.reduce((s, v) => s + (v.horasProdutivasViagem || 0), 0) * 100,
+    ) / 100;
+  }
+  // Ton/hora e velocidade usam hora/km da jornada (trechos), não HORAS FORA UNIDADE
+  // — essa coluna costuma vir vazia e zera os indicadores do PDF do chatbot.
+  if (horasJornada > 0) {
+    agg.resumo.horasProdutivas = horasJornada;
+  }
+  if (!(Number(agg.resumo.kmTotal) > 0) && viagensPesoRota.length) {
+    const kmDasRotas = agruparViagensPesoPorLinha(viagensPesoRota)
+      .reduce((s, g) => s + (g.kmTotalRota || 0), 0);
+    if (kmDasRotas > 0) agg.resumo.kmTotal = Math.round(kmDasRotas * 100) / 100;
+  }
+
   const operacao = analiseOperacaoDeAgregacaoSql(agg);
   const placasReserva = normalizarListaPlacasReserva(contrato?.configOperacional?.placasReserva);
   const kpisOperacao = calcularKpisOperacaoDiaSql({
@@ -35,7 +63,6 @@ export async function montarHtmlRelatorioDiaColeta(opts: {
     valoresFixos,
     limite: 8,
   });
-  const cfgOp = contrato?.configOperacional;
   const capacidade = await carregarViagensCapacidadeDia(servico.id, dataIso, {
     volumeL: cfgOp?.volumeL || null,
     pesoMaximoKg: cfgOp?.pesoMaximoKg || null,
@@ -43,14 +70,6 @@ export async function montarHtmlRelatorioDiaColeta(opts: {
     densidadeKgL: cfgOp?.densidadeKgL || null,
     densidadeKgLPorPlaca: cfgOp?.densidadeKgLPorPlaca || null,
   });
-
-  let viagensPesoRota: Awaited<ReturnType<typeof getMapeamentoOperacional>>['viagensPesoRota'] = [];
-  try {
-    const mapeamento = await getMapeamentoOperacional(servico.id, { data: dataIso });
-    viagensPesoRota = mapeamento.viagensPesoRota || [];
-  } catch (err: any) {
-    console.warn('[RelatorioDiaColeta] Mapeamento operacional:', err?.message || err);
-  }
 
   const html = gerarHtmlRelatorioDia({
     aba: 'operacao',

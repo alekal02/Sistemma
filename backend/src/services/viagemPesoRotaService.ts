@@ -6,6 +6,12 @@
 import {
   calcularHorasPorTrechoRota,
   calcularHorasProdutivaImprodutivaRegistro,
+  calcularKmNasRotasRegistro,
+  lerKmCampoEstrito,
+  lerKmChegadaBase,
+  lerKmChegadaRota,
+  lerKmSaidaBase,
+  lerKmSaidaRota,
 } from './horasProdutivasService';
 
 function round2(n: number): number {
@@ -39,6 +45,12 @@ export interface ViagemPesoRotaItem {
   semPesagem: boolean;
   horasProdutivasViagem: number;
   horasProdutivasRota: number;
+  /** Jornada base→base da linha (não só o tempo dentro da rota). */
+  horasTotaisRota: number;
+  /** KM TOTAL da linha (planilha). */
+  kmTotalRota: number;
+  /** KM desta viagem (hodômetro saída − chegada da ROTA N), se houver. */
+  kmViagem: number;
   origemHora: OrigemHoraViagem;
   /** Só quando ainda não encheu: h da viagem × (ideal / peso). */
   tempoEqEncher: number | null;
@@ -53,6 +65,8 @@ export interface GrupoViagemPesoRota {
   motorista: string;
   tipo: string | null;
   horasProdutivasRota: number;
+  horasTotaisRota: number;
+  kmTotalRota: number;
   origemHora: OrigemHoraViagem;
   viagens: ViagemPesoRotaItem[];
 }
@@ -86,6 +100,36 @@ export function resolverQtdViagensPesoRota(
   _nKmSlots = 0,
 ): number {
   return Math.min(4, Math.max(nPesos, nTrechos, 0));
+}
+
+function kmDoSlot(objHoras: Record<string, any>, nViagem: number): number {
+  const chegada = lerKmChegadaRota(objHoras, nViagem);
+  const saida = lerKmSaidaRota(objHoras, nViagem);
+  if (chegada > 0 && saida > chegada) {
+    const km = round2(saida - chegada);
+    return km > 0 && km <= 300 ? km : 0;
+  }
+  return 0;
+}
+
+/** KM TOTAL da linha: coluna da planilha, senão soma dos trechos / hodômetro base. */
+function kmTotalDaLinha(objHoras: Record<string, any>): number {
+  const entidade = Number(objHoras?.kmTotal);
+  if (Number.isFinite(entidade) && entidade > 0) return round2(entidade);
+
+  const colPlanilha = lerKmCampoEstrito(objHoras, 'KM TOTAL', 'KM_TOTAL', 'KMTOTAL');
+  if (colPlanilha > 0) return round2(colPlanilha);
+
+  const nasRotas = calcularKmNasRotasRegistro(objHoras);
+  if (nasRotas > 0) return round2(nasRotas);
+
+  const saida = lerKmSaidaBase(objHoras);
+  const chegada = lerKmChegadaBase(objHoras);
+  if (saida > 0 && chegada > saida) {
+    const d = round2(chegada - saida);
+    if (d > 0 && d <= 1500) return d;
+  }
+  return 0;
 }
 
 function horasDoSlot(
@@ -142,7 +186,10 @@ export function montarViagensPesoDoRegistro(opts: {
   const indices = [0, 1, 2, 3].filter((i) => slotTemDadoDeViagem(pesosRaw[i] || 0, trechos[i] || 0));
   if (indices.length === 0) return [];
 
-  const horasRota = calcularHorasProdutivaImprodutivaRegistro(opts.objHoras).horasProdutivas;
+  const jornada = calcularHorasProdutivaImprodutivaRegistro(opts.objHoras);
+  const horasRota = jornada.horasProdutivas;
+  const horasTotaisRota = jornada.horasTotais;
+  const kmTotalRota = kmTotalDaLinha(opts.objHoras);
   const ideal = opts.pesoIdealKg != null && opts.pesoIdealKg > 0 ? round2(opts.pesoIdealKg) : null;
 
   const itens: ViagemPesoRotaItem[] = [];
@@ -170,6 +217,9 @@ export function montarViagensPesoDoRegistro(opts: {
       semPesagem,
       horasProdutivasViagem: h,
       horasProdutivasRota: horasRota,
+      horasTotaisRota,
+      kmTotalRota,
+      kmViagem: kmDoSlot(opts.objHoras, i + 1),
       origemHora: origem,
       tempoEqEncher,
       estimado: !semPesagem && !encheu && tempoEqEncher != null,
@@ -192,6 +242,8 @@ export function agruparViagensPesoPorLinha(itens: ViagemPesoRotaItem[]): GrupoVi
         motorista: it.motorista,
         tipo: it.tipo,
         horasProdutivasRota: 0,
+        horasTotaisRota: 0,
+        kmTotalRota: 0,
         origemHora: it.origemHora,
         viagens: [],
       };
@@ -205,6 +257,10 @@ export function agruparViagensPesoPorLinha(itens: ViagemPesoRotaItem[]): GrupoVi
     g.horasProdutivasRota = round2(
       g.viagens.reduce((s, v) => s + (v.horasProdutivasViagem || 0), 0),
     );
+    g.horasTotaisRota = round2(Math.max(...g.viagens.map((v) => v.horasTotaisRota || 0), 0));
+    const kmLinha = Math.max(...g.viagens.map((v) => v.kmTotalRota || 0), 0);
+    const kmSlots = g.viagens.reduce((s, v) => s + (v.kmViagem || 0), 0);
+    g.kmTotalRota = round2(kmLinha > 0 ? kmLinha : kmSlots);
   }
   grupos.sort((a, b) =>
     (a.data || '').localeCompare(b.data || '')

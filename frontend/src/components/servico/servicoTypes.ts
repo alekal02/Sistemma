@@ -15,6 +15,7 @@ export interface PlanilhaItem {
   totalLinhas: number;
   linhasImportadas: number;
   criadoEm: string;
+  urlDownload?: string | null;
 }
 
 export interface ServicoMiniFlowProps {

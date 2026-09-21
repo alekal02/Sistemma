@@ -80,6 +80,91 @@ describe('montarViagensPesoDoRegistro', () => {
     assert.equal(viagens[0].tempoEqEncher, 3.3); // 2h × (3300/2000)
   });
 
+  it('preenche km da viagem e hora total da jornada (não só produtiva)', () => {
+    const viagens = montarViagensPesoDoRegistro({
+      rota: 'BD05',
+      placa: 'RBS6G77',
+      motorista: 'X',
+      tipo: 'TOCO',
+      pesos: [7000, 8200],
+      pesoIdealKg: 8250,
+      objHoras: {
+        kmTotal: 142,
+        dados: {
+          'HORA SÁIDA BASE': 7 / 24,
+          'HORA CHEGADA BASE': 16 / 24,
+          'HORA CHEGADA ROTA 01': 8 / 24,
+          'HORA SAÍDA ROTA 01': 11 / 24,
+          'HORA CHEGADA ROTA 02': 12 / 24,
+          'HORA SAÍDA ROTA 02': 14.7 / 24,
+          'KM CHEGADA ROTA 01': 10,
+          'KM SAÍDA ROTA 01': 48,
+          'KM CHEGADA ROTA 02': 60,
+          'KM SAÍDA ROTA 02': 95,
+        },
+      },
+    });
+    assert.equal(viagens.length, 2);
+    assert.equal(viagens[0].kmViagem, 38);
+    assert.equal(viagens[1].kmViagem, 35);
+    assert.equal(viagens[0].kmTotalRota, 142);
+    assert.equal(viagens[0].horasTotaisRota, 9);
+    assert.equal(viagens[0].horasProdutivasViagem, 3);
+    const grupos = agruparViagensPesoPorLinha(viagens);
+    assert.equal(grupos[0].kmTotalRota, 142);
+    assert.equal(grupos[0].horasTotaisRota, 9);
+  });
+
+  it('usa KM TOTAL da planilha e soma hodômetro se a coluna tipada vier vazia', () => {
+    const comColuna = montarViagensPesoDoRegistro({
+      rota: 'BD05',
+      placa: 'RBS6G77',
+      motorista: 'X',
+      tipo: 'TOCO',
+      pesos: [7000, 8200],
+      pesoIdealKg: 8250,
+      objHoras: {
+        dados: {
+          'KM TOTAL': 142,
+          'HORA SÁIDA BASE': 7 / 24,
+          'HORA CHEGADA BASE': 16 / 24,
+          'HORA CHEGADA ROTA 01': 8 / 24,
+          'HORA SAÍDA ROTA 01': 11 / 24,
+          'HORA CHEGADA ROTA 02': 12 / 24,
+          'HORA SAÍDA ROTA 02': 14.7 / 24,
+          'KM CHEGADA ROTA 01': 10,
+          'KM SAÍDA ROTA 01': 48,
+          'KM CHEGADA ROTA 02': 60,
+          'KM SAÍDA ROTA 02': 95,
+        },
+      },
+    });
+    assert.equal(comColuna[0].kmTotalRota, 142);
+    assert.equal(comColuna[0].horasTotaisRota, 9);
+
+    const soHodometro = montarViagensPesoDoRegistro({
+      rota: 'BD05',
+      placa: 'RBS6G77',
+      motorista: 'X',
+      tipo: 'TOCO',
+      pesos: [7000],
+      pesoIdealKg: 8250,
+      objHoras: {
+        dados: {
+          'HORA SÁIDA BASE': 7 / 24,
+          'HORA CHEGADA BASE': 16 / 24,
+          'HORA CHEGADA ROTA 01': 8 / 24,
+          'HORA SAÍDA ROTA 01': 11 / 24,
+          'KM CHEGADA ROTA 01': 10,
+          'KM SAÍDA ROTA 01': 48,
+        },
+      },
+    });
+    assert.equal(soHodometro[0].kmTotalRota, 38);
+    assert.equal(soHodometro[0].kmViagem, 38);
+    assert.equal(soHodometro[0].horasTotaisRota, 9);
+  });
+
   it('2 trechos e 1 pesagem: hora de cada viagem, a segunda sem peso', () => {
     const viagens = montarViagensPesoDoRegistro({
       rota: '01AD',

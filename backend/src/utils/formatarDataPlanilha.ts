@@ -81,6 +81,36 @@ export function formatarDataSaida(val: Date | string | null | undefined): string
   return formatarDataPlanilha(val);
 }
 
+const MESES_PT: Record<string, number> = {
+  jan: 0, janeiro: 0,
+  fev: 1, fevereiro: 1,
+  mar: 2, marco: 2, março: 2,
+  abr: 3, abril: 3,
+  mai: 4, maio: 4,
+  jun: 5, junho: 5,
+  jul: 6, julho: 6,
+  ago: 7, agosto: 7,
+  set: 8, setembro: 8,
+  out: 9, outubro: 9,
+  nov: 10, novembro: 10,
+  dez: 11, dezembro: 11,
+};
+
+/** Ex.: 1-set-26, 25/ago/2026, 16 set 26 */
+function parseDataMesPt(texto: string): Date | null {
+  const m = texto.trim().match(
+    /^(\d{1,2})[.\-\/ ]+([a-zçã]+)[.\-\/ ]+(\d{2,4})$/i,
+  );
+  if (!m) return null;
+  const mes = MESES_PT[m[2].toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')];
+  if (mes == null) return null;
+  let ano = Number(m[3]);
+  if (ano < 100) ano += ano >= 70 ? 1900 : 2000;
+  const dia = Number(m[1]);
+  if (dia < 1 || dia > 31) return null;
+  return new Date(Date.UTC(ano, mes, dia, 12, 0, 0));
+}
+
 /** Converte célula de planilha (serial, string ou Date) para Date */
 export function parseDataPlanilha(val: unknown): Date | null {
   if (val === null || val === undefined || val === '') return null;
@@ -94,6 +124,8 @@ export function parseDataPlanilha(val: unknown): Date | null {
     if (br) return new Date(Date.UTC(+br[3], +br[2] - 1, +br[1]));
     const iso = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})/);
     if (iso) return new Date(Date.UTC(+iso[1], +iso[2] - 1, +iso[3]));
+    const pt = parseDataMesPt(trimmed);
+    if (pt) return pt;
     const num = Number(trimmed.replace(',', '.'));
     if (!isNaN(num) && num >= 1 && num < 2958466) return ColetaData.fromExcelDate(num);
   }

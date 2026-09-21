@@ -14,9 +14,11 @@ import {
   FiLogOut,
   FiMessageSquare,
   FiColumns,
+  FiFileText,
 } from 'react-icons/fi'
 import './Layout.css'
 import { useAppVersion } from '../hooks/useAppVersion'
+import PageErrorBoundary from './PageErrorBoundary'
 
 interface LayoutProps {
   children: ReactNode
@@ -51,7 +53,9 @@ function Layout({ children }: LayoutProps) {
     : (gestor ? '/visao-geral' : '/contratos')
   const location = useLocation()
   const navigate = useNavigate()
-  const [sidebarAberta, setSidebarAberta] = useState(true)
+  const [sidebarAberta, setSidebarAberta] = useState(() =>
+    typeof window === 'undefined' ? true : window.innerWidth >= 1280,
+  )
   const { breadcrumbs } = useBreadcrumbs()
   const versaoLabel = useAppVersion()
 
@@ -166,11 +170,19 @@ function Layout({ children }: LayoutProps) {
               </div>
               <Link
                 to={home}
-                className={`sidebar-link ${location.pathname.startsWith('/contratos') ? 'active' : ''}`}
+                className={`sidebar-link ${location.pathname.startsWith('/contratos') && !location.search.includes('aba=relatorios') ? 'active' : ''}`}
                 onClick={fecharSidebarMobile}
               >
                 <span className="sidebar-icon"><FiDatabase size={20} /></span>
                 <span className={sidebarAberta ? '' : 'hidden-text'}>Meu contrato</span>
+              </Link>
+              <Link
+                to={`${home}?aba=relatorios`}
+                className={`sidebar-link ${location.search.includes('aba=relatorios') ? 'active' : ''}`}
+                onClick={fecharSidebarMobile}
+              >
+                <span className="sidebar-icon"><FiFileText size={20} /></span>
+                <span className={sidebarAberta ? '' : 'hidden-text'}>Relatórios</span>
               </Link>
               <Link
                 to="/whatsapp-grupos"
@@ -271,7 +283,9 @@ function Layout({ children }: LayoutProps) {
         </header>
 
         <main className="main-content">
-          {children}
+          <PageErrorBoundary key={location.pathname} fallbackHref="/contratos">
+            {children}
+          </PageErrorBoundary>
         </main>
       </div>
     </div>

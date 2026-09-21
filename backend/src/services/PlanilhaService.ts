@@ -3,6 +3,7 @@ import { Repository } from 'typeorm';
 import AppDataSource from '../database/data-source';
 import { ColetaData } from '../entities/ColetaData';
 import { PlanilhaUpload } from '../entities/PlanilhaUpload';
+import { ColetaTotaisDia } from '../entities/ColetaTotaisDia';
 import FileStorageService from './FileStorageService';
 import { detectarPadraoPlanilha, isNomeColunaInvalido } from './PadraoPlanilhaDetector';
 import { Servico } from '../entities/Servico';
@@ -1395,7 +1396,12 @@ export class PlanilhaService {
           .execute();
       }
 
-      // Linhas órfãs sem upload (legado) — não há vínculo direto; nada a fazer.
+      await manager
+        .createQueryBuilder()
+        .delete()
+        .from(ColetaTotaisDia)
+        .where('"servicoId" = :servicoId', { servicoId })
+        .execute();
     });
 
     for (const url of urlsStorage) {
@@ -1408,7 +1414,6 @@ export class PlanilhaService {
 
     invalidarCacheDadosServico(servicoId);
     invalidarCacheDashboardServico(servicoId);
-    void recalcularTotaisDiaServicoSilencioso(servicoId);
 
     return {
       uploadsRemovidos: uploadIds.length,
@@ -1566,6 +1571,8 @@ export class PlanilhaService {
         ${sqlJsonNumero('c', 'AREA_M2')},
         ${sqlJsonNumero('c', 'M2')},
         ${sqlJsonNumero('c', 'AREA_ROCADA')},
+        ${sqlJsonNumero('c', 'QUANTITATIVO')},
+        ${sqlJsonNumero('c', 'QUANTIDADE')},
         0
       )
     `;
@@ -1597,6 +1604,7 @@ export class PlanilhaService {
     const quantitativoExpr = `
       COALESCE(
         ${sqlJsonNumero('c', 'QUANTITATIVO')},
+        ${sqlJsonNumero('c', 'QUANTIDADE')},
         0
       )
     `;
