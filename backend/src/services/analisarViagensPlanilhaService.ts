@@ -350,6 +350,29 @@ function correcaoEhHodometro(texto: string): boolean {
     || t.includes('leitura foi descartada');
 }
 
+function viagemFicaForaDash(v: {
+  foraDashboard?: boolean;
+  descartada?: boolean;
+  completa?: boolean;
+}): boolean {
+  return Boolean(v.foraDashboard || v.descartada || v.completa === false);
+}
+
+/** Fora do dashboard primeiro — essas linhas não se perdem no meio das tratadas. */
+export function priorizarViagensForaDashboard<T extends {
+  foraDashboard?: boolean;
+  descartada?: boolean;
+  completa?: boolean;
+}>(lista: T[], maxDetalhe = 500): T[] {
+  const fora: T[] = [];
+  const resto: T[] = [];
+  for (const v of lista) {
+    if (viagemFicaForaDash(v)) fora.push(v);
+    else resto.push(v);
+  }
+  return [...fora, ...resto.slice(0, Math.max(0, maxDetalhe - fora.length))];
+}
+
 export function analisarViagensPlanilha(
   buffer: Buffer,
   nomeArquivo: string,
@@ -572,8 +595,7 @@ export function analisarViagensPlanilha(
       if (contador !== null && contador > 0) somaContadorForaDashboard += contador;
       const pesoDesc = parseNum(valorColuna(linha, idx.pesoTotal));
       if (pesoDesc != null && pesoDesc > 0) pesoKgForaDashboard += pesoDesc;
-      if (viagens.length < MAX_DETALHE_VIAGENS) {
-        viagens.push({
+      viagens.push({
           linha: linhaPlanilha,
           data: formatarDataPlanilha(dataRaw),
           placa: validacaoPlaca.valida ? validacaoPlaca.normalizada : (validacaoPlaca.original || placa),
@@ -596,7 +618,6 @@ export function analisarViagensPlanilha(
           motivoForaDashboard: 'Descartada — sem placa, KM Total e Peso Total (não sobe ao dashboard)',
           descartada: true,
         });
-      }
       if (contador !== null && contador > 0) {
         const cat = 'Linha com CONTADOR mas sem placa/KM/peso (não sobe)';
         if (!problemasPorCategoria.has(cat)) problemasPorCategoria.set(cat, new Set());
@@ -703,19 +724,18 @@ export function analisarViagensPlanilha(
     };
 
     // Inclui: fora do dash, hodômetro tratado, pesagem alta ou sem pesagem — PDF de saúde
-    const incluirNoDetalhe = viagens.length < MAX_DETALHE_VIAGENS
-      && (
-        !completa
-        || corrigidaHodometro
-        || alertaPesagemAlta
-        || alertaSemPesagem
-        || (temIdentificacao && contador != null && contador > 0 && !completa)
-      );
+    const incluirNoDetalhe = !completa
+      || corrigidaHodometro
+      || alertaPesagemAlta
+      || alertaSemPesagem
+      || (temIdentificacao && contador != null && contador > 0 && !completa);
 
     if (incluirNoDetalhe) {
       viagens.push(item);
     }
   }
+
+  viagens.splice(0, viagens.length, ...priorizarViagensForaDashboard(viagens, MAX_DETALHE_VIAGENS));
 
   const totalViagens = viagensCompletas + viagensIncompletas;
   const problemasDashboard = Array.from(problemasPorCategoria.entries())

@@ -742,6 +742,65 @@ export class ServicoController {
         return res.status(404).json({ error: 'Serviço não encontrado' });
       }
 
+      const resumoHub = String(req.query.resumo || '') === '1';
+
+      if (resumoHub) {
+        const [uploads, totalUploads, statsUploads] = await Promise.all([
+          this.uploadRepo.find({
+            where: { servico_id: id },
+            order: { criadoEm: 'DESC' },
+            take: 8,
+          }),
+          this.uploadRepo.count({ where: { servico_id: id } }),
+          this.uploadRepo.createQueryBuilder('u')
+            .select('COALESCE(SUM(u.totalLinhas), 0)', 'totalLinhas')
+            .addSelect('COALESCE(SUM(u.linhasImportadas), 0)', 'totalImportados')
+            .where('u.servico_id = :id', { id })
+            .getRawOne(),
+        ]);
+        const totalLinhas = Number(statsUploads?.totalLinhas || 0);
+        const totalImportados = Number(statsUploads?.totalImportados || 0);
+        const padraoSanitizado = servico.padraoPlanilha
+          ? {
+              ...servico.padraoPlanilha,
+              colunas: (servico.padraoPlanilha.colunas || []).filter(
+                (c: { nome?: string }) => !isNomeColunaInvalido(c.nome || ''),
+              ),
+            }
+          : null;
+        return res.json({
+          servico: {
+            id: servico.id,
+            nome: servico.nome,
+            tipo: servico.tipo || 'coleta_caminhao',
+            padraoPlanilha: padraoSanitizado,
+            configDashboard: servico.configDashboard,
+            configFaturamento: servico.configFaturamento,
+          },
+          periodoDados: null,
+          uploads: {
+            total: totalUploads,
+            totalLinhas,
+            totalImportados,
+            registrosValidos: totalImportados,
+            registrosTotais: totalLinhas,
+            ultimos: uploads.map((u) => ({
+              id: u.id,
+              nomeArquivo: u.nomeArquivo,
+              totalLinhas: u.totalLinhas,
+              linhasImportadas: u.linhasImportadas,
+              criadoEm: u.criadoEm,
+              urlDownload: u.urlDownload || null,
+            })),
+          },
+          tipoServico: servico.tipo || 'coleta_caminhao',
+          valoresCaminhao: null,
+          kpisUniversaisDisponiveis: [],
+          totalKpisUniversais: 0,
+          totalKpisAtivados: 0,
+        });
+      }
+
       // Coleta sem dashboard configurado: aplica padrão automaticamente
       if (servico.tipo === TipoServico.COLETA_CAMINHAO) {
         const cfgAtual = servico.configDashboard || {};

@@ -1,6 +1,6 @@
 {
   "name": "abastecimento-backend",
-  "version": "4.0.4",
+  "version": "4.0.6",
   "description": "Backend para sistema de registro de abastecimentos",
   "main": "dist/index.js",
   "scripts": {

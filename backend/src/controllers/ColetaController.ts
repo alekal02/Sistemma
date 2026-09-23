@@ -21,7 +21,6 @@ import { buildConfigDashboardPadraoColeta } from '../config/dashboardPadraoColet
 import { Servico } from '../entities/Servico';
 import { inferirFiltroExecucaoServico } from '../utils/rocadaTipoExecucao';
 import { labelModeloRocada } from '../services/rocadaPlanilhaParser';
-import { PlanilhaUpload } from '../entities/PlanilhaUpload';
 import { invalidarCacheDashboardServico } from './ServicoController';
 import { invalidarCacheDadosServico } from '../services/servicoDadosCache';
 import { dashboardCache } from '../services/DashboardCacheManager';
@@ -104,7 +103,7 @@ export class ColetaController {
 
       const usuarioIdValido = await this.validarUsuarioId(req.usuario?.id);
       const estrategiaRaw = req.body?.estrategia;
-      const substituir = estrategiaRaw !== 'ignorar';
+      const substituir = estrategiaRaw === 'substituir' || estrategiaRaw === 'atualizar_data';
 
       const { classificarPlanilhaContrato } = await import('../services/planilhaContratoClassifier');
       const { obterServicoPorTipoContrato } = await import('../services/servicosPadraoContratoService');
@@ -129,6 +128,8 @@ export class ColetaController {
         }
         const avisoCiclo = (resultado.avisos || []).find((a) => a.includes('ciclo já fechado') || a.includes('ciclo anterior'));
         if (avisoCiclo) mensagem += ` ${avisoCiclo}`;
+        const avisoDup = (resultado.avisos || []).find((a) => a.includes('já estavam no sistema'));
+        if (avisoDup) mensagem += ` ${avisoDup}`;
 
         for (const s of resultado.splitPorServico || []) {
           if (s.importados > 0) {
@@ -167,6 +168,8 @@ export class ColetaController {
         }
         const avisoCiclo = (resultado.avisos || []).find((a) => a.includes('ciclo já fechado') || a.includes('ciclo anterior'));
         if (avisoCiclo) mensagem += ` ${avisoCiclo}`;
+        const avisoDup = (resultado.avisos || []).find((a) => a.includes('já estavam no sistema'));
+        if (avisoDup) mensagem += ` ${avisoDup}`;
 
         for (const s of resultado.splitPorServico || []) {
           if (s.importados > 0) {
@@ -233,15 +236,12 @@ export class ColetaController {
 
       if (classificacao.tipo === 'rocada') {
         const alvo = await obterServicoPorTipoContrato(contractId, TipoServico.ROCADEIRA);
-        const temPlanilhaAnterior = await AppDataSource.getRepository(PlanilhaUpload).count({
-          where: { servico_id: alvo.id },
-        });
         const resultadoRocada = await RocadaImportService.importar(
           file.buffer,
           file.originalname,
           alvo.id,
           usuarioIdValido ?? undefined,
-          temPlanilhaAnterior > 0 || substituir,
+          substituir,
         );
 
         invalidarCacheSaudeContratos(contractId);
@@ -253,7 +253,11 @@ export class ColetaController {
           servicoNome: alvo.nome,
           ...resultadoRocada,
           importadas: resultadoRocada.importados,
-          mensagem: `Roçada importada em “${alvo.nome}” (${labelModeloRocada(resultadoRocada.modelo)}): ${resultadoRocada.importados} registro(s).`,
+          mensagem: `Roçada importada em “${alvo.nome}” (${labelModeloRocada(resultadoRocada.modelo)}): ${resultadoRocada.importados} registro(s).${
+            (resultadoRocada.avisos || []).some((a) => a.includes('já estavam no sistema'))
+              ? ` ${(resultadoRocada.avisos || []).find((a) => a.includes('já estavam no sistema'))}`
+              : ''
+          }`,
         });
         return;
       }
@@ -311,10 +315,7 @@ export class ColetaController {
         });
 
         if (servicoTipo && detectarPlanilhaConsolidadoProducao(file.buffer)) {
-          const temPlanilhaAnterior = await AppDataSource.getRepository(PlanilhaUpload).count({
-            where: { servico_id },
-          });
-          const substituirCons = temPlanilhaAnterior > 0 || estrategiaRaw === 'atualizar_data';
+          const substituirCons = estrategiaRaw === 'substituir' || estrategiaRaw === 'atualizar_data';
           const resultadoCons = TIPOS_ACEITA_CONSOLIDADO.has(String(servicoTipo.tipo))
             ? await ConsolidadoProducaoImportService.importar(
               file.buffer,
@@ -360,15 +361,12 @@ export class ColetaController {
           && TIPOS_ACEITA_UNIFICADO.has(String(servicoTipo.tipo))
           && detectarPlanilhaServicosUnificados(file.buffer)
         ) {
-          const temPlanilhaAnterior = await AppDataSource.getRepository(PlanilhaUpload).count({
-            where: { servico_id },
-          });
           const resultadoUnif = await ServicosUnificadosImportService.importar(
             file.buffer,
             file.originalname,
             servico_id,
             usuarioIdValido ?? undefined,
-            temPlanilhaAnterior > 0 || estrategiaRaw === 'atualizar_data',
+            estrategiaRaw === 'substituir' || estrategiaRaw === 'atualizar_data',
           );
 
           const partes = resultadoUnif.splitPorServico.map((s) => {
@@ -400,15 +398,12 @@ export class ColetaController {
 
         // Serviço de roçada: pipeline multi-modelo (não usa validação de viagem)
         if (servicoTipo?.tipo === TipoServico.ROCADEIRA || servicoTipo?.tipo === 'rocadeira') {
-          const temPlanilhaAnterior = await AppDataSource.getRepository(PlanilhaUpload).count({
-            where: { servico_id },
-          });
           const resultadoRocada = await RocadaImportService.importar(
             file.buffer,
             file.originalname,
             servico_id,
             usuarioIdValido ?? undefined,
-            temPlanilhaAnterior > 0 || estrategiaRaw === 'atualizar_data',
+            estrategiaRaw === 'substituir' || estrategiaRaw === 'atualizar_data',
           );
 
           // Gráficos padrão de roçada

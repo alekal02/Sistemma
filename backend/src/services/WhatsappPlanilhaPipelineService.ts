@@ -248,7 +248,7 @@ async function importarPlanilha(
 
   const classificacao = classificarPlanilhaContrato(buffer);
   const est = (estrategia || 'atualizar_data') as 'ignorar' | 'substituir' | 'atualizar_data' | 'inserir_data';
-  const substituir = est !== 'ignorar';
+  const substituir = est === 'substituir';
 
   if (classificacao.tipo === 'consolidado_producao') {
     const r = await ConsolidadoProducaoImportService.importarPorContrato(
@@ -268,13 +268,14 @@ async function importarPlanilha(
         importados: s.importados,
       }));
     const partes = alvos.map((s) => `${s.servicoNome}: ${s.importados} reg.`);
+    const avisoDup = (r.avisos || []).find((a) => a.includes('já estavam no sistema'));
     return {
       planilhaUploadId: r.planilhaUploadId,
       importadas: r.importados,
       totalLinhas: r.totalLinhas,
       tipoDetectado: classificacao.tipo,
       tipoDetectadoLabel: classificacao.label,
-      mensagem: `Produção: ${r.importados} registro(s). ${partes.join(' · ')}`,
+      mensagem: `Produção: ${r.importados} registro(s). ${partes.join(' · ')}${avisoDup ? ` ${avisoDup}` : ''}`,
       alvos: alvos.length
         ? alvos
         : [{
@@ -304,13 +305,14 @@ async function importarPlanilha(
         importados: s.importados,
       }));
     const partes = alvos.map((s) => `${s.servicoNome}: ${s.importados} reg.`);
+    const avisoDup = (r.avisos || []).find((a) => a.includes('já estavam no sistema'));
     return {
       planilhaUploadId: r.planilhaUploadId,
       importadas: r.importados,
       totalLinhas: r.totalLinhas,
       tipoDetectado: classificacao.tipo,
       tipoDetectadoLabel: classificacao.label,
-      mensagem: `Planilha unificada: ${r.importados} registro(s). ${partes.join(' · ')}`,
+      mensagem: `Planilha unificada: ${r.importados} registro(s). ${partes.join(' · ')}${avisoDup ? ` ${avisoDup}` : ''}`,
       alvos: alvos.length
         ? alvos
         : [{
@@ -355,15 +357,16 @@ async function importarPlanilha(
 
   if (classificacao.tipo === 'rocada') {
     const alvo = await obterServicoPorTipoContrato(contractId, TipoServico.ROCADEIRA);
-    const r = await RocadaImportService.importar(buffer, nomeArquivo, alvo.id, undefined, true);
+    const r = await RocadaImportService.importar(buffer, nomeArquivo, alvo.id, undefined, substituir);
     invalidarCacheSaudeContratos(contractId);
+    const avisoDup = (r.avisos || []).find((a) => a.includes('já estavam no sistema'));
     return {
       planilhaUploadId: r.planilhaUploadId,
       importadas: r.importados,
       totalLinhas: r.totalLinhas,
       tipoDetectado: classificacao.tipo,
       tipoDetectadoLabel: classificacao.label,
-      mensagem: `Roçada importada em “${alvo.nome}”: ${r.importados} registro(s).`,
+      mensagem: `Roçada importada em “${alvo.nome}”: ${r.importados} registro(s).${avisoDup ? ` ${avisoDup}` : ''}`,
       alvos: [{
         servicoId: alvo.id,
         servicoNome: alvo.nome,

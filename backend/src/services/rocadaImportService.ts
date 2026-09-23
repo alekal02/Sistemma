@@ -33,6 +33,7 @@ import { invalidarCacheSaudeContratos } from '../controllers/ContractController'
 import { dashboardCache } from './DashboardCacheManager';
 import { agendarWarmupPosUpload } from './executivoCacheWarmupService';
 import { persistirArquivoOriginalUpload } from './planilhaOriginalStorage';
+import { carregarChavesProducaoExistentes, filtrarColetasProducaoNovas } from './producaoDedupService';
 
 export interface ResultadoImportRocadaServico {
   servicoId: string;
@@ -171,6 +172,7 @@ class RocadaImportService {
     datasApagadas: { data: string; registrosRemovidos: number }[];
     uploadsRemovidosIds: number[];
     avisosCiclo: string[];
+    ignoradasDuplicadas: number;
   }> {
     const { servico, linhas: linhasBrutas, nomeArquivo, usuarioId, substituirPorData, parsedMeta, filtroTipo, buffer } = opts;
     const servicoId = servico.id;
@@ -191,32 +193,7 @@ class RocadaImportService {
           || 'Nenhuma data do ciclo atual nesta planilha — o ciclo anterior não foi alterado.',
       );
     }
-    const avisosCiclo = prep.avisos;
-    const resumoL = this.resumoLinhas(linhas);
-
-    const upload = this.uploadRepo.create({
-      nomeArquivo,
-      totalLinhas: parsedMeta.totalLinhasBrutas,
-      linhasImportadas: 0,
-      linhasComErro: 0,
-      linhasIgnoradas: 0,
-      linhasSubstituidas: 0,
-      linhasConflitantes: 0,
-      estrategia: substituirPorData ? 'atualizar_data' : 'ignorar',
-      usuarioId: usuarioId || null,
-      servico_id: servicoId,
-      resumo: null,
-    });
-    const uploadSalvo = await this.uploadRepo.save(upload);
-    const dataOp = [...new Set(
-      linhas.map((l) => (l.dataSaida ? l.dataSaida.toISOString().slice(0, 10) : null)).filter((d): d is string => !!d),
-    )].sort().pop();
-    const urlOriginal = await persistirArquivoOriginalUpload(uploadSalvo.id, buffer, nomeArquivo, dataOp);
-    if (urlOriginal) uploadSalvo.urlDownload = urlOriginal;
-
     const datasApagadas: { data: string; registrosRemovidos: number }[] = [];
-    const uploadIds = await obterUploadIdsModificaveis(servicoId);
-
     if (substituirPorData) {
       const datas = [...new Set(
         linhas
@@ -226,11 +203,74 @@ class RocadaImportService {
       datasApagadas.push(...await apagarDatasDeUploadsAbertos(servicoId, datas));
     }
 
+    const existentes = await carregarChavesProducaoExistentes(servicoId);
+    const { novas, ignoradas: ignoradasDuplicadas } = filtrarColetasProducaoNovas(
+      linhas,
+      (l) => this.montarColeta(l, 0),
+      existentes,
+    );
+    const avisosCiclo = [
+      ...prep.avisos,
+      ...(ignoradasDuplicadas > 0
+        ? [`${ignoradasDuplicadas} linha(s) de "${servico.nome}" já estavam no sistema e não foram importadas de novo.`]
+        : []),
+    ];
+    if (novas.length === 0) {
+      const resumoL = this.resumoLinhas(linhas);
+      return {
+        servicoId,
+        servicoNome: servico.nome,
+        filtroTipo,
+        planilhaUploadId: 0,
+        importados: 0,
+        areaTotalM2: resumoL.areaTotalM2,
+        dias: resumoL.dias,
+        bairros: resumoL.bairros,
+        datasApagadas,
+        uploadsRemovidosIds: [],
+        avisosCiclo,
+        ignoradasDuplicadas,
+      };
+    }
+
+    const resumoL = {
+      areaTotalM2: Math.round(novas.reduce((s, c) => {
+        const d = (c.dados || {}) as Record<string, unknown>;
+        const n = Number(d.AREA_M2 ?? d.QUANTITATIVO ?? 0);
+        return s + (Number.isFinite(n) ? n : 0);
+      }, 0) * 100) / 100,
+      dias: new Set(novas.map((c) => (c.dataSaida ? c.dataSaida.toISOString().slice(0, 10) : null)).filter(Boolean)).size,
+      bairros: new Set(novas.map((c) => c.regional || c.distrito).filter(Boolean)).size,
+    };
+
+    const upload = this.uploadRepo.create({
+      nomeArquivo,
+      totalLinhas: parsedMeta.totalLinhasBrutas,
+      linhasImportadas: 0,
+      linhasComErro: 0,
+      linhasIgnoradas: ignoradasDuplicadas,
+      linhasSubstituidas: 0,
+      linhasConflitantes: 0,
+      estrategia: substituirPorData ? 'atualizar_data' : 'ignorar',
+      usuarioId: usuarioId || null,
+      servico_id: servicoId,
+      resumo: null,
+    });
+    const uploadSalvo = await this.uploadRepo.save(upload);
+    const dataOp = [...new Set(
+      novas.map((c) => (c.dataSaida ? c.dataSaida.toISOString().slice(0, 10) : null)).filter((d): d is string => !!d),
+    )].sort().pop();
+    const urlOriginal = await persistirArquivoOriginalUpload(uploadSalvo.id, buffer, nomeArquivo, dataOp);
+    if (urlOriginal) uploadSalvo.urlDownload = urlOriginal;
+
+    const uploadIds = await obterUploadIdsModificaveis(servicoId);
+
     const batch: ColetaData[] = [];
     let importados = 0;
     const BATCH = 500;
-    for (const linha of linhas) {
-      batch.push(this.montarColeta(linha, uploadSalvo.id));
+    for (const coleta of novas) {
+      coleta.planilhaUploadId = uploadSalvo.id;
+      batch.push(coleta);
       importados++;
       if (batch.length >= BATCH) {
         await this.coletaRepo.save(batch);
@@ -251,10 +291,11 @@ class RocadaImportService {
     }
 
     uploadSalvo.linhasImportadas = importados;
+    uploadSalvo.linhasIgnoradas = ignoradasDuplicadas;
     uploadSalvo.linhasSubstituidas = datasApagadas.reduce((s, d) => s + d.registrosRemovidos, 0);
     uploadSalvo.resumo = {
       novos: importados,
-      duplicadosIgnorados: 0,
+      duplicadosIgnorados: ignoradasDuplicadas,
       conflitantes: 0,
       substituidos: uploadSalvo.linhasSubstituidas,
       viagensValidasDashboard: importados,
@@ -319,6 +360,7 @@ class RocadaImportService {
       datasApagadas,
       uploadsRemovidosIds,
       avisosCiclo,
+      ignoradasDuplicadas,
     };
   }
 
@@ -354,7 +396,7 @@ class RocadaImportService {
     nomeArquivo: string,
     servicoId: string,
     usuarioId?: string,
-    substituirPorData = true,
+    substituirPorData = false,
   ): Promise<ResultadoImportRocada> {
     const servico = await this.servicoRepo.findOne({ where: { id: servicoId } });
     if (!servico) {

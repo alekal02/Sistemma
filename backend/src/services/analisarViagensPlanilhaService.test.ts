@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import * as XLSX from 'xlsx';
-import { analisarViagensPlanilha } from './analisarViagensPlanilhaService';
+import { analisarViagensPlanilha, priorizarViagensForaDashboard } from './analisarViagensPlanilhaService';
 
 const CABECALHO = [
   'Nº', 'DATA SAIDA', 'PLACA', 'MOTORISTA', 'ROTA', 'CONTADOR DE VIAGENS', 'VIAGENS POR ROTA',
@@ -160,5 +160,19 @@ describe('analisarViagensPlanilha — viagem sem pesagem', () => {
     const r = analisarViagensPlanilha(planilhaHoras([linha]), 'Unai.xlsx');
     assert.equal(r.viagensSemPesagem, 0);
     assert.equal(r.viagens.filter((v) => v.alertaSemPesagem).length, 0);
+  });
+
+  it('coloca viagens fora do dashboard antes das que sobem', () => {
+    const lista = [
+      { linha: 10, foraDashboard: false, completa: true },
+      { linha: 11, foraDashboard: true, completa: false },
+      { linha: 12, foraDashboard: false, completa: true, corrigidaHodometro: true },
+      { linha: 13, descartada: true, completa: false },
+    ];
+    const r = priorizarViagensForaDashboard(lista, 3);
+    assert.equal(r[0].linha, 11);
+    assert.equal(r[1].linha, 13);
+    assert.equal(r.length, 3);
+    assert.equal(r[2].linha, 10);
   });
 });

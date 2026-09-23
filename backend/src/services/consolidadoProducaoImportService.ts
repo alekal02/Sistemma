@@ -35,6 +35,7 @@ import {
   type TipoServicoConsolidado,
 } from './consolidadoProducaoPlanilhaParser';
 import { persistirArquivoOriginalUpload } from './planilhaOriginalStorage';
+import { carregarChavesProducaoExistentes, filtrarColetasProducaoNovas } from './producaoDedupService';
 
 export interface ResultadoImportConsolidadoServico {
   servicoId: string;
@@ -149,6 +150,7 @@ class ConsolidadoProducaoImportService {
     uploadsRemovidosIds: number[];
     avisosCiclo: string[];
     datasIgnoradasCicloFechado: string[];
+    ignoradasDuplicadas: number;
   }> {
     const { servico, linhas: linhasBrutas, nomeArquivo, usuarioId, substituirPorData, totalLinhasBrutas, abasUsadas, buffer } = opts;
     const datasTodas = [...new Set(
@@ -178,37 +180,12 @@ class ConsolidadoProducaoImportService {
           ? prep.avisos
           : ['Nenhuma data do ciclo atual nesta planilha — o ciclo anterior não foi alterado.'],
         datasIgnoradasCicloFechado: prep.bloqueadasFechado,
+        ignoradasDuplicadas: 0,
       };
     }
 
     const tipoSistema = linhas[0].tipoSistema;
-    const quantitativoTotal = Math.round(linhas.reduce((s, l) => s + l.quantitativo, 0) * 1000) / 1000;
-    const dias = new Set(linhas.map((l) => (l.dataSaida ? l.dataSaida.toISOString().slice(0, 10) : null)).filter(Boolean)).size;
-    const bairros = new Set(linhas.map((l) => l.local).filter(Boolean)).size;
-
-    const upload = this.uploadRepo.create({
-      nomeArquivo,
-      totalLinhas: totalLinhasBrutas,
-      linhasImportadas: 0,
-      linhasComErro: 0,
-      linhasIgnoradas: 0,
-      linhasSubstituidas: 0,
-      linhasConflitantes: 0,
-      estrategia: substituirPorData ? 'atualizar_data' : 'ignorar',
-      usuarioId: usuarioId || null,
-      servico_id: servico.id,
-      resumo: null,
-    });
-    const uploadSalvo = await this.uploadRepo.save(upload);
-    const dataOp = [...new Set(
-      linhas.map((l) => (l.dataSaida ? l.dataSaida.toISOString().slice(0, 10) : null)).filter((d): d is string => !!d),
-    )].sort().pop();
-    const urlOriginal = await persistirArquivoOriginalUpload(uploadSalvo.id, buffer, nomeArquivo, dataOp);
-    if (urlOriginal) uploadSalvo.urlDownload = urlOriginal;
-
     const datasApagadas: { data: string; registrosRemovidos: number }[] = [];
-    const uploadIds = await obterUploadIdsModificaveis(servico.id);
-
     if (substituirPorData) {
       const datas = [...new Set(
         linhas
@@ -218,11 +195,74 @@ class ConsolidadoProducaoImportService {
       datasApagadas.push(...await apagarDatasDeUploadsAbertos(servico.id, datas));
     }
 
+    const existentes = await carregarChavesProducaoExistentes(servico.id);
+    const { novas, ignoradas: ignoradasDuplicadas } = filtrarColetasProducaoNovas(
+      linhas,
+      (l) => this.montarColeta(l, 0),
+      existentes,
+    );
+    const avisosCiclo = [
+      ...prep.avisos,
+      ...(ignoradasDuplicadas > 0
+        ? [`${ignoradasDuplicadas} linha(s) de "${servico.nome}" já estavam no sistema e não foram importadas de novo.`]
+        : []),
+    ];
+    if (novas.length === 0) {
+      const quantitativoTotal = Math.round(linhas.reduce((s, l) => s + l.quantitativo, 0) * 1000) / 1000;
+      const dias = new Set(linhas.map((l) => (l.dataSaida ? l.dataSaida.toISOString().slice(0, 10) : null)).filter(Boolean)).size;
+      const bairros = new Set(linhas.map((l) => l.local).filter(Boolean)).size;
+      return {
+        servicoId: servico.id,
+        servicoNome: servico.nome,
+        tipoSistema,
+        planilhaUploadId: 0,
+        importados: 0,
+        quantitativoTotal,
+        dias,
+        bairros,
+        datasApagadas,
+        uploadsRemovidosIds: [],
+        avisosCiclo,
+        datasIgnoradasCicloFechado: prep.bloqueadasFechado,
+        ignoradasDuplicadas,
+      };
+    }
+
+    const quantitativoTotal = Math.round(novas.reduce((s, c) => {
+      const q = Number((c.dados as Record<string, unknown> | null)?.QUANTITATIVO || 0);
+      return s + (Number.isFinite(q) ? q : 0);
+    }, 0) * 1000) / 1000;
+    const dias = new Set(novas.map((c) => (c.dataSaida ? c.dataSaida.toISOString().slice(0, 10) : null)).filter(Boolean)).size;
+    const bairros = new Set(novas.map((c) => c.distrito || c.regional).filter(Boolean)).size;
+
+    const upload = this.uploadRepo.create({
+      nomeArquivo,
+      totalLinhas: totalLinhasBrutas,
+      linhasImportadas: 0,
+      linhasComErro: 0,
+      linhasIgnoradas: ignoradasDuplicadas,
+      linhasSubstituidas: 0,
+      linhasConflitantes: 0,
+      estrategia: substituirPorData ? 'atualizar_data' : 'ignorar',
+      usuarioId: usuarioId || null,
+      servico_id: servico.id,
+      resumo: null,
+    });
+    const uploadSalvo = await this.uploadRepo.save(upload);
+    const dataOp = [...new Set(
+      novas.map((c) => (c.dataSaida ? c.dataSaida.toISOString().slice(0, 10) : null)).filter((d): d is string => !!d),
+    )].sort().pop();
+    const urlOriginal = await persistirArquivoOriginalUpload(uploadSalvo.id, buffer, nomeArquivo, dataOp);
+    if (urlOriginal) uploadSalvo.urlDownload = urlOriginal;
+
+    const uploadIds = await obterUploadIdsModificaveis(servico.id);
+
     const batch: ColetaData[] = [];
     let importados = 0;
     const BATCH = 500;
-    for (const linha of linhas) {
-      batch.push(this.montarColeta(linha, uploadSalvo.id));
+    for (const coleta of novas) {
+      coleta.planilhaUploadId = uploadSalvo.id;
+      batch.push(coleta);
       importados++;
       if (batch.length >= BATCH) {
         await this.coletaRepo.save(batch);
@@ -243,10 +283,11 @@ class ConsolidadoProducaoImportService {
     }
 
     uploadSalvo.linhasImportadas = importados;
+    uploadSalvo.linhasIgnoradas = ignoradasDuplicadas;
     uploadSalvo.linhasSubstituidas = datasApagadas.reduce((s, d) => s + d.registrosRemovidos, 0);
     uploadSalvo.resumo = {
       novos: importados,
-      duplicadosIgnorados: 0,
+      duplicadosIgnorados: ignoradasDuplicadas,
       conflitantes: 0,
       substituidos: uploadSalvo.linhasSubstituidas,
       viagensValidasDashboard: importados,
@@ -335,8 +376,9 @@ class ConsolidadoProducaoImportService {
       bairros,
       datasApagadas,
       uploadsRemovidosIds,
-      avisosCiclo: prep.avisos,
+      avisosCiclo,
       datasIgnoradasCicloFechado: prep.bloqueadasFechado,
+      ignoradasDuplicadas,
     };
   }
 
@@ -345,7 +387,7 @@ class ConsolidadoProducaoImportService {
     nomeArquivo: string,
     servicoId: string,
     usuarioId?: string,
-    substituirPorData = true,
+    substituirPorData = false,
   ): Promise<ResultadoImportConsolidadoProducao> {
     const servico = await this.servicoRepo.findOne({ where: { id: servicoId } });
     if (!servico) throw new Error('Serviço não encontrado.');
@@ -372,6 +414,7 @@ class ConsolidadoProducaoImportService {
     const allUploadsRemovidos: number[] = [];
     const allDatasCicloFechado: string[] = [];
     let importados = 0;
+    let ignoradasDuplicadasTotal = 0;
     let primeiroUploadId = 0;
 
     for (const [, linhasTipo] of porAba) {
@@ -407,6 +450,7 @@ class ConsolidadoProducaoImportService {
         bairros: r.bairros,
       });
       importados += r.importados;
+      ignoradasDuplicadasTotal += r.ignoradasDuplicadas;
       allDatasApagadas.push(...r.datasApagadas);
       allUploadsRemovidos.push(...r.uploadsRemovidosIds);
       avisos.push(...r.avisosCiclo);
@@ -414,11 +458,16 @@ class ConsolidadoProducaoImportService {
       if (!primeiroUploadId && r.planilhaUploadId) primeiroUploadId = r.planilhaUploadId;
     }
 
-    if (importados === 0) {
+    if (importados === 0 && ignoradasDuplicadasTotal === 0) {
       throw new Error(
         tiposSemServico.length
           ? `Nenhum serviço do contrato corresponde às abas da planilha (${tiposSemServico.map((t) => t.tipoSistema).join(', ')}).`
           : 'Nenhuma linha importada das abas de serviço.',
+      );
+    }
+    if (importados === 0 && ignoradasDuplicadasTotal > 0) {
+      avisos.unshift(
+        `Nenhum registro novo: ${ignoradasDuplicadasTotal} linha(s) já estavam no sistema e não foram importadas de novo.`,
       );
     }
 
@@ -452,7 +501,7 @@ class ConsolidadoProducaoImportService {
     nomeArquivo: string,
     contractId: string,
     usuarioId?: string,
-    substituirPorData = true,
+    substituirPorData = false,
   ): Promise<ResultadoImportConsolidadoProducao & { servicosGarantidos?: number }> {
     if (!detectarPlanilhaConsolidadoProducao(buffer)) {
       throw new Error(

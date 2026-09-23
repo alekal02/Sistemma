@@ -518,9 +518,13 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
         return !pl.includes('placa será unificada') && !pl.startsWith('corrigido automaticamente');
       });
 
-    const linhasTabela = viagens.map((v: any) => {
+    const ehForaDash = (v: any) => Boolean(v.foraDashboard || v.descartada || v.completa === false);
+    const viagensFora = viagens.filter(ehForaDash);
+    const viagensNoDash = viagens.filter((v: any) => !ehForaDash(v));
+
+    const linhaTabela = (v: any) => {
       const probs = filtrarProblemasDashboard(v.problemas);
-      const fora = v.foraDashboard || v.descartada || !v.completa;
+      const fora = ehForaDash(v);
       const status = fora
         ? `<strong style="color:#dc2626">FORA DO DASH</strong>${v.motivoForaDashboard ? ` — ${v.motivoForaDashboard}` : ''}${probs.length ? `<br/>${probs.join('; ')}` : ''}`
         : (probs.join('; ') || (v.corrigidaHodometro ? 'No dash (KM tratado)' : (v.alertaSemPesagem ? 'No dash — viagem sem pesagem' : '—')));
@@ -536,7 +540,20 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
         <td style="color:${fora ? '#dc2626' : '#b45309'}; font-size:9px">${status}</td>
       </tr>
     `;
-    }).join('');
+    };
+    const tabelaViagens = (titulo: string, lista: any[], classeTh = '') => lista.length === 0 ? '' : `
+  <div class="section-title${classeTh ? ` ${classeTh}` : ''}">${titulo} (${lista.length})</div>
+  <table>
+    <thead>
+      <tr>
+        <th>Linha</th><th>Data</th><th>Placa</th><th>Motorista</th><th>Contador</th>
+        <th>KM Total</th><th>Peso da linha (t)</th><th>Status / Problemas</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${lista.map(linhaTabela).join('')}
+    </tbody>
+  </table>`;
 
     const ap = relatorio.resumoPlacas;
     const resumoPlacasHtml = ap?.alerta ? `
@@ -634,19 +651,9 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
 
   ${resumoPlacasHtml}
 
+  ${tabelaViagens('Viagens que ficaram fora do dashboard', viagensFora)}
+  ${tabelaViagens('Viagens tratadas que sobem no dashboard', viagensNoDash)}
   ${viagens.length > 0 ? `
-  <div class="section-title">Viagens que NÃO sobem / tratadas (${viagens.length}${viagens.length >= 500 ? '+' : ''})</div>
-  <table>
-    <thead>
-      <tr>
-        <th>Linha</th><th>Data</th><th>Placa</th><th>Motorista</th><th>Contador</th>
-        <th>KM Total</th><th>Peso da linha (t)</th><th>Status / Problemas</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${linhasTabela}
-    </tbody>
-  </table>
   <div class="obs">
     * Contador = CONTADOR DE VIAGENS. O peso é o total da linha em toneladas (kg ÷ 1000) —
     quando a linha tem mais de uma viagem, cada pesagem (PESO 1–5) aparece detalhada abaixo do total.
@@ -1238,7 +1245,7 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
                   {dadosViagens.viagens && dadosViagens.viagens.length > 0 && (
                     <div style={{ marginTop: '0.5rem' }}>
                       <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#475569', marginBottom: '0.25rem' }}>
-                        Amostra — viagens FORA DO DASH / tratadas (até 10):
+                        Amostra — viagens FORA DO DASH primeiro (até 10):
                       </div>
                       <div style={{ maxHeight: '180px', overflowY: 'auto', fontSize: '0.6rem' }}>
                         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -1254,7 +1261,11 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
                             </tr>
                           </thead>
                           <tbody>
-                            {(dadosViagens.viagens || []).slice(0, 10).map((v: any, i: number) => {
+                            {([...dadosViagens.viagens].sort((a: any, b: any) => {
+                              const fa = a.foraDashboard || a.descartada || a.completa === false ? 0 : 1;
+                              const fb = b.foraDashboard || b.descartada || b.completa === false ? 0 : 1;
+                              return fa - fb;
+                            })).slice(0, 10).map((v: any, i: number) => {
                               const fora = v.foraDashboard || v.descartada || v.completa === false;
                               return (
                               <tr

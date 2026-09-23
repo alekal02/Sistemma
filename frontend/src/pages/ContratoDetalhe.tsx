@@ -443,53 +443,68 @@ export default function ContratoDetalhe() {
         setDensidadePorPlacaForm(formPlaca);
       }
 
-      const resultados = await Promise.allSettled(
-        lista.map(async (s: Servico) => {
-          try {
-            const padrao = await servicoService.getPadrao(id, s.id, { force: !opts?.aproveitarCache });
-              const cols = padrao.servico?.padraoPlanilha?.colunas || [];
-              const uploads = normalizarPlanilhasContrato(padrao.uploads?.ultimos || []);
-              const config = padrao.servico?.configDashboard;
-              const totalRegistros = padrao.uploads?.registrosValidos
-                ?? padrao.uploads?.totalImportados
-                ?? 0;
-              const temDadosUpload = totalRegistros > 0 || uploads.length > 0 || (padrao.uploads?.total || 0) > 0;
+      const montarDoPadrao = (s: any, padrao: any) => {
+        const cols = padrao.servico?.padraoPlanilha?.colunas || [];
+        const uploads = normalizarPlanilhasContrato(padrao.uploads?.ultimos || []);
+        const config = padrao.servico?.configDashboard;
+        const totalRegistros = padrao.uploads?.registrosValidos
+          ?? padrao.uploads?.totalImportados
+          ?? 0;
+        const temDadosUpload = totalRegistros > 0 || uploads.length > 0 || (padrao.uploads?.total || 0) > 0;
+        return {
+          ...s,
+          planilhas: uploads,
+          totalRegistros,
+          ultimoUpload: uploads[0]?.criadoEm || null,
+          etapasStatus: {
+            upload: temDadosUpload || cols.length > 0 ? 'done' : 'pending',
+            indicadoresAuto: config?.indicadoresAutomaticosConfirmados === true ? 'done' : 'pending',
+            revisao: temDadosUpload || cols.length > 0 ? 'done' : 'pending',
+            config: (config?.kpis?.length > 0) ? 'done' : 'pending',
+          } satisfies EtapasStatus,
+        };
+      };
 
-              return {
-                ...s,
-                planilhas: uploads,
-                totalRegistros,
-                ultimoUpload: uploads[0]?.criadoEm || null,
-                etapasStatus: {
-                  upload: temDadosUpload || cols.length > 0 ? 'done' : 'pending',
-                  indicadoresAuto: config?.indicadoresAutomaticosConfirmados === true ? 'done' : 'pending',
-                  revisao: temDadosUpload || cols.length > 0 ? 'done' : 'pending',
-                  config: (config?.kpis?.length > 0) ? 'done' : 'pending',
-                } satisfies EtapasStatus,
-              };
-            } catch {
-              return {
-                ...s,
-                etapasStatus: { upload: 'pending', indicadoresAuto: 'pending', revisao: 'pending', config: 'pending' } satisfies EtapasStatus,
-                planilhas: [],
-                totalRegistros: 0,
-                ultimoUpload: null,
-              };
-            }
-          })
-        );
+      const esqueleto = lista.map((s: any) => {
+        const cols = s.padraoPlanilha?.colunas || [];
+        const config = s.configDashboard;
+        const totalRegistros = Number(s.padraoPlanilha?.totalLinhas || 0);
+        const temDados = totalRegistros > 0 || cols.length > 0;
+        return {
+          ...s,
+          planilhas: [],
+          totalRegistros,
+          ultimoUpload: s.padraoPlanilha?.detectadoEm || null,
+          etapasStatus: {
+            upload: temDados ? 'done' : 'pending',
+            indicadoresAuto: config?.indicadoresAutomaticosConfirmados === true ? 'done' : 'pending',
+            revisao: temDados ? 'done' : 'pending',
+            config: (config?.kpis?.length > 0) ? 'done' : 'pending',
+          } satisfies EtapasStatus,
+        };
+      });
+      setServicos(deduplicarServicosPadrao(esqueleto));
+      if (!opts?.silencioso) setCarregando(false);
 
-        setServicos(
-          deduplicarServicosPadrao(
-            resultados.map(r => (r.status === 'fulfilled' ? r.value : {
-              ...(r.reason as any),
-              etapasStatus: { upload: 'pending', indicadoresAuto: 'pending', revisao: 'pending', config: 'pending' },
-              planilhas: [],
-              totalRegistros: 0,
-              ultimoUpload: null,
-            })),
-          ),
+      const CONCORRENCIA = 2;
+      const enriquecidos = [...esqueleto];
+      for (let i = 0; i < lista.length; i += CONCORRENCIA) {
+        const lote = lista.slice(i, i + CONCORRENCIA);
+        const resultados = await Promise.allSettled(
+          lote.map(async (s: any, idxLote: number) => {
+            const padrao = await servicoService.getPadrao(id, s.id, {
+              force: !opts?.aproveitarCache,
+              resumo: true,
+            });
+            return { idx: i + idxLote, valor: montarDoPadrao(s, padrao) };
+          }),
         );
+        for (const r of resultados) {
+          if (r.status !== 'fulfilled') continue;
+          enriquecidos[r.value.idx] = r.value.valor;
+        }
+        setServicos(deduplicarServicosPadrao([...enriquecidos]));
+      }
     } catch {
       adicionarToast('Erro ao carregar dados', 'error');
     } finally {

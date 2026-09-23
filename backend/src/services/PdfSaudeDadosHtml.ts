@@ -268,9 +268,9 @@ export function gerarHtmlSaudeDadosServer(opts: {
 
   ${resumoPlacasHtml}
 
+  ${tabelaViagens('Viagens que ficaram fora do dashboard', viagensFora, 'danger')}
   ${tabelaViagens('Viagens corrigidas e mantidas no dashboard', viagensCorrigidas, 'ok')}
   ${tabelaViagens('Viagens sem pesagem (mantidas no dashboard)', viagensSemPeso)}
-  ${tabelaViagens('Viagens que ficaram fora do dashboard', viagensFora, 'danger')}
   ${tabelaViagens('Alertas informativos de pesagem', viagensAlerta)}
   ${viagens.length > 0 ? `
   <div class="obs">

@@ -637,11 +637,12 @@ const servicoService = {
     return data;
   },
 
-  async getPadrao(contractId: string, servicoId: string, opts?: { force?: boolean }) {
+  async getPadrao(contractId: string, servicoId: string, opts?: { force?: boolean; resumo?: boolean }) {
     return cachedFetch(
-      chavePadraoServico(contractId, servicoId),
+      chavePadraoServico(contractId, servicoId) + (opts?.resumo ? ':resumo' : ''),
       async () => {
-        const { data } = await api.get(`/contracts/${contractId}/servicos/${servicoId}/padrao`);
+        const qs = opts?.resumo ? '?resumo=1' : '';
+        const { data } = await api.get(`/contracts/${contractId}/servicos/${servicoId}/padrao${qs}`);
         return data;
       },
       { force: opts?.force },

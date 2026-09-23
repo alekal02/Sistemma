@@ -17,14 +17,14 @@ cd frontend && npm install && npm run dev  # :5175
 
 | Onde | Comando |
 |------|---------|
-| **Dev** | `.\publicar.ps1 -Tag 4.0.4` |
+| **Dev** | `.\publicar.ps1 -Tag 4.0.6` |
 | **Destino** | Editar `TAG` no `.env` → `docker compose up -d` |
 
 ### Dev — publicar
 
 ```powershell
 Copy-Item env.nexus.example .env.nexus   # primeira vez
-.\publicar.ps1 -Tag 4.0.4
+.\publicar.ps1 -Tag 4.0.6
 ```
 
 Gera `dist\deploy\` para copiar em `C:\Sistemma`.
@@ -90,12 +90,12 @@ assinado. Equivalente manual:
 
 ```powershell
 # Dev
-.\publicar.ps1 -Tag 4.0.4
+.\publicar.ps1 -Tag 4.0.6
 docker compose pull
 docker compose up -d --force-recreate backend frontend
 ```
 
-### Atualizar para a 4.0.4 sem perder o banco
+### Atualizar para a 4.0.6 sem perder o banco
 
 Na máquina atual, faça um backup antes de desligar ou atualizar:
 
@@ -148,7 +148,7 @@ Na máquina nova, depois de criar os volumes com `docker compose up -d` e parar 
 serviços, copie os arquivos `.tgz` para a pasta `backups` e extraia cada um no
 volume de mesmo nome. O prefixo `sistemma_` pode variar; confirme com `docker volume ls`.
 
-Para uma máquina que já possui os volumes, altere apenas `TAG=4.0.4` no `.env` e
+Para uma máquina que já possui os volumes, altere apenas `TAG=4.0.6` no `.env` e
 execute `docker compose pull backend frontend` seguido de `docker compose up -d --force-recreate backend frontend`.
 Não use `docker compose down -v`, não remova volumes e não substitua o `.env`.
 Se for necessário restaurar um dump, pare apenas o backend e restaure no mesmo
@@ -158,6 +158,15 @@ do usuário no `.env`.
 O compose **não tem build** — sempre puxa `backend` e `frontend` do Nexus (`pull_policy: always`).
 
 Build local na dev usa override: `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build`
+
+### O que entra na 4.0.6
+
+- Hub do contrato: os cards aparecem na hora; o resumo de cada serviço não varre mais `coleta_dados` em paralelo (isso travava a máquina destino).
+
+### O que entra na 4.0.5
+
+- Planilha de produção (CONSOLIDADO, unificado e roçada): no reenvio, linhas que já estão no sistema **não sobem de novo** (mesmo critério da coleta). Só entram registros novos.
+- Relatório de saúde: viagens que **não entram no dashboard** ficam no **topo**, em evidência.
 
 ### O que entra na 4.0.4
 
