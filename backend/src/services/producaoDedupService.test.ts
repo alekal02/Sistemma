@@ -23,6 +23,32 @@ describe('produção — não reimporta linha já existente', () => {
     assert.equal(a, b);
   });
 
+  it('não descarta locais diferentes que só coincidem nos 50 primeiros caracteres', () => {
+    const prefixo = 'RUA PROFESSOR JOSE VIEIRA DE MENDONCA JUNTO AO ';
+    const a = coleta({
+      distrito: prefixo.slice(0, 50),
+      dados: { QUANTITATIVO: 10, LOCAL: `${prefixo}PARQUE`, DISTRITO_COMPLETO: `${prefixo}PARQUE` },
+    });
+    const b = coleta({
+      distrito: prefixo.slice(0, 50),
+      dados: { QUANTITATIVO: 10, LOCAL: `${prefixo}TERMINAL`, DISTRITO_COMPLETO: `${prefixo}TERMINAL` },
+    });
+    assert.notEqual(chaveProducaoColeta(a), chaveProducaoColeta(b));
+    const { novas, ignoradas } = filtrarColetasProducaoNovas(
+      [a, b],
+      (linha) => linha,
+      new Set<string>(),
+    );
+    assert.equal(novas.length, 2);
+    assert.equal(ignoradas, 0);
+  });
+
+  it('mantém a chave histórica quando o nome cabe na coluna', () => {
+    const curta = chaveProducaoColeta(coleta({ distrito: 'CENTRO', dados: { QUANTITATIVO: 120, LOCAL: 'CENTRO' } }));
+    const igual = chaveProducaoColeta(coleta({ distrito: 'centro', dados: { QUANTITATIVO: 120, BAIRRO: 'Centro' } }));
+    assert.equal(curta, igual);
+  });
+
   it('pula duplicata do banco e duplicata no próprio arquivo', () => {
     const existentes = new Set([chaveProducaoColeta(coleta({ dados: { QUANTITATIVO: 120 } }))]);
     const linhas = [

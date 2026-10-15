@@ -1,3 +1,4 @@
+import { EntityManager } from 'typeorm';
 import AppDataSource from '../database/data-source';
 import { PlanilhaUpload } from '../entities/PlanilhaUpload';
 import { ColetaData } from '../entities/ColetaData';
@@ -68,8 +69,9 @@ async function obterDiaInicioCiclo(servicoId: string): Promise<number> {
 export async function obterUploadIdsPorServico(
   servicoId: string,
   filtro?: FiltroUploadsCiclo,
+  manager?: EntityManager,
 ): Promise<number[]> {
-  const uploadRepo = AppDataSource.getRepository(PlanilhaUpload);
+  const uploadRepo = (manager ?? AppDataSource.manager).getRepository(PlanilhaUpload);
   const qb = uploadRepo.createQueryBuilder('u')
     .select('u.id', 'id')
     .where('u.servico_id = :servicoId', { servicoId });
@@ -88,8 +90,11 @@ export async function obterUploadIdsPorServico(
 }
 
 /** Uploads que novas importações podem substituir/apagar */
-export async function obterUploadIdsModificaveis(servicoId: string): Promise<number[]> {
-  return obterUploadIdsPorServico(servicoId, { apenasAbertos: true });
+export async function obterUploadIdsModificaveis(
+  servicoId: string,
+  manager?: EntityManager,
+): Promise<number[]> {
+  return obterUploadIdsPorServico(servicoId, { apenasAbertos: true }, manager);
 }
 
 /**
@@ -100,6 +105,7 @@ export async function obterUploadIdsModificaveis(servicoId: string): Promise<num
 export async function apagarDatasDeUploadsAbertos(
   servicoId: string,
   datasIso: string[],
+  manager?: EntityManager,
 ): Promise<{ data: string; registrosRemovidos: number }[]> {
   const datasValidas = [...new Set(datasIso.filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)))];
   if (datasValidas.length === 0) return [];
@@ -113,10 +119,10 @@ export async function apagarDatasDeUploadsAbertos(
   ).datas;
   if (datas.length === 0) return [];
 
-  const uploadIds = await obterUploadIdsModificaveis(servicoId);
+  const uploadIds = await obterUploadIdsModificaveis(servicoId, manager);
   if (uploadIds.length === 0) return [];
 
-  const coletaRepo = AppDataSource.getRepository(ColetaData);
+  const coletaRepo = (manager ?? AppDataSource.manager).getRepository(ColetaData);
   const resultado: { data: string; registrosRemovidos: number }[] = [];
 
   for (const dataStr of datas) {
@@ -301,10 +307,11 @@ export async function aplicarReferenciaCicloNoUpload(
   uploadId: number,
   datasIso: string[],
   diaInicioCiclo: number,
+  manager?: EntityManager,
 ): Promise<void> {
   const ref = inferirCicloReferenciaDeDatas(datasIso, diaInicioCiclo);
   const fallback = inferirMesReferenciaAtual(diaInicioCiclo);
-  const uploadRepo = AppDataSource.getRepository(PlanilhaUpload);
+  const uploadRepo = (manager ?? AppDataSource.manager).getRepository(PlanilhaUpload);
   await uploadRepo.update(uploadId, {
     cicloMesReferencia: ref?.mesReferencia ?? fallback.mes,
     cicloAnoReferencia: ref?.anoReferencia ?? fallback.ano,

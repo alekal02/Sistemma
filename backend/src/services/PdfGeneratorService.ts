@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { PDF_CACHE_MAX_ENTRADAS } from '../config/limitesRecursos';
+import { urlPermitidaNoPdf } from './pdfRecursoPermitido';
 
 let browserInstance: Browser | null = null;
 let browserLaunching: Promise<Browser> | null = null;
@@ -148,6 +149,13 @@ export async function htmlToPdf(html: string, opts?: PdfGenerateOptions): Promis
 
   try {
     await page.setViewport({ width: 1200, height: 900 });
+    await page.setRequestInterception(true);
+    page.on('request', (requisicao) => {
+      const seguir = urlPermitidaNoPdf(requisicao.url())
+        ? requisicao.continue()
+        : requisicao.abort();
+      seguir.catch(() => undefined);
+    });
     await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 45000 });
 
     const waitMs = opts?.waitMs ?? 250;

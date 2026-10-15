@@ -6,6 +6,7 @@
 #   .\publicar.ps1 -Tag 2.0.2               # igual + gera dist\deploy
 #   .\build-and-push.ps1                    # tag latest (.env.nexus)
 #   .\build-and-push.ps1 -BuildOnly         # so build local, sem login/push
+#   .\build-and-push.ps1 -Load -Tag 4.0.11  # imagem linux/amd64 local, sem Nexus
 #   .\build-and-push.ps1 -BuildOnly -Up     # build + docker compose up -d (local)
 #   .\build-and-push.ps1 -NexusPassword "chat@2025"
 
@@ -14,6 +15,7 @@ param(
     [string]$NexusPassword = "",
     [switch]$BuildOnly,
     [switch]$SkipPush,
+    [switch]$Load,
     [switch]$Up
 )
 
@@ -75,6 +77,23 @@ function Ensure-BuildxAmd64 {
     Invoke-Docker buildx inspect --bootstrap
 }
 
+function Assert-Amd64Manifest {
+    param([string]$Image)
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $out = & docker buildx imagetools inspect $Image 2>&1 | Out-String
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = $prev
+    Write-Host $out
+    if ($code -ne 0) {
+        throw "Nao foi possivel ler o manifesto de $Image"
+    }
+    if ($out -match 'linux/amd64' -or $out -match 'application/vnd.docker.distribution.manifest.v2\+json') {
+        return
+    }
+    throw "A imagem $Image nao oferece linux/amd64. A publicacao nao pode ser usada na producao."
+}
+
 function Build-And-PushImage {
     param(
         [string]$ContextRel,
@@ -84,14 +103,17 @@ function Build-And-PushImage {
     )
     Push-Location $Root
     try {
+        # Manifesto Docker v2, uma plataforma só. Um índice OCI sem
+        # linux/amd64 faz o pull da produção falhar com
+        # "no matching manifest for linux/amd64".
         $argList = @(
             "buildx", "build",
             "--platform", "linux/amd64",
             "--provenance=false",
             "--sbom=false",
+            "--output", "type=registry,oci-mediatypes=false",
             "-f", $DockerfileRel,
-            "-t", $Image,
-            "--push"
+            "-t", $Image
         )
         foreach ($key in $BuildArgs.Keys) {
             $argList += @("--build-arg", "${key}=$($BuildArgs[$key])")
@@ -101,6 +123,53 @@ function Build-And-PushImage {
     } finally {
         Pop-Location
     }
+}
+
+function Build-LocalImage {
+    param(
+        [string]$ContextRel,
+        [string]$DockerfileRel,
+        [string]$Image,
+        [hashtable]$BuildArgs = @{}
+    )
+    Push-Location $Root
+    try {
+        # Mesmo manifesto de produção (linux/amd64, Docker v2, sem índice OCI),
+        # mas --load deixa a imagem só no Docker local. Não envia ao Nexus.
+        $argList = @(
+            "buildx", "build",
+            "--platform", "linux/amd64",
+            "--provenance=false",
+            "--sbom=false",
+            "--load",
+            "-f", $DockerfileRel,
+            "-t", $Image
+        )
+        foreach ($key in $BuildArgs.Keys) {
+            $argList += @("--build-arg", "${key}=$($BuildArgs[$key])")
+        }
+        $argList += $ContextRel
+        Invoke-Docker @argList
+    } finally {
+        Pop-Location
+    }
+}
+
+function Assert-LocalAmd64 {
+    param([string]$Image)
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $os = & docker image inspect $Image --format "{{.Os}}/{{.Architecture}}" 2>&1 | Out-String
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = $prev
+    $os = $os.Trim()
+    if ($code -ne 0) {
+        throw "Nao foi possivel inspecionar a imagem local $Image"
+    }
+    if ($os -ne "linux/amd64") {
+        throw "A imagem $Image ficou $os. A producao exige linux/amd64."
+    }
+    Write-Host "$Image -> $os" -ForegroundColor Green
 }
 
 Write-Host "========================================" -ForegroundColor Cyan
@@ -197,6 +266,9 @@ Write-Host "BUILD_SHA: $BuildSha" -ForegroundColor Yellow
 Write-Host "VITE_APP_VERSION: $env:VITE_APP_VERSION" -ForegroundColor Yellow
 Write-Host "Backend:  $BackendImage" -ForegroundColor Yellow
 Write-Host "Frontend: $FrontendImage" -ForegroundColor Yellow
+if ($Load) {
+    Write-Host "Modo: Load (linux/amd64 local, sem login/push)" -ForegroundColor Yellow
+}
 if ($BuildOnly) {
     Write-Host "Modo: BuildOnly (sem login/push)" -ForegroundColor Yellow
 }
@@ -205,7 +277,7 @@ if ($Up) {
 }
 Write-Host ""
 
-$needsLogin = (-not $BuildOnly) -or $Up
+$needsLogin = ((-not $BuildOnly) -and (-not $Load)) -or $Up
 if ($needsLogin -and -not $NexusPass) {
     Write-Host "NEXUS_PASSWORD nao definida." -ForegroundColor Red
     Write-Host ""
@@ -220,7 +292,7 @@ if ($needsLogin -and -not $NexusPass) {
     exit 1
 }
 
-if ($NexusPass -in @("sua-senha", "altere-a-senha", "senha", "altere-sua-senha", "altere-sua-senha-nexus")) {
+if ($needsLogin -and $NexusPass -in @("sua-senha", "altere-a-senha", "senha", "altere-sua-senha", "altere-sua-senha-nexus")) {
     Write-Host "AVISO: NEXUS_PASSWORD parece placeholder." -ForegroundColor Red
     exit 1
 }
@@ -247,6 +319,28 @@ if ($needsLogin -and $NexusPass) {
 }
 
 Write-Host ""
+if ($Load -and $Up) {
+    throw "-Load nao sobe a stack. Rode sem -Up para apenas gerar as imagens locais."
+}
+if ($Load) {
+    Write-Host "Build local (buildx linux/amd64, sem push)..." -ForegroundColor Green
+    Ensure-BuildxAmd64
+    Build-LocalImage -ContextRel "." -DockerfileRel "backend/Dockerfile" -Image $BackendImage -BuildArgs @{ BUILD_SHA = $BuildSha }
+    Build-LocalImage -ContextRel "." -DockerfileRel "frontend/Dockerfile" -Image $FrontendImage -BuildArgs @{
+        VITE_API_URL = "/api"
+        VITE_APP_NAME = "Sistemma"
+        VITE_APP_VERSION = $env:VITE_APP_VERSION
+        VITE_ENV = "production"
+    }
+    Write-Host "Conferindo arquitetura local..." -ForegroundColor Green
+    Assert-LocalAmd64 $BackendImage
+    Assert-LocalAmd64 $FrontendImage
+    Write-Host ""
+    Write-Host "Imagens locais prontas. Nada foi enviado ao Nexus." -ForegroundColor Green
+    Write-Host "  $BackendImage"
+    Write-Host "  $FrontendImage"
+    exit 0
+}
 if ($BuildOnly -or $Up) {
     Write-Host "Build (docker compose - local)..." -ForegroundColor Green
     Invoke-Docker compose --env-file $EnvDocker -f docker-compose.yml -f docker-compose.dev.yml build backend frontend
@@ -261,8 +355,8 @@ if ($BuildOnly -or $Up) {
         VITE_ENV = "production"
     }
     Write-Host "Verificando manifest amd64 no Nexus..." -ForegroundColor Green
-    Invoke-Docker buildx imagetools inspect $BackendImage
-    Invoke-Docker buildx imagetools inspect $FrontendImage
+    Assert-Amd64Manifest $BackendImage
+    Assert-Amd64Manifest $FrontendImage
 }
 Write-Host "Build concluido." -ForegroundColor Green
 

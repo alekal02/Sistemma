@@ -12,8 +12,6 @@ if (allowPublicRegister) {
   router.post('/register', authenticate, authorize('admin'), AuthController.register.bind(AuthController));
 }
 router.post('/login', AuthController.login.bind(AuthController));
-router.get('/acesso-local', AuthController.statusAcessoLocal.bind(AuthController));
-router.post('/acesso-local', AuthController.entrarAcessoLocal.bind(AuthController));
 router.post('/refresh', AuthController.refresh.bind(AuthController));
 router.post('/entrar-contrato', authenticate, AuthController.entrarContrato.bind(AuthController));
 router.post('/sair-contrato', authenticate, AuthController.sairContrato.bind(AuthController));

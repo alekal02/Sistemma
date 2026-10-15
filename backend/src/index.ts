@@ -33,7 +33,18 @@ app.use(cors({
   },
   credentials: process.env.CORS_CREDENTIALS !== 'false',
 }));
-app.use(express.json({ limit: MAX_BODY_BYTES }));
+app.use((req, res, next) => {
+  const limite = req.path.startsWith('/api/sala-tecnica') ? '40mb' : MAX_BODY_BYTES;
+  return express.json({
+    limit: limite,
+    verify: (reqOriginal, _res, buf) => {
+      const url = reqOriginal.url || '';
+      if (url.startsWith('/api/wuzapi/webhook')) {
+        (reqOriginal as { rawBody?: Buffer }).rawBody = Buffer.from(buf);
+      }
+    },
+  })(req, res, next);
+});
 app.use(express.urlencoded({ limit: MAX_BODY_BYTES, extended: true }));
 
 // Health check
@@ -62,6 +73,7 @@ import graficosPadraoRoutes from './routes/graficosPadrao';
 import tipoServicoRoutes from './routes/tipoServico';
 import whatsappRoutes from './routes/whatsapp';
 import wuzapiRoutes from './routes/wuzapi';
+import salaTecnicaRoutes from './routes/salaTecnica';
 import pdfRoutes from './routes/pdf';
 import { pdfController } from './controllers/PdfController';
 import { DashboardExecutivoController } from './controllers/DashboardExecutivoController';
@@ -284,6 +296,9 @@ app.use('/api/whatsapp', authenticate, whatsappRoutes);
 // WuzAPI — webhook (público) + mapeamento de grupos (autenticado)
 app.use('/api/wuzapi', wuzapiRoutes);
 
+// Sala técnica (RelatoriosColeta) — token X-Chatbot-Secret, PDF até 40 MB
+app.use('/api/sala-tecnica', salaTecnicaRoutes);
+
 // Rotas do Catálogo de Tipos de Serviço
 app.use('/api/tipo-servico', authenticate, tipoServicoRoutes);
 
@@ -304,7 +319,8 @@ app.post('/api/generate-pdf', authenticate, (req, res) => {
 // Middleware de erro global
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   console.error('Erro não tratado:', err);
-  res.status(500).json({ error: err.message || 'Erro interno do servidor' });
+  const detalhe = !isProd && err.message ? err.message : 'Erro interno do servidor';
+  res.status(500).json({ error: detalhe });
 });
 
 iniciarAplicacao(app, PORT);

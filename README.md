@@ -17,14 +17,14 @@ cd frontend && npm install && npm run dev  # :5175
 
 | Onde | Comando |
 |------|---------|
-| **Dev** | `.\publicar.ps1 -Tag 4.0.6` |
+| **Dev** | `.\publicar.ps1 -Tag 4.0.11` |
 | **Destino** | Editar `TAG` no `.env` → `docker compose up -d` |
 
 ### Dev — publicar
 
 ```powershell
 Copy-Item env.nexus.example .env.nexus   # primeira vez
-.\publicar.ps1 -Tag 4.0.6
+.\publicar.ps1 -Tag 4.0.11
 ```
 
 Gera `dist\deploy\` para copiar em `C:\Sistemma`.
@@ -39,23 +39,6 @@ docker login nexus.neurai-platform.com -u admin -p "senha"
 docker compose up -d
 ```
 
-### Entrar sem senha (botões Gestor e Contratos)
-
-A tela inicial abre direto em Gestor e Contratos. Só volta a pedir senha com
-`ACESSO_LIVRE=false` no `.env`. Se o clique em **Contratos** mostrar email e
-senha, a variável ficou `false` no container — rode o script abaixo.
-
-```powershell
-cd C:\Sistemma
-.\scripts\ativar-acesso-livre.cmd            # -Desligar volta a exigir senha
-```
-
-O script recusa rodar se o `docker-compose.yml` da máquina for antigo, porque é
-ele que repassa a variável ao container.
-
-Conferir: `docker exec sistemma-backend printenv ACESSO_LIVRE` e
-`Invoke-RestMethod http://localhost:3200/api/auth/acesso-local` (`habilitado: true`).
-
 ### Isolamento por contrato (sem perder dados)
 
 Na destino os dados ficam no volume `postgres_data`, não na imagem. **Nunca** rode `docker compose down -v`.
@@ -66,7 +49,7 @@ multi-banco só liga depois que ela termina.
 ```powershell
 cd C:\Sistemma
 .\scripts\backup-destino.cmd
-.\scripts\cutover-destino.cmd -TagNova 3.1.0 -TagAnterior 3.0.0 -AcessoLivre
+.\scripts\cutover-destino.cmd -TagNova 3.1.0 -TagAnterior 3.0.0
 ```
 
 O `cutover` sobe a imagem nova em banco único, espera o `/health`, copia
@@ -90,27 +73,23 @@ assinado. Equivalente manual:
 
 ```powershell
 # Dev
-.\publicar.ps1 -Tag 4.0.6
+.\publicar.ps1 -Tag 4.0.11
 docker compose pull
 docker compose up -d --force-recreate backend frontend
 ```
 
-### Atualizar para a 4.0.6 sem perder o banco
+### Atualizar para a 4.0.11 sem perder dados
 
-Na máquina atual, faça um backup antes de desligar ou atualizar:
+Na máquina atual, faça o backup antes de atualizar. O script não apaga volume, imagem nem banco:
 
 ```powershell
 cd C:\Sistemma
 .\scripts\backup-destino.cmd
-docker volume ls | Select-String 'sistemma'
 ```
 
-Guarde o arquivo `backups\abastecimento-*.dump` e o `.env` em local seguro. O banco
-fica no volume `postgres_data`; as planilhas enviadas ficam em `uploads_data`; e o
-WhatsApp usa `wuzapi_pg_data`, `wuzapi_files` e `wuzapi_dbdata`.
+Ele guarda o dump de cada banco do PostgreSQL do Sistemma, o dump do PostgreSQL da WuzAPI, a cópia do `.env` e um arquivo somente leitura de `minio_data`, `uploads_data`, `wuzapi_pg_data`, `wuzapi_files` e `wuzapi_dbdata`.
 
-Na máquina nova, copie o pacote `dist\deploy` gerado pela publicação, o dump
-`abastecimento-*.dump` e configure um `.env` próprio com as mesmas credenciais.
+Na máquina nova, copie o pacote `dist\deploy`, os arquivos de `backups` e configure um `.env` próprio com as mesmas credenciais.
 Não copie senhas do `.env` entre máquinas sem revisar.
 
 ```powershell
@@ -131,24 +110,13 @@ docker compose up -d --force-recreate backend frontend
 Invoke-RestMethod http://localhost:3200/health
 ```
 
-Para levar também os arquivos das planilhas e a sessão do WhatsApp, faça um
-arquivo de cada volume na máquina antiga e restaure nos volumes equivalentes da
-máquina nova. Pare o Compose antes de copiar os volumes:
-
-```powershell
-docker compose stop
-docker run --rm -v sistemma_uploads_data:/data -v ${PWD}/backups:/backup alpine tar czf /backup/uploads_data.tgz -C /data .
-docker run --rm -v sistemma_minio_data:/data -v ${PWD}/backups:/backup alpine tar czf /backup/minio_data.tgz -C /data .
-docker run --rm -v sistemma_wuzapi_pg_data:/data -v ${PWD}/backups:/backup alpine tar czf /backup/wuzapi_pg_data.tgz -C /data .
-docker run --rm -v sistemma_wuzapi_files:/data -v ${PWD}/backups:/backup alpine tar czf /backup/wuzapi_files.tgz -C /data .
-docker run --rm -v sistemma_wuzapi_dbdata:/data -v ${PWD}/backups:/backup alpine tar czf /backup/wuzapi_dbdata.tgz -C /data .
-```
-
+O `backup-destino.cmd` já gera os `.tgz` de MinIO, uploads e sessão da WuzAPI.
 Na máquina nova, depois de criar os volumes com `docker compose up -d` e parar os
-serviços, copie os arquivos `.tgz` para a pasta `backups` e extraia cada um no
-volume de mesmo nome. O prefixo `sistemma_` pode variar; confirme com `docker volume ls`.
+serviços, copie esses arquivos para a pasta `backups` e extraia cada um no
+volume de mesmo papel. O prefixo `sistemma_` pode variar; confirme com `docker volume ls`.
+Pare o serviço antes de extrair e não use `docker compose down -v`.
 
-Para uma máquina que já possui os volumes, altere apenas `TAG=4.0.6` no `.env` e
+Para uma máquina que já possui os volumes, altere apenas `TAG=4.0.11` no `.env` e
 execute `docker compose pull backend frontend` seguido de `docker compose up -d --force-recreate backend frontend`.
 Não use `docker compose down -v`, não remova volumes e não substitua o `.env`.
 Se for necessário restaurar um dump, pare apenas o backend e restaure no mesmo
@@ -158,6 +126,26 @@ do usuário no `.env`.
 O compose **não tem build** — sempre puxa `backend` e `frontend` do Nexus (`pull_policy: always`).
 
 Build local na dev usa override: `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build`
+
+Imagem local no formato da produção, sem enviar ao Nexus: `.\build-and-push.ps1 -Tag 4.0.11 -Load`
+
+### O que entra na 4.0.11
+
+- Chatbot: ledger `whatsapp_mensagem_processamento` preparado por script, sem aplicação automática.
+- Webhook da WuzAPI: chave HMAC alinhada e bloqueio desligado (`WUZAPI_WEBHOOK_ENFORCE=false`).
+- Backup de destino passa a incluir PostgreSQL, MinIO, uploads e a sessão da WuzAPI.
+
+### O que entra na 4.0.8
+
+- WhatsApp: `relatorio` volta a ter *3* Evolução diária (gráficos Ótimo/Ruim/Péssimo/Excedido). Atalhos: `evolucao`, `graficos`.
+- Inclui tudo da 4.0.7 (login e-mail/senha, agente de conferência, retrabalho de coleta, saúde com rotas).
+
+### O que entra na 4.0.7
+
+- Login local volta a pedir email e senha (saiu a API `/auth/acesso-local`).
+- Agente de conferência no upload: conta rotas vs template, aponta retrabalho da sala técnica e cruza com o que já está no sistema (planilha de ontem + hoje).
+- Coleta: retrabalho com o mesmo KM/peso e motorista grafado diferente **não apaga mais 1 rota** (1184 na planilha deixava de virar 1183 no chatbot).
+- Relatório de saúde: mostra rotas e viagens; se não houver erro, deixa isso explícito e lista retrabalho.
 
 ### O que entra na 4.0.6
 
@@ -213,7 +201,6 @@ Build local na dev usa override: `docker compose -f docker-compose.yml -f docker
 | `corrigir-kpis.ps1` | Destino: corrige KPIs universais no banco |
 | `scripts/backup-destino.*` | Destino: dump do banco antes de migrar |
 | `scripts/cutover-destino.*` | Destino: imagem nova → migração → multi-banco |
-| `scripts/ativar-acesso-livre.*` | Destino: liga/desliga entrada sem senha |
 
 **Nunca copie** `.env.docker` nem `.env.nexus` entre máquinas com senhas reais — configure uma vez em cada lugar.
 

@@ -34,6 +34,7 @@ import { dashboardCache } from './DashboardCacheManager';
 import { agendarWarmupPosUpload } from './executivoCacheWarmupService';
 import { persistirArquivoOriginalUpload } from './planilhaOriginalStorage';
 import { carregarChavesProducaoExistentes, filtrarColetasProducaoNovas } from './producaoDedupService';
+import { executarImportacaoAtomica } from './substituicaoImportacaoProducao';
 
 export interface ResultadoImportRocadaServico {
   servicoId: string;
@@ -110,8 +111,9 @@ class RocadaImportService {
     coleta.dataSaida = linha.dataSaida;
     // Local principal: bairro → trecho → logradouro (cada modelo usa um)
     const local = linha.bairro || (linha.dados?.TRECHO as string) || linha.logradouro || null;
+    const distritoCheio = linha.distrito || linha.logradouro || local;
     coleta.regional = this.trunc(local, 50);
-    coleta.distrito = this.trunc(linha.distrito || linha.logradouro || local, 50);
+    coleta.distrito = this.trunc(distritoCheio, 50);
     coleta.motorista = this.trunc(linha.operador, 100);
     coleta.tipoCaminhao = this.trunc(linha.equipamento || (linha.tipo !== 'ROÇADA' ? linha.tipo : null), 30);
     coleta.turno = this.trunc(linha.equipe || (linha.dados?.PERIODICIDADE as string) || null, 20);
@@ -139,6 +141,8 @@ class RocadaImportService {
       _modeloPlanilha: linha.modelo,
       _aba: linha.aba,
       _tipoExecucao: linha.tipoExecucao,
+      ...(distritoCheio && distritoCheio.length > 50 ? { DISTRITO_COMPLETO: distritoCheio } : {}),
+      ...(local && local.length > 50 ? { LOCAL_COMPLETO: local } : {}),
     };
     if (linha.dataSaida) {
       coleta.diaSemana = linha.dataSaida.getUTCDay() + 1;
@@ -193,6 +197,10 @@ class RocadaImportService {
           || 'Nenhuma data do ciclo atual nesta planilha — o ciclo anterior não foi alterado.',
       );
     }
+    const resultado = await executarImportacaoAtomica(servicoId, async (manager) => {
+    const coletaRepo = manager.getRepository(ColetaData);
+    const uploadRepo = manager.getRepository(PlanilhaUpload);
+    const servicoRepo = manager.getRepository(Servico);
     const datasApagadas: { data: string; registrosRemovidos: number }[] = [];
     if (substituirPorData) {
       const datas = [...new Set(
@@ -200,10 +208,10 @@ class RocadaImportService {
           .map((l) => (l.dataSaida ? l.dataSaida.toISOString().slice(0, 10) : null))
           .filter((d): d is string => !!d),
       )];
-      datasApagadas.push(...await apagarDatasDeUploadsAbertos(servicoId, datas));
+      datasApagadas.push(...await apagarDatasDeUploadsAbertos(servicoId, datas, manager));
     }
 
-    const existentes = await carregarChavesProducaoExistentes(servicoId);
+    const existentes = await carregarChavesProducaoExistentes(servicoId, manager);
     const { novas, ignoradas: ignoradasDuplicadas } = filtrarColetasProducaoNovas(
       linhas,
       (l) => this.montarColeta(l, 0),
@@ -243,7 +251,7 @@ class RocadaImportService {
       bairros: new Set(novas.map((c) => c.regional || c.distrito).filter(Boolean)).size,
     };
 
-    const upload = this.uploadRepo.create({
+    const upload = uploadRepo.create({
       nomeArquivo,
       totalLinhas: parsedMeta.totalLinhasBrutas,
       linhasImportadas: 0,
@@ -256,14 +264,14 @@ class RocadaImportService {
       servico_id: servicoId,
       resumo: null,
     });
-    const uploadSalvo = await this.uploadRepo.save(upload);
+    const uploadSalvo = await uploadRepo.save(upload);
     const dataOp = [...new Set(
       novas.map((c) => (c.dataSaida ? c.dataSaida.toISOString().slice(0, 10) : null)).filter((d): d is string => !!d),
     )].sort().pop();
-    const urlOriginal = await persistirArquivoOriginalUpload(uploadSalvo.id, buffer, nomeArquivo, dataOp);
+    const urlOriginal = await persistirArquivoOriginalUpload(uploadSalvo.id, buffer, nomeArquivo, dataOp, manager);
     if (urlOriginal) uploadSalvo.urlDownload = urlOriginal;
 
-    const uploadIds = await obterUploadIdsModificaveis(servicoId);
+    const uploadIds = await obterUploadIdsModificaveis(servicoId, manager);
 
     const batch: ColetaData[] = [];
     let importados = 0;
@@ -273,20 +281,20 @@ class RocadaImportService {
       batch.push(coleta);
       importados++;
       if (batch.length >= BATCH) {
-        await this.coletaRepo.save(batch);
+        await coletaRepo.save(batch);
         batch.length = 0;
       }
     }
-    if (batch.length) await this.coletaRepo.save(batch);
+    if (batch.length) await coletaRepo.save(batch);
 
     const uploadsRemovidosIds: number[] = [];
     for (const oldId of uploadIds) {
       if (oldId === uploadSalvo.id) continue;
-      const restantes = await this.coletaRepo.count({ where: { planilhaUploadId: oldId } });
+      const restantes = await coletaRepo.count({ where: { planilhaUploadId: oldId } });
       if (restantes > 0) continue;
-      const old = await this.uploadRepo.findOne({ where: { id: oldId } });
+      const old = await uploadRepo.findOne({ where: { id: oldId } });
       if (!old || old.cicloFechadoEm) continue;
-      await this.uploadRepo.remove(old);
+      await uploadRepo.remove(old);
       uploadsRemovidosIds.push(oldId);
     }
 
@@ -305,14 +313,14 @@ class RocadaImportService {
         diasRemovidosAusentes: [],
       },
     };
-    await this.uploadRepo.save(uploadSalvo);
+    await uploadRepo.save(uploadSalvo);
 
     const datasImportadas = [...new Set(
       linhas
         .map((l) => (l.dataSaida ? l.dataSaida.toISOString().slice(0, 10) : null))
         .filter((d): d is string => !!d),
     )];
-    const servicoContrato = await this.servicoRepo.findOne({
+    const servicoContrato = await servicoRepo.findOne({
       where: { id: servicoId },
       relations: ['contract'],
     });
@@ -320,6 +328,7 @@ class RocadaImportService {
       uploadSalvo.id,
       datasImportadas,
       normalizarDiaInicioCiclo(servicoContrato?.contract?.diaInicioCiclo),
+      manager,
     );
 
     const colunasCanonicas = [
@@ -339,14 +348,7 @@ class RocadaImportService {
       abasUsadas: parsedMeta.abasUsadas,
       filtroTipoExecucao: filtroTipo,
     } as any;
-    await this.servicoRepo.save(servico);
-
-    invalidarCacheDadosServico(servicoId);
-    invalidarCacheDashboardServico(servicoId);
-    dashboardCache.invalidar(servicoId);
-    agendarWarmupPosUpload(servicoId);
-    invalidarCacheSaudeContratos(servico.contract_id);
-    void recalcularTotaisDiaServicoSilencioso(servicoId);
+    await servicoRepo.save(servico);
 
     return {
       servicoId,
@@ -362,6 +364,15 @@ class RocadaImportService {
       avisosCiclo,
       ignoradasDuplicadas,
     };
+    });
+
+    invalidarCacheDadosServico(servicoId);
+    invalidarCacheDashboardServico(servicoId);
+    dashboardCache.invalidar(servicoId);
+    agendarWarmupPosUpload(servicoId);
+    invalidarCacheSaudeContratos(servico.contract_id);
+    void recalcularTotaisDiaServicoSilencioso(servicoId);
+    return resultado;
   }
 
   /**

@@ -100,6 +100,10 @@ function cellStr(v: unknown): string | null {
 /** Área m²: aceita 5.000,00 (BR), 5,000.00 (US) e decimais QGIS (485.07). */
 function cellNum(v: unknown): number {
   if (v === null || v === undefined || v === '') return 0;
+  if (typeof v === 'string' && v.includes(',')) {
+    const n = parseNumeroBr(v);
+    return !isNaN(n) && n > 0 ? n : 0;
+  }
   if (typeof v === 'number' && !isNaN(v) && v > 0) return v;
 
   let str = String(v).trim().replace(/R\$\s?/gi, '').replace(/\s/g, '');

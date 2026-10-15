@@ -34,6 +34,7 @@ router.post('/upload/preview-data', authenticate, upload.single('planilha'), (re
 router.post('/upload/preview-rocada', authenticate, upload.single('planilha'), (req, res) => controller.previewRocada(req, res));
 router.post('/upload/preview-servicos-unificados', authenticate, upload.single('planilha'), (req, res) => controller.previewServicosUnificados(req, res));
 router.post('/upload/conferencia-diaria', authenticate, upload.single('planilha'), (req, res) => controller.conferenciaDiaria(req, res));
+router.post('/upload/agente-conferencia', authenticate, upload.single('planilha'), (req, res) => controller.agenteConferencia(req, res));
 router.get('/dashboard', authenticate, (req, res) => controller.dashboard(req, res));
 router.get('/uploads/por-dia', authenticate, (req, res) => controller.uploadsPorDia(req, res));
 router.get('/uploads', authenticate, (req, res) => controller.uploads(req, res));

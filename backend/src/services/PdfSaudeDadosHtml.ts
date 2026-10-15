@@ -75,6 +75,12 @@ export function gerarHtmlSaudeDadosServer(opts: {
   const viagensAlerta = viagens.filter((v) => v.alertaPesagemAlta && !v.foraDashboard && !v.descartada && !v.corrigidaHodometro);
   const viagensSemPeso = viagens.filter((v) => v.alertaSemPesagem && !v.foraDashboard && !v.descartada);
   const qtdSemPesagem = relatorio.viagensSemPesagem ?? viagensSemPeso.reduce((n, v) => n + (v.viagensSemPesagem?.length || 1), 0);
+  const conferencia = relatorio.conferenciaUpload;
+  const rotasPlanilha = conferencia?.rotasPlanilha ?? (validas + inconsistentes);
+  const rotasTemplate = conferencia?.linhasTemplate ?? emBranco;
+  const retrabalho = conferencia?.retrabalhosMesmaRota || [];
+  const viagensOk = viagens.filter((v) => !v.foraDashboard && !v.descartada);
+  const amostraOk = viagensOk.slice(-15);
 
   const filtrarProblemas = (
     problemas: string[] | undefined,
@@ -222,10 +228,17 @@ export function gerarHtmlSaudeDadosServer(opts: {
   </div>
 
   <div class="summary">
-    <div class="card"><div class="num">${esc(contadorPlanilha)}</div><div class="label">Viagens na planilha</div></div>
+    <div class="card"><div class="num">${esc(rotasPlanilha)}</div><div class="label">Rotas na planilha</div></div>
+    <div class="card completas"><div class="num">${esc(validas)}</div><div class="label">Rotas no dashboard</div></div>
+    <div class="card"><div class="num">${esc(contadorPlanilha)}</div><div class="label">Viagens (contador)</div></div>
+    <div class="card incompletas"><div class="num">${esc(inconsistentes)}</div><div class="label">Rotas rejeitadas</div></div>
+  </div>
+
+  <div class="summary">
     <div class="card completas"><div class="num">${esc(contadorDashboard)}</div><div class="label">Viagens aproveitadas</div></div>
     <div class="card incompletas"><div class="num">${esc(contadorFora)}</div><div class="label">Viagens rejeitadas</div></div>
     <div class="card completas"><div class="num">${esc(pctAproveitamento)}%</div><div class="label">Aproveitamento</div></div>
+    <div class="card"><div class="num">${esc(retrabalho.reduce((s, p) => s + p.linhas.length, 0))}</div><div class="label">Linhas de retrabalho</div></div>
   </div>
 
   <div class="impacto">
@@ -235,17 +248,29 @@ export function gerarHtmlSaudeDadosServer(opts: {
 
   <div class="aviso aviso-ok">
     <strong>Conclusão executiva:</strong>
+    ${rotasPlanilha > 0
+      ? `a planilha tem ${esc(rotasPlanilha)} rota(s) (linha operacional). `
+      : ''}
     ${contadorPlanilha > 0
-      ? `a planilha informou ${esc(contadorPlanilha)} viagem(ns), das quais ${esc(contadorDashboard)} (${esc(pctAproveitamento)}%) entraram no dashboard.`
+      ? `O CONTADOR informa ${esc(contadorPlanilha)} viagem(ns), das quais ${esc(contadorDashboard)} (${esc(pctAproveitamento)}%) entraram no dashboard.`
       : 'não foram identificadas viagens com contador preenchido.'}
+    ${inconsistentes === 0 && rotasPlanilha > 0
+      ? ' Nenhuma rota foi bloqueada — a lista de erros abaixo fica vazia de propósito.'
+      : ''}
     ${tFora > 0
       ? ` O dashboard considera ${esc(tDash.toLocaleString('pt-BR', { maximumFractionDigits: 1 }))} t; ${esc(tFora.toLocaleString('pt-BR', { maximumFractionDigits: 1 }))} t ficaram fora por inconsistências e não foram somadas.`
       : ''}
-    ${emBranco > 0 ? ` ${esc(emBranco)} linha(s) em branco foram ignoradas por não representarem viagens.` : ''}
+    ${rotasTemplate > 0 ? ` ${esc(rotasTemplate)} linha(s) de template/rodapé foram ignoradas.` : ''}
+    ${emBranco > 0 && rotasTemplate === 0 ? ` ${esc(emBranco)} linha(s) em branco foram ignoradas por não representarem viagens.` : ''}
     ${qtdSemPesagem > 0
       ? ` ${esc(qtdSemPesagem)} viagem(ns) subiram sem pesagem (trecho com horário e PESO vazio); o peso dessa faixa não entra nas toneladas.`
       : ''}
   </div>
+
+  ${conferencia?.mensagem ? `
+  <div class="aviso">
+    <strong>Agente de conferência:</strong> ${esc(conferencia.mensagem)}
+  </div>` : ''}
 
   <div class="section-title ok">Tratativas aplicadas automaticamente</div>
   <div class="tratativas">
@@ -269,9 +294,27 @@ export function gerarHtmlSaudeDadosServer(opts: {
   ${resumoPlacasHtml}
 
   ${tabelaViagens('Viagens que ficaram fora do dashboard', viagensFora, 'danger')}
+  ${retrabalho.length > 0 ? `
+  <div class="section-title">Retrabalho da sala técnica (mesma operação, equipe diferente)</div>
+  <table>
+    <thead><tr>
+      <th>Linhas Excel</th><th>Data</th><th>Placa</th><th>Motoristas</th><th>Motivo</th>
+    </tr></thead>
+    <tbody>
+      ${retrabalho.map((p) => `
+      <tr>
+        <td>${esc(p.linhas.join(', '))}</td>
+        <td>${esc(p.data || '—')}</td>
+        <td>${esc(p.placa || '—')}</td>
+        <td>${esc(p.motoristas.join(' / ') || '—')}</td>
+        <td style="font-size:9px">${esc(p.motivo)}</td>
+      </tr>`).join('')}
+    </tbody>
+  </table>` : ''}
   ${tabelaViagens('Viagens corrigidas e mantidas no dashboard', viagensCorrigidas, 'ok')}
   ${tabelaViagens('Viagens sem pesagem (mantidas no dashboard)', viagensSemPeso)}
   ${tabelaViagens('Alertas informativos de pesagem', viagensAlerta)}
+  ${tabelaViagens('Amostra das últimas rotas válidas (o dashboard usa todas)', amostraOk, 'ok')}
   ${viagens.length > 0 ? `
   <div class="obs">
     * Contador = coluna CONTADOR DE VIAGENS. O peso é o total da linha em toneladas (kg ÷ 1000) —

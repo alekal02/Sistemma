@@ -42,6 +42,12 @@ export interface ConferenciaDiaria {
   ultimaDataPlanilha: string | null;
   ultimaDataSistema: string | null;
   recomendacao: string;
+  agente?: {
+    mensagem: string;
+    rotasPlanilha: number;
+    avisos: string[];
+    retrabalhosMesmaRota: Array<{ linhas: number[]; placa: string | null; data: string | null; motoristas: string[] }>;
+  };
   dias: Array<{
     data: string;
     dataBr: string;

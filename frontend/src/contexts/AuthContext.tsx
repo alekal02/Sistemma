@@ -23,8 +23,6 @@ interface AuthContextType {
   loading: boolean
   /** Fazer login com email + senha */
   login: (email: string, senha: string) => Promise<UserData>
-  /** Local: entra como gestor ou numa unidade, sem senha */
-  entrarLocal: (modo: 'gestor' | 'contrato', contractId?: string) => Promise<UserData>
   /** Super-admin entra no banco de um contrato */
   entrarContrato: (contractId: string) => Promise<void>
   /** Super-admin volta ao hub */
@@ -135,15 +133,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return userData
   }
 
-  const entrarLocal = async (modo: 'gestor' | 'contrato', contractId?: string) => {
-    const response = await api.post<AuthResponse>('/auth/acesso-local', { modo, contractId })
-    const { token: newToken, refreshToken, user: userData } = response.data
-    gravarSessao(newToken, userData, refreshToken)
-    setToken(newToken)
-    setUser(userData)
-    return userData
-  }
-
   const entrarContrato = async (contractId: string) => {
     const response = await api.post<AuthResponse>('/auth/entrar-contrato', { contractId })
     const { token: newToken, refreshToken, user: userData } = response.data
@@ -170,7 +159,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider value={{
-      user, token, loading, login, entrarLocal, entrarContrato, sairContrato, logout, isAdmin, isSuperadmin,
+      user, token, loading, login, entrarContrato, sairContrato, logout, isAdmin, isSuperadmin,
     }}>
       {children}
     </AuthContext.Provider>

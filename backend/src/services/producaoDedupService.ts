@@ -2,9 +2,11 @@
  * Deduplicação das planilhas de produção (CONSOLIDADO / unificado / roçada).
  * Mesma ideia da coleta: se a linha já está no banco, não sobe de novo.
  */
+import { EntityManager } from 'typeorm';
 import AppDataSource from '../database/data-source';
 import { ColetaData } from '../entities/ColetaData';
 import { obterUploadIdsModificaveis } from './cicloPlanilhaService';
+import { lerCampoDados, textoMaisLongo } from '../utils/textoColunaColeta';
 
 function isoData(d: Date | string | null | undefined): string {
   if (!d) return '';
@@ -43,12 +45,35 @@ function quantitativoDeDados(dados: Record<string, unknown> | null | undefined):
     ?? 0;
 }
 
+function localCompleto(c: Pick<ColetaData, 'distrito' | 'regional' | 'dados'>): string {
+  const dados = (c.dados || {}) as Record<string, unknown>;
+  return textoMaisLongo(
+    lerCampoDados(dados, [
+      'DISTRITO_COMPLETO',
+      'LOCAL_COMPLETO',
+      'LOGRADOURO',
+      'LOCAL',
+      'BAIRRO',
+      'TRECHO',
+      'DISTRITO',
+    ]),
+    c.distrito,
+    c.regional,
+  );
+}
+
 export function chaveProducaoColeta(c: Pick<ColetaData, 'dataSaida' | 'distrito' | 'regional' | 'tipoCaminhao' | 'turno' | 'motorista' | 'kmTotal' | 'dados'>): string {
   const dados = (c.dados || {}) as Record<string, unknown>;
   const qtd = quantitativoDeDados(dados) || c.kmTotal || 0;
+  const local = localCompleto(c);
+  const localNorm = normTxt(local);
+  const setor = normTxt(lerCampoDados(dados, ['SETOR']));
+  const observacao = normTxt(lerCampoDados(dados, ['OBSERVACAO', 'OBSERVAÇÃO']));
   return [
     isoData(c.dataSaida),
-    normTxt(c.distrito || c.regional || dados.LOCAL || dados.BAIRRO),
+    localNorm,
+    setor && setor !== localNorm ? setor : '',
+    observacao,
     normTxt(c.tipoCaminhao || dados.Equipamento || dados.EQUIPAMENTO),
     normTxt(c.turno || dados.Equipe || dados.EQUIPE || dados.TIPO_EXECUCAO),
     normTxt(c.motorista || dados.Operador || dados.OPERADOR),
@@ -56,11 +81,14 @@ export function chaveProducaoColeta(c: Pick<ColetaData, 'dataSaida' | 'distrito'
   ].join('|');
 }
 
-export async function carregarChavesProducaoExistentes(servicoId: string): Promise<Set<string>> {
+export async function carregarChavesProducaoExistentes(
+  servicoId: string,
+  manager?: EntityManager,
+): Promise<Set<string>> {
   const existentes = new Set<string>();
-  const uploadIds = await obterUploadIdsModificaveis(servicoId);
+  const uploadIds = await obterUploadIdsModificaveis(servicoId, manager);
   if (!uploadIds.length) return existentes;
-  const rows = await AppDataSource.getRepository(ColetaData)
+  const rows = await (manager ?? AppDataSource.manager).getRepository(ColetaData)
     .createQueryBuilder('c')
     .where('c.planilhaUploadId IN (:...uploadIds)', { uploadIds })
     .getMany();

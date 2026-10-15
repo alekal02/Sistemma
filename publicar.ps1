@@ -21,7 +21,7 @@ Copy-Item INSTRUCOES-WHATSAPP.txt $DeployDir
 New-Item -ItemType Directory -Path (Join-Path $DeployDir "scripts") -Force | Out-Null
 Copy-Item scripts\backup-destino.ps1 (Join-Path $DeployDir "scripts")
 Copy-Item scripts\cutover-destino.ps1 (Join-Path $DeployDir "scripts")
-Copy-Item scripts\ativar-acesso-livre.ps1 (Join-Path $DeployDir "scripts")
+Copy-Item scripts\atualizar-destino.ps1 (Join-Path $DeployDir "scripts")
 # Atalhos .cmd: a maquina destino bloqueia .ps1 nao assinado (politica AllSigned)
 Copy-Item scripts\*.cmd (Join-Path $DeployDir "scripts")
 
@@ -38,5 +38,4 @@ Compress-Archive -Path "$DeployDir\*" -DestinationPath "dist\deploy.zip" -Force
 Write-Host ""
 Write-Host "Publicado: $Tag" -ForegroundColor Green
 Write-Host "Destino: so mude TAG=$Tag no .env (nao substitua o arquivo inteiro)." -ForegroundColor Yellow
-Write-Host "Mantenha ACESSO_LIVRE=true para Contratos nao pedir senha." -ForegroundColor Yellow
 Write-Host "Depois: docker compose pull && docker compose up -d --force-recreate backend frontend" -ForegroundColor Cyan

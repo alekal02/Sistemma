@@ -17,12 +17,18 @@ import {
   enriquecerCamposColeta,
   validarViagemParaDashboard,
 } from './validacaoViagemService';
-import { sqlDataIsoDia, sqlJsonNumero, sqlSumPesoEfetivoKg, sqlSumViagens } from './viagensPorRotaService';
+import { sqlDataIsoDia, sqlExprPesoEfetivoKg, sqlSumPesoEfetivoKg, sqlSumViagens } from './viagensPorRotaService';
+import { sqlAreaM2, sqlKmLinear, sqlMetroLinear, sqlQtdArvore, sqlQuantitativo } from './metricaServicoSql';
+import { TipoServico } from '../enums/TipoServico';
+import { sqlSomenteUploadVigenteDoDia } from './uploadVisivelRelatorio';
 import { deduplicarKpisLista } from './kpiDeduplicacaoService';
 import { invalidarCacheDadosServico } from './servicoDadosCache';
 import { invalidarCacheDashboardServico } from './comparacaoCache';
 import { recalcularTotaisDiaServicoSilencioso } from './coletaTotaisDiaService';
 import { normalizarTextoTipoCaminhao } from '../config/pesoMaximoCaminhao';
+import { numeroPlanilha } from './FormulaEngine';
+import { diffHorasSaidaChegada } from './horasProdutivasService';
+import { aplicarLimitesTextoColeta } from '../utils/textoColunaColeta';
 
 interface LinhaPlanilha {
   [key: string]: any;
@@ -36,6 +42,11 @@ interface ResultadoImportacao {
   viagensInconsistentes?: number;
   viagensValidasDashboard?: number;
   linhasDescartadasSemDados?: number;
+}
+
+/** Mesma expressão de peso do ciclo, para resumo, regional, dia, placa e motorista. */
+function sqlMediaPesoEfetivoKg(alias = 'c'): string {
+  return `AVG(${sqlExprPesoEfetivoKg(alias)})`;
 }
 
 /** kg da planilha → t (se o dia ainda parecer kg, divide de novo). */
@@ -135,6 +146,7 @@ export class PlanilhaService {
 
         coleta.dados = this.filtrarChavesVazias(linha);
         this.mapearPorPalavrasChave(coleta, linha);
+        aplicarLimitesTextoColeta(coleta);
 
         const validacao = prepararViagemParaImportacao(coleta);
         if (validacao.descartada) {
@@ -451,8 +463,7 @@ export class PlanilhaService {
     if (!chaveEncontrada) return null;
     const valor = obj[chaveEncontrada];
     if (valor === null || valor === undefined) return null;
-    const num = Number(valor);
-    return isNaN(num) ? null : num;
+    return numeroPlanilha(valor);
   }
 
   private getInt(obj: any, key: string): number | null {
@@ -493,12 +504,12 @@ export class PlanilhaService {
     
     for (const chave of chaves) {
       const valor = linha[chave];
-      const num = typeof valor === 'number' ? valor : Number(valor);
+      const num = numeroPlanilha(valor);
       colunas.push({
         chave,
         normalizada: this.normalizarChave(chave),
         valor,
-        numerico: isNaN(num) ? null : num,
+        numerico: num,
       });
     }
 
@@ -572,10 +583,11 @@ export class PlanilhaService {
       if (col && col.numerico !== null) coleta.kmSaida = col.numerico;
     }
 
-    // HORA SÁIDA
+    // HORA SÁIDA da base — não usar HORA SAÍDA ROTA (fim do trecho)
     if (!coleta.horaSaida) {
       const col = colunas.find(c =>
-        c.normalizada.includes('HORASAIDA') || c.normalizada.includes('HORASAIDABASE')
+        !c.normalizada.includes('ROTA')
+        && (c.normalizada.includes('HORASAIDABASE') || c.normalizada.includes('HRSAIDABASE') || c.normalizada === 'HORASAIDA')
       );
       if (col && col.numerico !== null) coleta.horaSaida = col.numerico;
     }
@@ -588,10 +600,11 @@ export class PlanilhaService {
       if (col && col.numerico !== null) coleta.kmChegada = col.numerico;
     }
 
-    // HORA CHEGADA
+    // HORA CHEGADA na base — não usar HORA CHEGADA ROTA (início do trecho)
     if (!coleta.horaChegada) {
       const col = colunas.find(c =>
-        c.normalizada.includes('HORACHEGADA') || c.normalizada.includes('HORACHEGADAROTA')
+        !c.normalizada.includes('ROTA')
+        && (c.normalizada.includes('HORACHEGADABASE') || c.normalizada.includes('HRCHEGABASE') || c.normalizada === 'HORACHEGADA')
       );
       if (col && col.numerico !== null) coleta.horaChegada = col.numerico;
     }
@@ -698,19 +711,12 @@ export class PlanilhaService {
       }
     }
 
-    // HORAS PRODUTIVAS: calcular a partir de HORA CHEGADA BASE - HORA SÁIDA BASE
+    // Jornada base→base, mesma regra de HORAS_PRODUTIVAS (inclui virada de dia).
+    // Registros já gravados não são recalculados aqui.
     if (!coleta.horasForaUnidade && !coleta.tempoForaUnidade) {
       if (coleta.horaSaida !== null && coleta.horaChegada !== null) {
-        let diff = Math.abs(Number(coleta.horaChegada) - Number(coleta.horaSaida));
-        // Se ambos são < 1, estão em fração de dia (serial Excel 0.3333 = 08:00)
-        if (Number(coleta.horaSaida) < 1 && Number(coleta.horaChegada) < 1) {
-          diff = diff * 24; // converter para horas
-        } else if (diff > 100) {
-          diff = diff / 60; // pode estar em minutos
-        }
-        if (diff > 0 && diff <= 24) {
-          coleta.horasForaUnidade = Math.round(diff * 100) / 100;
-        }
+        const diff = diffHorasSaidaChegada(Number(coleta.horaSaida), Number(coleta.horaChegada));
+        if (diff > 0 && diff <= 24) coleta.horasForaUnidade = diff;
       }
     }
 
@@ -730,8 +736,8 @@ export class PlanilhaService {
     aplicarFiltroViagensValidasDashboard(queryBuilder, 'c');
     queryBuilder.select([
         'COUNT(*) as total_registros',
-        'SUM(c.pesoTotal) as total_peso',
-        'AVG(c.pesoTotal) as media_peso',
+        `${sqlSumPesoEfetivoKg('c')} as total_peso`,
+        `${sqlMediaPesoEfetivoKg('c')} as media_peso`,
         'SUM(c.kmTotal) as total_km',
         'AVG(c.kmTotal) as media_km',
         `${sqlSumViagens('c')} as total_viagens`,
@@ -1032,10 +1038,10 @@ export class PlanilhaService {
    */
   async getPesoPorRegional(filtros?: { dataInicio?: string; dataFim?: string; regional?: string; distrito?: string }) {
     const qb = this.coletaRepo.createQueryBuilder('c')
-      .select(['c.regional as regional', 'SUM(c.pesoTotal) as total_peso', 'COUNT(*) as quantidade'])
-      .where('c.pesoTotal IS NOT NULL')
+      .select(['c.regional as regional', `${sqlSumPesoEfetivoKg('c')} as total_peso`, 'COUNT(*) as quantidade'])
       .groupBy('c.regional')
       .orderBy('total_peso', 'DESC');
+    aplicarFiltroViagensValidasDashboard(qb, 'c');
 
     this.aplicarFiltroData(qb, filtros);
 
@@ -1069,12 +1075,12 @@ export class PlanilhaService {
    */
   async getTopMotoristas(limite: number = 10, filtros?: { dataInicio?: string; dataFim?: string; regional?: string; distrito?: string }) {
     const qb = this.coletaRepo.createQueryBuilder('c')
-      .select([`c.motorista as motorista`, `SUM(c.pesoTotal) as total_peso`, `COUNT(*) as quantidade`, `SUM(c.kmTotal) as total_km`, `${sqlSumViagens('c')} as total_viagens`])
+      .select([`c.motorista as motorista`, `${sqlSumPesoEfetivoKg('c')} as total_peso`, `COUNT(*) as quantidade`, `SUM(c.kmTotal) as total_km`, `${sqlSumViagens('c')} as total_viagens`])
       .where('c.motorista IS NOT NULL')
-      .andWhere('c.pesoTotal IS NOT NULL')
       .groupBy('c.motorista')
       .orderBy('total_peso', 'DESC')
       .limit(limite);
+    aplicarFiltroViagensValidasDashboard(qb, 'c');
 
     this.aplicarFiltroData(qb, filtros);
     return qb.getRawMany();
@@ -1089,13 +1095,14 @@ export class PlanilhaService {
       .select([
         'COALESCE(c.diaSemana, EXTRACT(DOW FROM c.dataSaida)::int + 1) AS "diaSemana"',
         'COUNT(*) as quantidade',
-        'SUM(c.pesoTotal) as total_peso',
+        `${sqlSumPesoEfetivoKg('c')} as total_peso`,
         'SUM(c.kmTotal) as total_km',
         `${sqlSumViagens('c')} as total_viagens`,
       ])
       .where('c.dataSaida IS NOT NULL')
       .groupBy('COALESCE(c.diaSemana, EXTRACT(DOW FROM c.dataSaida)::int + 1)')
       .orderBy('"diaSemana"', 'ASC');
+    aplicarFiltroViagensValidasDashboard(qb, 'c');
 
     this.aplicarFiltroData(qb, filtros);
     return qb.getRawMany();
@@ -1128,11 +1135,11 @@ export class PlanilhaService {
    */
   async getPesoPorDia(filtros?: { dataInicio?: string; dataFim?: string; regional?: string; distrito?: string }) {
     const qb = this.coletaRepo.createQueryBuilder('c')
-      .select(['c.dataSaida as data', 'SUM(c.pesoTotal) as total_peso', 'COUNT(*) as quantidade', 'SUM(c.kmTotal) as total_km', `${sqlSumViagens('c')} as total_viagens`])
+      .select(['c.dataSaida as data', `${sqlSumPesoEfetivoKg('c')} as total_peso`, 'COUNT(*) as quantidade', 'SUM(c.kmTotal) as total_km', `${sqlSumViagens('c')} as total_viagens`])
       .where('c.dataSaida IS NOT NULL')
-      .andWhere('c.pesoTotal IS NOT NULL')
       .groupBy('c.dataSaida')
       .orderBy('c.dataSaida', 'ASC');
+    aplicarFiltroViagensValidasDashboard(qb, 'c');
 
     this.aplicarFiltroData(qb, filtros);
 
@@ -1144,12 +1151,12 @@ export class PlanilhaService {
    */
   async getTopPlacas(limite: number = 10, filtros?: { dataInicio?: string; dataFim?: string; regional?: string; distrito?: string }) {
     const qb = this.coletaRepo.createQueryBuilder('c')
-      .select(['c.placa as placa', 'SUM(c.pesoTotal) as total_peso', 'COUNT(*) as quantidade', 'SUM(c.kmTotal) as total_km', `${sqlSumViagens('c')} as total_viagens`])
+      .select(['c.placa as placa', `${sqlSumPesoEfetivoKg('c')} as total_peso`, 'COUNT(*) as quantidade', 'SUM(c.kmTotal) as total_km', `${sqlSumViagens('c')} as total_viagens`])
       .where('c.placa IS NOT NULL')
-      .andWhere('c.pesoTotal IS NOT NULL')
       .groupBy('c.placa')
       .orderBy('total_peso', 'DESC')
       .limit(limite);
+    aplicarFiltroViagensValidasDashboard(qb, 'c');
 
     this.aplicarFiltroData(qb, filtros);
 
@@ -1161,10 +1168,11 @@ export class PlanilhaService {
    */
   async getDistribuicaoTipoCaminhao(filtros?: { dataInicio?: string; dataFim?: string; regional?: string; distrito?: string }) {
     const qb = this.coletaRepo.createQueryBuilder('c')
-      .select(['c.tipoCaminhao as tipo', 'COUNT(*) as quantidade', 'SUM(c.pesoTotal) as total_peso', 'AVG(c.pesoTotal) as media_peso'])
+      .select(['c.tipoCaminhao as tipo', 'COUNT(*) as quantidade', `${sqlSumPesoEfetivoKg('c')} as total_peso`, `${sqlMediaPesoEfetivoKg('c')} as media_peso`])
       .where('c.tipoCaminhao IS NOT NULL')
       .groupBy('c.tipoCaminhao')
       .orderBy('quantidade', 'DESC');
+    aplicarFiltroViagensValidasDashboard(qb, 'c');
 
     this.aplicarFiltroData(qb, filtros);
 
@@ -1176,10 +1184,11 @@ export class PlanilhaService {
    */
   async getDadosPorTurno(filtros?: { dataInicio?: string; dataFim?: string; regional?: string; distrito?: string }) {
     const qb = this.coletaRepo.createQueryBuilder('c')
-      .select(['c.turno as turno', 'COUNT(*) as quantidade', 'SUM(c.pesoTotal) as total_peso', 'AVG(c.pesoTotal) as media_peso'])
+      .select(['c.turno as turno', 'COUNT(*) as quantidade', `${sqlSumPesoEfetivoKg('c')} as total_peso`, `${sqlMediaPesoEfetivoKg('c')} as media_peso`])
       .where('c.turno IS NOT NULL')
       .groupBy('c.turno')
       .orderBy('quantidade', 'DESC');
+    aplicarFiltroViagensValidasDashboard(qb, 'c');
 
     this.aplicarFiltroData(qb, filtros);
 
@@ -1564,50 +1573,22 @@ export class PlanilhaService {
     const uploadIds = await this.getUploadIdsPorServico(servicoId);
     if (uploadIds.length === 0) return [];
 
-    // Métricas por unidade ficam no JSONB (roçada/capina/varrição/poda)
-    const areaExpr = `
-      COALESCE(
-        ${sqlJsonNumero('c', 'Area m²')},
-        ${sqlJsonNumero('c', 'AREA_M2')},
-        ${sqlJsonNumero('c', 'M2')},
-        ${sqlJsonNumero('c', 'AREA_ROCADA')},
-        ${sqlJsonNumero('c', 'QUANTITATIVO')},
-        ${sqlJsonNumero('c', 'QUANTIDADE')},
-        0
-      )
-    `;
-    const metroLinearExpr = `
-      COALESCE(
-        ${sqlJsonNumero('c', 'Metro Linear')},
-        ${sqlJsonNumero('c', 'METRO_LINEAR')},
-        ${sqlJsonNumero('c', 'COMPRIMENTO')},
-        0
-      )
-    `;
-    const kmLinearExpr = `
-      COALESCE(
-        ${sqlJsonNumero('c', 'KM Linear')},
-        ${sqlJsonNumero('c', 'KM_LINEAR')},
-        ${sqlJsonNumero('c', 'QUILOMETROS_VARRIDOS')},
-        c.kmTotal,
-        0
-      )
-    `;
-    const qtdArvoreExpr = `
-      COALESCE(
-        ${sqlJsonNumero('c', 'Quantidade de Arvore')},
-        ${sqlJsonNumero('c', 'QTD_ARVORE')},
-        ${sqlJsonNumero('c', 'ARVORES_PODADAS')},
-        0
-      )
-    `;
-    const quantitativoExpr = `
-      COALESCE(
-        ${sqlJsonNumero('c', 'QUANTITATIVO')},
-        ${sqlJsonNumero('c', 'QUANTIDADE')},
-        0
-      )
-    `;
+    const servico = await this.servicoRepo.findOne({ where: { id: servicoId }, select: ['id', 'tipo'] });
+    const producao = servico != null && [
+      TipoServico.ROCADEIRA,
+      TipoServico.CAPINA,
+      TipoServico.VARRICAO,
+      TipoServico.PODA,
+      TipoServico.PINTURA_MEIO_FIO,
+      TipoServico.REMOCAO,
+      TipoServico.GERAL,
+    ].includes(servico.tipo as TipoServico);
+
+    const areaExpr = sqlAreaM2('c');
+    const metroLinearExpr = sqlMetroLinear('c');
+    const kmLinearExpr = sqlKmLinear('c');
+    const qtdArvoreExpr = sqlQtdArvore('c');
+    const quantitativoExpr = sqlQuantitativo('c');
 
     const dataIsoExpr = sqlDataIsoDia('c');
     const qb = this.coletaRepo.createQueryBuilder('c')
@@ -1624,6 +1605,9 @@ export class PlanilhaService {
         `COALESCE(SUM(${quantitativoExpr}), 0) as quantitativo`,
       ])
       .where('c.planilhaUploadId IN (:...uploadIds)', { uploadIds });
+    if (producao) {
+      qb.andWhere(sqlSomenteUploadVigenteDoDia('c'));
+    }
     aplicarFiltroViagensValidasDashboard(qb, 'c');
     qb.andWhere(`${dataIsoExpr} >= :inicio`, { inicio: dataInicio })
       .andWhere(`${dataIsoExpr} <= :fim`, { fim: dataFim })

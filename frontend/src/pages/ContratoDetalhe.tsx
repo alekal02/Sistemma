@@ -34,6 +34,7 @@ import type { TipoServico } from '../types';
 import contractService from '../services/contractService';
 import servicoService from '../services/servicoService';
 import pdfService from '../services/pdfService';
+import { metricaOficialServico } from '@sistemma/shared';
 import { gerarHtmlRelatorioCicloConsolidado } from '../utils/gerarHtmlRelatorioCicloConsolidado';
 import { gerarNomePdfRelatorioCicloConsolidado } from '../utils/gerarNomePdf';
 import {
@@ -989,15 +990,8 @@ export default function ContratoDetalhe() {
       ].filter(Boolean).join(' · ');
       return { valor: ton, und: 't', extra: extra || undefined };
     }
-    if (t === 'rocadeira') return { valor: Number(d.areaM2 || d.quantitativo || 0), und: 'm²' };
-    if (t === 'varricao') return { valor: Number(d.kmLinear || d.quantitativo || 0), und: 'km' };
-    if (t === 'capina') {
-      if (Number(d.kmLinear || 0) > 0) return { valor: Number(d.kmLinear), und: 'km' };
-      return { valor: Number(d.metroLinear || d.quantitativo || 0), und: 'm' };
-    }
-    if (t === 'poda') return { valor: Number(d.qtdArvore || d.quantitativo || d.rotas || 0), und: 'arv' };
-    if (t === 'pintura_meio_fio') return { valor: Number(d.metroLinear || d.quantitativo || 0), und: 'm' };
-    return { valor: Number(d.quantitativo || d.qtdArvore || d.rotas || 0), und: 'pts' };
+    const oficial = metricaOficialServico(t, d);
+    return { valor: oficial.valor, und: oficial.sufixo };
   };
 
   const exportarPdfCicloTodosServicos = async () => {

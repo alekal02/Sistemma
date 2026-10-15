@@ -1,7 +1,11 @@
 /**
  * Unidade operacional do serviço — define como o ciclo/dashboard
- * exibe a métrica principal (m², km, m linear, árvores vs coleta).
+ * exibe a métrica principal (m², km, m linear, árvores, pontos vs coleta).
+ * O valor oficial vem de metricaOficialServico (@sistemma/shared).
  */
+import { metricaDeRegistro, metricaOficialServico, type CamposMetricaServico } from '@sistemma/shared';
+
+export { metricaDeRegistro, metricaOficialServico };
 
 export type ModoMetricaServico =
   | 'coleta'
@@ -25,7 +29,6 @@ export function unidadeOperacionalDoTipo(tipoServico?: string | null): UnidadeOp
     case 'rocadeira':
       return { modo: 'rocada', labelMetrica: 'Área', sufixo: 'm²', semViagemColeta: true };
     case 'capina':
-      // Planilha traz QUANTITATIVO em km ou m; sempre espelhamos metro linear nos KPIs
       return { modo: 'metro_linear', labelMetrica: 'Metro linear', sufixo: 'm', semViagemColeta: true };
     case 'varricao':
       return { modo: 'km_linear', labelMetrica: 'KM linear', sufixo: 'km', semViagemColeta: true };
@@ -49,40 +52,14 @@ export function ehServicoPorUnidade(tipoServico?: string | null): boolean {
 /** Escolhe valor + sufixo do dia conforme o tipo e os campos agregados */
 export function metricaPrincipalDoDia(
   tipoServico: string | undefined | null,
-  d: {
-    areaM2?: number;
-    metroLinear?: number;
-    kmLinear?: number;
-    qtdArvore?: number;
-    quantitativo?: number;
-    viagens?: number;
-    rotas?: number;
-  },
+  d: CamposMetricaServico & { viagens?: number; rotas?: number },
 ): { valor: number; sufixo: string; label: string } {
   const u = unidadeOperacionalDoTipo(tipoServico);
-  const area = Number(d.areaM2 || 0);
-  const kmLin = Number(d.kmLinear || 0);
-  const mLin = Number(d.metroLinear || 0);
-  const arv = Number(d.qtdArvore || 0);
-
-  if (u.modo === 'rocada') {
-    return { valor: area, sufixo: 'm²', label: 'Área' };
+  if (u.modo === 'coleta') {
+    return { valor: Number(d.viagens || 0), sufixo: '', label: 'Viagens' };
   }
-  if (u.modo === 'arvores') {
-    return { valor: arv || Number(d.quantitativo || 0), sufixo: 'arv', label: 'Árvores' };
-  }
-  if (u.modo === 'km_linear') {
-    // Capina pode vir em km; se só houver metro linear, exibe metros
-    if (kmLin > 0) return { valor: kmLin, sufixo: 'km', label: u.labelMetrica };
-    if (mLin > 0) return { valor: mLin, sufixo: 'm', label: 'Metro linear' };
-    return { valor: Number(d.quantitativo || 0), sufixo: u.sufixo, label: u.labelMetrica };
-  }
-  if (u.modo === 'metro_linear') {
-    if (mLin > 0) return { valor: mLin, sufixo: 'm', label: 'Metro linear' };
-    if (kmLin > 0) return { valor: kmLin, sufixo: 'km', label: 'KM linear' };
-    return { valor: Number(d.quantitativo || 0), sufixo: 'm', label: 'Metro linear' };
-  }
-  return { valor: Number(d.viagens || 0), sufixo: '', label: 'Viagens' };
+  const m = metricaOficialServico(tipoServico, d);
+  return { valor: m.valor, sufixo: m.sufixo, label: m.label };
 }
 
 export function diaTemOperacaoUnidade(
@@ -105,7 +82,7 @@ export function diaTemOperacaoUnidade(
 
 export function formatarMetricaUnidade(valor: number, sufixo: string, dec = 1): string {
   const n = Number(valor) || 0;
-  const casas = sufixo === 'm²' || sufixo === 'arv' ? 0 : (n >= 100 ? 1 : 3);
+  const casas = sufixo === 'm²' || sufixo === 'arv' || sufixo === 'pts' ? 0 : (n >= 100 ? 1 : 3);
   const fmt = n.toLocaleString('pt-BR', {
     minimumFractionDigits: 0,
     maximumFractionDigits: dec ?? casas,

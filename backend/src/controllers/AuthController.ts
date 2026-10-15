@@ -1,9 +1,8 @@
 import { Request, Response } from 'express';
-import { IsNull, Repository } from 'typeorm';
+import { Repository } from 'typeorm';
 import { getControlDataSource, isMultiTenant } from '../database/data-source';
 import { User, UserRole } from '../entities/User';
 import { Tenant } from '../entities/Tenant';
-import { Contract } from '../entities/Contract';
 import {
   gerarRefreshToken,
   gerarToken,
@@ -12,11 +11,6 @@ import {
   TokenPayload,
   verificarTokenRenovacao,
 } from '../middlewares/authMiddleware';
-
-/** Sem senha na tela inicial, salvo ACESSO_LIVRE=false no .env. */
-export function acessoLivreHabilitado(): boolean {
-  return process.env.ACESSO_LIVRE !== 'false';
-}
 
 function payloadUsuario(user: User, tenantDb?: string | null): TokenPayload {
   return {
@@ -41,142 +35,6 @@ function userPublico(user: User, extras: Record<string, unknown> = {}) {
 class AuthController {
   private get repository(): Repository<User> {
     return getControlDataSource().getRepository(User);
-  }
-
-  private recusarSeProducao(res: Response): boolean {
-    if (acessoLivreHabilitado()) return false;
-    res.status(403).json({ error: 'Acesso local sem senha não está disponível neste ambiente' });
-    return true;
-  }
-
-  private emitirSessao(
-    user: User,
-    extras: { contractId?: string | null; tenantDb?: string | null } = {},
-  ) {
-    const contractId = extras.contractId ?? user.contractId ?? null;
-    const tenantDb = extras.tenantDb ?? null;
-    const payload: TokenPayload = {
-      id: user.id,
-      email: user.email,
-      nome: user.nome,
-      role: user.role,
-      contractId,
-      tenantDb,
-    };
-    return {
-      token: gerarToken(payload),
-      refreshToken: gerarRefreshToken(payload),
-      user: userPublico(user, { contractId, tenantDb }),
-    };
-  }
-
-  private async garantirUsuarioLocal(): Promise<User> {
-    const repo = this.repository;
-    const existente =
-      await repo.findOne({ where: { role: 'superadmin', ativo: true } })
-      || await repo.findOne({ where: { role: 'admin', ativo: true, contractId: IsNull() } })
-      || await repo.findOne({ where: { role: 'admin', ativo: true } });
-    if (existente) return existente;
-
-    const user = repo.create({
-      nome: 'Gestor local',
-      email: 'local@sistemma',
-      senha: `local-${Date.now()}`,
-      role: 'superadmin',
-      contractId: null,
-      ativo: true,
-    });
-    return repo.save(user);
-  }
-
-  private async listarContratosAcessoLocal(): Promise<Array<{
-    id: string;
-    numeroContrato: string;
-    status: string;
-  }>> {
-    if (isMultiTenant()) {
-      const tenants = await getControlDataSource().getRepository(Tenant).find({
-        order: { numeroContrato: 'ASC' },
-      });
-      return tenants
-        .filter((t) => t.status !== 'encerrado')
-        .map((t) => ({
-          id: t.contractId,
-          numeroContrato: t.numeroContrato || t.slug,
-          status: t.status,
-        }));
-    }
-
-    const contratos = await getControlDataSource().getRepository(Contract).find({
-      order: { numeroContrato: 'ASC' },
-    });
-    return contratos
-      .filter((c) => c.status !== 'encerrado')
-      .map((c) => ({
-        id: c.id,
-        numeroContrato: c.numeroContrato || c.id,
-        status: c.status,
-      }));
-  }
-
-  /** GET /api/auth/acesso-local — status + lista de contratos (somente local). */
-  async statusAcessoLocal(_req: Request, res: Response): Promise<void> {
-    try {
-      if (!acessoLivreHabilitado()) {
-        res.json({ habilitado: false, contratos: [] });
-        return;
-      }
-      const contratos = await this.listarContratosAcessoLocal();
-      res.json({ habilitado: true, contratos });
-    } catch (error) {
-      console.error('Erro ao consultar acesso local:', error);
-      res.status(500).json({ error: 'Erro ao consultar acesso local' });
-    }
-  }
-
-  /** POST /api/auth/acesso-local — entra como gestor ou numa unidade, sem senha. */
-  async entrarAcessoLocal(req: Request, res: Response): Promise<void> {
-    try {
-      if (this.recusarSeProducao(res)) return;
-
-      const modo = String(req.body?.modo || 'gestor');
-      const user = await this.garantirUsuarioLocal();
-      if (modo !== 'contrato') {
-        res.json(this.emitirSessao(user, { contractId: null, tenantDb: null }));
-        return;
-      }
-
-      const contractId = String(req.body?.contractId || '');
-      if (!contractId) {
-        res.status(400).json({ error: 'Escolha um contrato' });
-        return;
-      }
-
-      let tenantDb: string | null = null;
-      if (isMultiTenant()) {
-        const tenant = await getControlDataSource().getRepository(Tenant).findOne({
-          where: { contractId },
-        });
-        if (!tenant) {
-          res.status(404).json({ error: 'Contrato não encontrado' });
-          return;
-        }
-        tenantDb = tenant.databaseName;
-      } else {
-        const contrato = await getControlDataSource().getRepository(Contract).findOne({
-          where: { id: contractId },
-        });
-        if (!contrato) {
-          res.status(404).json({ error: 'Contrato não encontrado' });
-          return;
-        }
-      }
-
-      res.json(this.emitirSessao(user, { contractId, tenantDb }));
-    } catch (error) {
-      console.error('Erro no acesso local:', error);
-      res.status(500).json({ error: 'Erro ao entrar no acesso local' });
-    }
   }
 
   private async tenantDbDoUsuario(user: User): Promise<string | null> {

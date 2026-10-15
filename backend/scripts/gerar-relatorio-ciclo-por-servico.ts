@@ -60,7 +60,7 @@ function metricaUnidade(tipo: string, d: {
     case 'rocadeira':
       return { valor: d.areaM2, sufixo: 'm²', label: 'Área', tipoLabel: 'Roçada' };
     case 'varricao':
-      return { valor: d.kmLinear || d.quantitativo, sufixo: 'km', label: 'KM linear', tipoLabel: 'Varrição' };
+      return { valor: d.kmLinear, sufixo: 'km', label: 'KM linear', tipoLabel: 'Varrição' };
     case 'capina':
       if (d.kmLinear > 0) return { valor: d.kmLinear, sufixo: 'km', label: 'Extensão', tipoLabel: 'Capina' };
       return { valor: d.metroLinear || d.quantitativo, sufixo: 'm', label: 'Metro linear', tipoLabel: 'Capina' };

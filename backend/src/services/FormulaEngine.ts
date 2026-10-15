@@ -152,15 +152,64 @@ function aplicarAgregacao(funcao: Agregacao, coluna: string, dados: Record<strin
   }
 }
 
+/**
+ * Converte número de planilha.
+ * Brasileiro: `1.234,56` e `1234,56`.
+ * Decimal com ponto (QGIS / Excel numérico em texto): `1234.56`, `485.073`.
+ * Milhar com vários pontos e sem vírgula: `1.234.567`.
+ */
 export function parseNumeroBr(valor: any): number {
-  if (valor === null || valor === undefined) return NaN;
-  if (typeof valor === 'number') return isNaN(valor) ? NaN : valor;
-  let str = String(valor).trim();
-  if (str === '') return NaN;
-  if (/^\d+\.\d+$/.test(str)) { const n = Number(str); if (!isNaN(n)) return n; }
-  if (str.includes(',') || (str.includes('.') && str.indexOf('.') < (str.length - 3))) { str = str.replace(/\./g, '').replace(',', '.'); }
+  if (valor === null || valor === undefined || valor === '') return NaN;
+  if (typeof valor === 'number') return Number.isFinite(valor) ? valor : NaN;
+  if (typeof valor === 'boolean' || valor instanceof Date) return NaN;
+
+  let str = String(valor)
+    .trim()
+    .replace(/[\u00A0\u202F\s]/g, '')
+    .replace(/r\$/gi, '')
+    .replace(/%$/g, '');
+  if (!str) return NaN;
+
+  let negativo = false;
+  if (str.startsWith('-') || str.startsWith('−')) {
+    negativo = true;
+    str = str.slice(1);
+  } else if (str.startsWith('+')) {
+    str = str.slice(1);
+  }
+  if (str.startsWith('(') && str.endsWith(')')) {
+    negativo = true;
+    str = str.slice(1, -1);
+  }
+  if (!str) return NaN;
+  str = str.replace(/[a-zA-Z²³µ]+$/g, '');
+  if (!/^\d[\d.,]*$/.test(str)) return NaN;
+
+  const temVirgula = str.includes(',');
+  const temPonto = str.includes('.');
+  if (temVirgula && temPonto) {
+    if (str.lastIndexOf(',') > str.lastIndexOf('.')) {
+      str = str.replace(/\./g, '').replace(',', '.');
+    } else {
+      str = str.replace(/,/g, '');
+    }
+  } else if (temVirgula) {
+    const partes = str.split(',');
+    str = partes.length > 2 ? partes.join('') : `${partes[0]}.${partes[1]}`;
+  } else if (temPonto && str.split('.').length > 2) {
+    str = str.replace(/\./g, '');
+  }
+
   const n = Number(str);
-  return isNaN(n) ? NaN : n;
+  if (!Number.isFinite(n)) return NaN;
+  return negativo ? -n : n;
+}
+
+/** Número de célula de planilha, ou null quando a célula não é numérica. */
+export function numeroPlanilha(valor: unknown): number | null {
+  if (valor === null || valor === undefined || valor === '') return null;
+  const n = parseNumeroBr(valor);
+  return Number.isFinite(n) ? n : null;
 }
 
 export function normalizarChave(chave: string): string {
@@ -203,6 +252,7 @@ export function encontrarValorColuna(dado: Record<string, any>, nomeColuna: stri
   // faziam o id da linha virar PESO 2–5 e inflar o PESO TOTAL.
   for (const [k, v] of Object.entries(dado)) {
     if (v === null || v === undefined) continue;
+    if (buscaKmDeDistancia(nomeColuna) && colunaEhHodometro(k)) continue;
     const chaveReal = normalizarChave(k).replace(/\s+/g, '');
     if (chaveReal.length >= 4 && chaveReal.includes(semEspaco)) return v;
     if (chaveReal.length >= 5 && chaveReal.length >= semEspaco.length - 1 && semEspaco.includes(chaveReal)) return v;
@@ -327,12 +377,62 @@ function calcularFaturamentoEstimado(
   return total;
 }
 
+/**
+ * Horas nas rotas = chegada na rota → saída da rota.
+ * Fórmulas antigas passam (saída, chegada) e a virada de dia vira ~24h − o tempo real.
+ * SUM(relógio) − SUM(relógio) também não é duração por registro.
+ */
+function substituirDuracaoRelogio(
+  expr: string,
+  regex: RegExp,
+  troca: (match: string, ...grupos: string[]) => string,
+): string {
+  if (!regex.test(expr)) return expr;
+  regex.lastIndex = 0;
+  const substituida = expr.replace(regex, troca as (substring: string, ...args: string[]) => string);
+  if (/SUM\s*\(\s*H(?:ORA|R)\s+/i.test(substituida)) return expr;
+  return substituida;
+}
+
+export function corrigirFormulaHorasLegada(expressao: string): string {
+  let expr = expressao;
+  expr = expr.replace(
+    /HORAS_PRODUTIVAS\s*\(\s*(HORA\s+S[AÁ][IÍ]DA\s+ROTA\s+0?\d)\s*,\s*(HORA\s+CHEGA(?:DA)?\s+ROTA\s+0?\d)\s*\)/gi,
+    (_m, saida, chegada) => `HORAS_PRODUTIVAS(${chegada}, ${saida})`,
+  );
+  expr = substituirDuracaoRelogio(
+    expr,
+    /SUM\s*\(\s*(HORA\s+CHEGA(?:DA)?\s+BASE|HR\s+CHEGA\s+BASE)\s*\)\s*-\s*SUM\s*\(\s*(HORA\s+S[AÁ][IÍ]DA\s+BASE|HR\s+SAIDA\s+BASE)\s*\)/gi,
+    (_m, chegada, saida) => `HORAS_PRODUTIVAS(${saida}, ${chegada})`,
+  );
+  expr = substituirDuracaoRelogio(
+    expr,
+    /SUM\s*\(\s*(HORA\s+S[AÁ][IÍ]DA\s+ROTA\s+0?\d)\s*\)\s*-\s*SUM\s*\(\s*(HORA\s+CHEGA(?:DA)?\s+ROTA\s+0?\d)\s*\)/gi,
+    (_m, saida, chegada) => `HORAS_PRODUTIVAS(${chegada}, ${saida})`,
+  );
+  if (/HORAS_PRODUTIVAS\s*\(/i.test(expr)) {
+    expr = expr.replace(/\)\s*\*\s*24\b/g, ')');
+  }
+  return expr;
+}
+
+function colunaEhHodometro(chave: string): boolean {
+  const n = normalizarChave(chave);
+  return n.includes('KM') && (n.includes('SAIDA') || n.includes('CHEGADA') || n.includes('ROTA') || n.includes('BASE'));
+}
+
+function buscaKmDeDistancia(nomeColuna: string): boolean {
+  const n = normalizarChave(nomeColuna);
+  if (colunaEhHodometro(nomeColuna)) return false;
+  return n.includes('KM') || n.includes('QUILOMET') || n.includes('KILOMET') || n.includes('DISTANCIA') || n.includes('VARRID');
+}
+
 export function calcularExpressao(expressao: string, contexto: ContextoCalculo): { valor: number; debug?: Record<string, any> } {
   const { dados, valoresFixos = {}, debug = false } = contexto;
   const log: Record<string, any> = {};
   if (!expressao || typeof expressao !== 'string' || expressao.trim() === '') return { valor: 0 };
   if (debug) log.expressaoOriginal = expressao;
-  let expr = expressao;
+  let expr = corrigirFormulaHorasLegada(expressao);
   const funcoesAgregadas = extrairFuncoesAgregadas(expr);
   if (debug) log.funcoesAgregadas = funcoesAgregadas;
   for (const func of funcoesAgregadas) {
@@ -904,36 +1004,36 @@ export const MODELO_EXECUTIVO_KPIS: GrupoModeloExecutivo[] = [
     indicadores: [
       {
         nome: 'Arvores por Dia',
-        formula: 'ROUND(DIVIDE(COUNT(*), COUNT DISTINCT(DATA)), 1)',
+        formula: 'ROUND(DIVIDE(SUM(Quantidade de Arvore), COUNT DISTINCT(DATA)), 1)',
         grupo: 'operacional',
         formato: 'numero',
         label: 'Arvores por Dia',
-        descricao: 'Media de arvores por dia — produtividade diaria da poda',
+        descricao: 'Media de arvores por dia — soma de Quantidade de Arvore',
         unidade: 'arvores/dia',
         cor: '#8b5cf6',
-        colunasUsadas: ['DATA'],
+        colunasUsadas: ['Quantidade de Arvore', 'DATA'],
       },
       {
         nome: 'Arvores Podadas',
-        formula: 'COUNT(*)',
+        formula: 'SUM(Quantidade de Arvore)',
         grupo: 'operacional',
         formato: 'numero',
         label: 'Arvores Podadas',
-        descricao: 'Quantidade total de arvores podadas no periodo',
+        descricao: 'Soma da Quantidade de Arvore no periodo',
         unidade: 'arvores',
         cor: '#a78bfa',
-        colunasUsadas: [],
+        colunasUsadas: ['Quantidade de Arvore'],
       },
       {
         nome: 'Arvores Extirpadas',
-        formula: 'COUNT(*)',
+        formula: 'SUM(Quantidade de Arvore)',
         grupo: 'operacional',
         formato: 'numero',
         label: 'Arvores Extirpadas',
-        descricao: 'Quantidade total de arvores extirpadas/removidas no periodo',
+        descricao: 'Soma da Quantidade de Arvore no periodo',
         unidade: 'arvores',
         cor: '#c4b5fd',
-        colunasUsadas: [],
+        colunasUsadas: ['Quantidade de Arvore'],
       },
     ],
   },

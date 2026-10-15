@@ -12,6 +12,7 @@ import {
   ehPedidoFormatoCiclo,
   ehPedidoSaude,
   ehPedidoOperacional,
+  ehPedidoEvolucao,
 } from './WhatsappComandoRelatorioTexto';
 
 describe('WhatsApp — data no comando do dia', () => {
@@ -52,6 +53,17 @@ describe('WhatsApp — menu relatorio (serviço → diário/ciclo)', () => {
     assert.equal(ehPedidoOperacional('operacional'), true);
     assert.equal(ehPedidoOperacional('relatorio operacional'), true);
     assert.equal(ehPedidoOperacional('relatorio'), false);
+  });
+
+  it('reconhece pedido de evolução diária (gráficos)', () => {
+    assert.equal(ehPedidoEvolucao('evolucao'), true);
+    assert.equal(ehPedidoEvolucao('evolucao diaria'), true);
+    assert.equal(ehPedidoEvolucao('pdf evolucao'), true);
+    assert.equal(ehPedidoEvolucao('relatorio evolucao'), true);
+    assert.equal(ehPedidoEvolucao('graficos'), true);
+    assert.equal(ehPedidoEvolucao('relatorio'), false);
+    assert.equal(ehPedidoEvolucao('evolucao anterior'), false);
+    assert.equal(ehPedidoMenuRelatorio('relatorio evolucao'), false);
   });
 
   it('lê o número da opção e o formato diário/ciclo', () => {

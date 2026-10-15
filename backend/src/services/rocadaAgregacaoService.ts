@@ -14,20 +14,11 @@ import {
   normalizarDiaInicioCiclo,
 } from '../utils/periodoCicloContrato';
 
-import { sqlJsonNumero } from './viagensPorRotaService';
+import { sqlAreaM2 } from './metricaServicoSql';
+import { sqlSomenteUploadVigenteDoDia } from './uploadVisivelRelatorio';
 
-/** Expressão SQL da área m² no JSONB (aliases canônicos). */
-export const AREA_M2_SQL = `
-  COALESCE(
-    ${sqlJsonNumero('c', 'Area m²')},
-    ${sqlJsonNumero('c', 'AREA_M2')},
-    ${sqlJsonNumero('c', 'M2')},
-    ${sqlJsonNumero('c', 'AREA_ROCADA')},
-    ${sqlJsonNumero('c', 'QUANTITATIVO')},
-    ${sqlJsonNumero('c', 'QUANTIDADE')},
-    0
-  )
-`;
+/** Expressão SQL da área m² no JSONB (aliases canônicos, sem QUANTITATIVO). */
+export const AREA_M2_SQL = sqlAreaM2('c');
 
 /** Texto usado para classificar Manual × Mecanizada (inclui campos gravados no upload). */
 export const TEXTO_TIPO_EXEC_SQL = `UPPER(TRIM(BOTH FROM CONCAT_WS(' ',
@@ -192,6 +183,7 @@ async function agregarEscopo(
       qb.andWhere(`${alias}.dataSaida <= :fim`, { fim: `${dataFim}T23:59:59.999Z` });
     }
     if (tipoSql) qb.andWhere(tipoSql.replace(/\bc\./g, `${alias}.`));
+    qb.andWhere(sqlSomenteUploadVigenteDoDia(alias));
     return qb;
   };
 

@@ -144,7 +144,7 @@ async function htmlUnidade(servico: Servico, contrato: Contract, dataIso: string
   const meta = metricaLinha(servico.tipo, {});
   const metricaTotal = d
     ? (servico.tipo === 'varricao'
-      ? Number(d.kmLinear || d.quantitativo || 0)
+      ? Number(d.kmLinear || 0)
       : servico.tipo === 'poda'
         ? Number(d.qtdArvore || d.quantitativo || d.rotas || 0)
         : servico.tipo === 'remocao'

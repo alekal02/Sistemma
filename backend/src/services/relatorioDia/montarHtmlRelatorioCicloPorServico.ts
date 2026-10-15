@@ -1,6 +1,7 @@
 /**
  * HTML do PDF de ciclo conforme o tipo do serviço (coleta / roçada / unidade).
  */
+import { metricaOficialServico } from '@sistemma/shared';
 import { Servico } from '../../entities/Servico';
 import { Contract } from '../../entities/Contract';
 import PlanilhaService from '../PlanilhaService';
@@ -33,31 +34,28 @@ function fmtArquivo(iso: string): string {
   return iso.split('-').reverse().join('-');
 }
 
+function rotuloTipo(tipo: string): string {
+  switch (tipo) {
+    case 'rocadeira': return 'Roçada';
+    case 'varricao': return 'Varrição';
+    case 'capina': return 'Capina';
+    case 'poda': return 'Poda';
+    case 'pintura_meio_fio': return 'Pintura';
+    case 'remocao': return 'Remoção';
+    case 'geral': return 'Feiras';
+    default: return 'Serviço';
+  }
+}
+
 function metricaUnidade(tipo: string, d: {
-  rotas: number;
   areaM2: number;
   metroLinear: number;
   kmLinear: number;
   qtdArvore: number;
   quantitativo: number;
 }): { valor: number; sufixo: string; label: string; tipoLabel: string } {
-  switch (tipo) {
-    case 'rocadeira':
-      return { valor: d.areaM2 || d.quantitativo, sufixo: 'm²', label: 'Área', tipoLabel: 'Roçada' };
-    case 'varricao':
-      return { valor: d.kmLinear || d.quantitativo, sufixo: 'km', label: 'KM linear', tipoLabel: 'Varrição' };
-    case 'capina':
-      if (d.kmLinear > 0) return { valor: d.kmLinear, sufixo: 'km', label: 'Extensão', tipoLabel: 'Capina' };
-      return { valor: d.metroLinear || d.quantitativo, sufixo: 'm', label: 'Metro linear', tipoLabel: 'Capina' };
-    case 'poda':
-      return { valor: d.qtdArvore || d.quantitativo || d.rotas, sufixo: 'arv', label: 'Árvores', tipoLabel: 'Poda' };
-    case 'pintura_meio_fio':
-      return { valor: d.metroLinear || d.quantitativo, sufixo: 'm', label: 'Metro linear', tipoLabel: 'Pintura' };
-    case 'remocao':
-      return { valor: d.quantitativo || d.qtdArvore || d.rotas, sufixo: 'pts', label: 'Pontos', tipoLabel: 'Remoção' };
-    default:
-      return { valor: d.quantitativo || d.qtdArvore || d.rotas, sufixo: 'pts', label: 'Pontos', tipoLabel: 'Serviço' };
-  }
+  const m = metricaOficialServico(tipo, d);
+  return { valor: m.valor, sufixo: m.sufixo, label: m.label, tipoLabel: rotuloTipo(tipo) };
 }
 
 async function htmlColeta(
@@ -120,7 +118,11 @@ async function htmlRocada(
   const porData = new Map(diasApi.map((d) => [d.data, d]));
   const dias: DiaCicloPdf[] = todasDatas.map((iso) => {
     const d = porData.get(iso);
-    return { data: iso, rotas: Number(d?.rotas || 0), areaM2: Number(d?.areaM2 || d?.quantitativo || 0) };
+    return {
+      data: iso,
+      rotas: Number(d?.rotas || 0),
+      areaM2: metricaOficialServico('rocadeira', { areaM2: d?.areaM2 }).valor,
+    };
   });
   const areaTotal = dias.reduce((s, d) => s + (d.areaM2 || 0), 0);
   const rotas = dias.reduce((s, d) => s + d.rotas, 0);
@@ -174,7 +176,6 @@ async function htmlUnidade(
   const dias: DiaCicloPdf[] = todasDatas.map((iso) => {
     const d = porData.get(iso);
     const m = metricaUnidade(servico.tipo, {
-      rotas: Number(d?.rotas || 0),
       areaM2: Number(d?.areaM2 || 0),
       metroLinear: Number(d?.metroLinear || 0),
       kmLinear: Number(d?.kmLinear || 0),

@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
+import { EntityManager } from 'typeorm';
 import AppDataSource from '../database/data-source';
 import { PlanilhaUpload } from '../entities/PlanilhaUpload';
 import { Servico } from '../entities/Servico';
@@ -55,6 +56,7 @@ export async function persistirArquivoOriginalUpload(
   buffer: Buffer,
   nomeArquivo: string,
   dataOperacao?: string | null,
+  manager?: EntityManager,
 ): Promise<string | null> {
   if (!uploadId || !buffer?.length) return null;
   try {
@@ -66,9 +68,10 @@ export async function persistirArquivoOriginalUpload(
 
     let numeroContrato = '';
     let diaInicio = 1;
-    const upload = await AppDataSource.getRepository(PlanilhaUpload).findOne({ where: { id: uploadId } });
+    const repos = manager ?? AppDataSource.manager;
+    const upload = await repos.getRepository(PlanilhaUpload).findOne({ where: { id: uploadId } });
     if (upload?.servico_id) {
-      const servico = await AppDataSource.getRepository(Servico).findOne({
+      const servico = await repos.getRepository(Servico).findOne({
         where: { id: upload.servico_id },
         relations: ['contract'],
       });
@@ -98,7 +101,7 @@ export async function persistirArquivoOriginalUpload(
       url = await FileStorageService.uploadArquivo(buffer, nomeArquivo, mime);
     }
 
-    await AppDataSource.getRepository(PlanilhaUpload).update(uploadId, { urlDownload: url });
+    await repos.getRepository(PlanilhaUpload).update(uploadId, { urlDownload: url });
     return url;
   } catch (err) {
     console.warn('[planilhaOriginal] Falha ao guardar arquivo original no MinIO:', err);

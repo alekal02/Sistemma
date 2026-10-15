@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { htmlPdfBloqueado } from '../services/pdfRecursoPermitido';
 
 type MargemPreset = 'full' | 'default' | 'print';
 
@@ -19,6 +20,12 @@ export class PdfController {
 
       if (!html || typeof html !== 'string') {
         res.status(400).json({ error: 'HTML é obrigatório' });
+        return;
+      }
+
+      const bloqueio = htmlPdfBloqueado(html);
+      if (bloqueio) {
+        res.status(400).json({ error: bloqueio });
         return;
       }
 

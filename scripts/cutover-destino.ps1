@@ -10,9 +10,7 @@
 param(
   [Parameter(Mandatory = $true)]
   [string]$TagNova,
-  [string]$TagAnterior = "",
-  # Tela inicial sem senha (botoes Gestor e Contratos)
-  [switch]$AcessoLivre
+  [string]$TagAnterior = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -66,7 +64,6 @@ if ($LASTEXITCODE -ne 0) { throw "Migracao falhou. Nao ligue o multi-banco. O ba
 Write-Host "4/6 Ligando um-banco-por-contrato no .env"
 Definir-Variavel "CONTROL_DATABASE_NAME" "sistemma_control"
 Definir-Variavel "MULTI_TENANT" "true"
-if ($AcessoLivre) { Definir-Variavel "ACESSO_LIVRE" "true" }
 
 docker compose up -d
 Write-Host "5/6 Esperando o backend voltar no modo multi-banco..."

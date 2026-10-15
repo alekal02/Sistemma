@@ -22,6 +22,7 @@ import {
   conferirCadastroOperacional,
   type ConferenciaCadastroOperacional,
 } from './conferirCadastroOperacionalService';
+import { analisarConferenciaPlanilha, type RelatorioAgenteUpload } from './agenteConferenciaUploadService';
 import {
   extrairCadastroOperacional,
   normalizarNomeOperacional,
@@ -255,6 +256,8 @@ export interface ResultadoAnaliseViagens {
   linhasComSemPesagem?: number;
   /** Conferência planilha × cadastro operacional do contrato */
   conferenciaCadastro?: ConferenciaCadastroOperacional | null;
+  /** Contagem de rotas, template, retrabalho e duplicatas na própria planilha */
+  conferenciaUpload?: RelatorioAgenteUpload;
 }
 
 /** Alerta informativo — pesagem por viagem acima do usual (não bloqueia dashboard). */
@@ -838,5 +841,6 @@ export function analisarViagensPlanilha(
     viagensSemPesagem: viagensSemPesagemCount,
     linhasComSemPesagem,
     conferenciaCadastro,
+    conferenciaUpload: analisarConferenciaPlanilha(buffer, nomeArquivo),
   };
 }

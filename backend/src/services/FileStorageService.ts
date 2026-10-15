@@ -182,4 +182,20 @@ class FileStorageService {
   }
 }
 
-export default new FileStorageService();
+let instancia: FileStorageService | null = null;
+
+function obterFileStorage(): FileStorageService {
+  if (!instancia) instancia = new FileStorageService();
+  return instancia;
+}
+
+/** Não abre o MinIO na importação do módulo — a suíte de testes consegue encerrar sozinha. */
+const fileStorageService: FileStorageService = new Proxy({} as FileStorageService, {
+  get(_alvo, propriedade) {
+    const servico = obterFileStorage();
+    const valor = Reflect.get(servico, propriedade, servico);
+    return typeof valor === 'function' ? valor.bind(servico) : valor;
+  },
+});
+
+export default fileStorageService;

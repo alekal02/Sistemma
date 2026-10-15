@@ -36,6 +36,8 @@ import { invalidarCacheSaudeContratos } from '../controllers/ContractController'
 import { dashboardCache } from './DashboardCacheManager';
 import { agendarWarmupPosUpload } from './executivoCacheWarmupService';
 import { normalizarTextoTipoCaminhao } from '../config/pesoMaximoCaminhao';
+import { numeroPlanilha } from './FormulaEngine';
+import { aplicarLimitesTextoColeta, textoMaisLongo, lerCampoDados } from '../utils/textoColunaColeta';
 
 /**
  * Interface que representa uma linha da planilha já parseada
@@ -203,6 +205,7 @@ export class DeduplicacaoService {
                      COALESCE(NULLIF(TRIM(UPPER(c."turno")), ''), 'SEM_TURNO'),
                      COALESCE(NULLIF(TRIM(UPPER(c."distrito")), ''), 'SEM_DISTRITO'),
                      COALESCE(NULLIF(TRIM(UPPER(c."regional")), ''), 'SEM_REGIONAL'),
+                     COALESCE(NULLIF(TRIM(UPPER(c."motorista")), ''), 'SEM_MOTORISTA'),
                      COALESCE(ROUND(c."kmSaida"::numeric, 1), -1),
                      COALESCE(ROUND(c."kmTotal"::numeric, 1), -1),
                      COALESCE(ROUND(c."pesoTotal"::numeric, 1), -1),
@@ -233,8 +236,8 @@ export class DeduplicacaoService {
 
   /**
    * Gera a chave única para um registro (rota operacional).
-   * Inclui KM/peso/contador para NÃO colapsar rotas distintas do mesmo
-   * caminhão no mesmo dia (turno/regional iguais).
+   * Inclui KM/peso/contador e motorista para não colapsar rotas distintas
+   * nem apagar retrabalho da sala técnica (mesmo KM/peso, nome diferente).
    */
   gerarChave(
     dataSaida: Date | string | null,
@@ -246,6 +249,7 @@ export class DeduplicacaoService {
     kmTotal?: number | null,
     pesoTotal?: number | null,
     numeroViagens?: number | null,
+    motorista?: string | null,
   ): string {
     let data: string;
     if (dataSaida instanceof Date) {
@@ -259,6 +263,7 @@ export class DeduplicacaoService {
     const turnoNorm = this.normalizarCampoChave(turno, 'SEM_TURNO');
     const distritoNorm = this.normalizarCampoChave(distrito, 'SEM_DISTRITO');
     const regionalNorm = this.normalizarCampoChave(regional, 'SEM_REGIONAL');
+    const motoristaNorm = this.normalizarCampoChave(motorista, 'SEM_MOTORISTA');
     const round1 = (n: number | null | undefined) =>
       n != null && !Number.isNaN(Number(n)) ? String(Math.round(Number(n) * 10) / 10) : 'NA';
     return [
@@ -267,6 +272,7 @@ export class DeduplicacaoService {
       turnoNorm,
       distritoNorm,
       regionalNorm,
+      motoristaNorm,
       round1(kmSaida),
       round1(kmTotal),
       round1(pesoTotal),
@@ -277,36 +283,49 @@ export class DeduplicacaoService {
   /**
    * Gera a chave a partir de uma linha já parseada (ColetaData)
    */
+  private textoChave(
+    coluna: string | null | undefined,
+    dados: Record<string, unknown> | null | undefined,
+    nomes: string[],
+  ): string | null {
+    const cheio = textoMaisLongo(lerCampoDados(dados, nomes), coluna);
+    return cheio || null;
+  }
+
   gerarChaveDeColeta(coleta: ColetaData): string {
+    const dados = (coleta.dados || null) as Record<string, unknown> | null;
     return this.gerarChave(
       coleta.dataSaida,
       coleta.placa,
       coleta.turno,
-      coleta.distrito,
-      coleta.regional,
+      this.textoChave(coleta.distrito, dados, ['DISTRITO_COMPLETO', 'DISTRITO']),
+      this.textoChave(coleta.regional, dados, ['LOCAL_COMPLETO', 'REGIONAL']),
       coleta.kmSaida,
       coleta.kmTotal,
       coleta.pesoTotal,
       coleta.numeroViagens ?? coleta.viagensPorRota,
+      coleta.motorista,
     );
   }
 
   private gerarChaveDeLinha(l: LinhaParseada): string {
+    const dados = (l.raw || null) as Record<string, unknown> | null;
     return this.gerarChave(
       l.dataSaida,
       l.placa,
       l.turno,
-      l.distrito,
-      l.regional,
+      this.textoChave(l.distrito, dados, ['DISTRITO_COMPLETO', 'DISTRITO']),
+      this.textoChave(l.regional, dados, ['LOCAL_COMPLETO', 'REGIONAL']),
       l.kmSaida,
       l.kmTotal,
       l.pesoTotal,
       l.numeroViagens,
+      l.motorista,
     );
   }
 
   private static readonly CHAVE_USADA =
-    'dataSaida + placa + turno + distrito + regional + kmSaida + kmTotal + pesoTotal + contador';
+    'dataSaida + placa + turno + distrito + regional + motorista + kmSaida + kmTotal + pesoTotal + contador';
 
   /** Recalcula metadados do upload após deduplicação SQL. */
   private async sincronizarContagemUploadAposDedup(uploadId: number): Promise<number> {
@@ -465,6 +484,7 @@ export class DeduplicacaoService {
     coleta.numeroViagens = linha.numeroViagens;
     coleta.diaSemana = linha.diaSemana;
     coleta.dados = this.filtrarChavesVazias(linha.raw);
+    aplicarLimitesTextoColeta(coleta);
     return coleta;
   }
 
@@ -523,6 +543,11 @@ export class DeduplicacaoService {
       };
 
       return linha;
+    }).filter((linha) => {
+      const temId = Boolean(linha.dataSaida) || Boolean(linha.placa);
+      const temMetrica = (linha.kmTotal != null && linha.kmTotal > 0)
+        || (linha.pesoTotal != null && linha.pesoTotal > 0);
+      return temId || temMetrica;
     });
   }
 
@@ -581,8 +606,7 @@ export class DeduplicacaoService {
     if (!chave) return null;
     const valor = obj[chave];
     if (valor === null || valor === undefined) return null;
-    const num = Number(valor);
-    return isNaN(num) ? null : num;
+    return numeroPlanilha(valor);
   }
 
   private getInt(obj: any, key: string): number | null {

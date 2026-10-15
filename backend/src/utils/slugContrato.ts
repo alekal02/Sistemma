@@ -9,10 +9,15 @@ export function slugificarContrato(nome: string): string {
   return base || 'contrato';
 }
 
-export function nomeBancoContrato(slug: string): string {
-  const nome = `contrato_${slug}`.slice(0, 63);
-  if (!/^[a-z][a-z0-9_]*$/.test(nome)) {
+/** Identificador PostgreSQL seguro para CREATE DATABASE (sem interpolar entrada crua). */
+export function afirmarNomeBanco(nome: string): string {
+  if (!/^[a-z][a-z0-9_]{0,62}$/.test(nome)) {
     throw new Error(`Nome de banco inválido: ${nome}`);
   }
   return nome;
+}
+
+export function nomeBancoContrato(slug: string): string {
+  const nome = `contrato_${slug}`.slice(0, 63);
+  return afirmarNomeBanco(nome);
 }

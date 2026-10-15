@@ -4,6 +4,7 @@
  */
 import { formatarIsoParaBr } from './periodoDados';
 import { fmtNum } from './relatorioDiario';
+import { metricaDeRegistro } from '@sistemma/shared';
 import {
   formatarMetricaUnidade,
   metricaPrincipalDoDia,
@@ -240,13 +241,7 @@ export function gerarHtmlRelatorioUnidadeDia(p: ParamsRelatorioUnidadeDia): stri
   const geradoEm = new Date().toLocaleString('pt-BR');
   const tipoLabel = labelTipo(p.tipoServico);
 
-  const valorLinha = (r: Record<string, unknown>) => metricaPrincipalDoDia(p.tipoServico, {
-    areaM2: numDe(r, ['Area m²', 'AREA_M2']),
-    metroLinear: numDe(r, ['Metro Linear', 'METRO_LINEAR', 'COMPRIMENTO']),
-    kmLinear: numDe(r, ['KM Linear', 'KM_LINEAR', 'QUILOMETROS_VARRIDOS']),
-    qtdArvore: numDe(r, ['Quantidade de Arvore', 'QTD_ARVORE']),
-    quantitativo: numDe(r, ['QUANTITATIVO']),
-  }).valor;
+  const valorLinha = (r: Record<string, unknown>) => metricaDeRegistro(p.tipoServico, r).valor;
 
   const porBairro = agrupar(p.registros, ['BAIRRO', 'bairro', 'Setor', 'SETOR', 'regional'], valorLinha);
   const porEquipe = agrupar(p.registros, ['Equipe', 'EQUIPE', 'turno'], valorLinha);
@@ -255,19 +250,6 @@ export function gerarHtmlRelatorioUnidadeDia(p: ParamsRelatorioUnidadeDia): stri
   const cards = cardsHtml([
     { label: 'Registros', valor: fmtNum(totalRegs, 0), cor: '#6366f1' },
     { label: metrica.label, valor: formatarMetricaUnidade(metrica.valor, metrica.sufixo || unidade.sufixo), cor: '#14b8a6' },
-    ...(Number(p.agregacao.quantitativo || 0) > 0
-      ? [{
-          label: 'Quantitativo planilha',
-          valor: Number(p.agregacao.quantitativo).toLocaleString('pt-BR', { maximumFractionDigits: 3 }),
-          cor: '#0ea5e9',
-        }]
-      : []),
-    ...(p.tipoServico === 'capina' && Number(p.agregacao.kmLinear || 0) > 0 && metrica.sufixo !== 'km'
-      ? [{ label: 'Extensão', valor: formatarMetricaUnidade(Number(p.agregacao.kmLinear), 'km'), cor: '#f59e0b' }]
-      : []),
-    ...(p.tipoServico === 'capina' && Number(p.agregacao.metroLinear || 0) > 0 && metrica.sufixo !== 'm'
-      ? [{ label: 'Metro linear', valor: formatarMetricaUnidade(Number(p.agregacao.metroLinear), 'm'), cor: '#22c55e' }]
-      : []),
     { label: 'Bairros', valor: String(porBairro.length || 0), cor: '#8b5cf6' },
     { label: 'Equipes', valor: String(porEquipe.length || 0), cor: '#ef4444' },
     { label: 'Operadores', valor: String(porOperador.length || 0), cor: '#64748b' },
@@ -304,13 +286,7 @@ export function gerarHtmlRelatorioUnidadeDia(p: ParamsRelatorioUnidadeDia): stri
           </thead>
           <tbody>
             ${tabelaRegs.map((r) => {
-              const m = metricaPrincipalDoDia(p.tipoServico, {
-                areaM2: numDe(r, ['Area m²', 'AREA_M2']),
-                metroLinear: numDe(r, ['Metro Linear', 'METRO_LINEAR', 'COMPRIMENTO']),
-                kmLinear: numDe(r, ['KM Linear', 'KM_LINEAR']),
-                qtdArvore: numDe(r, ['Quantidade de Arvore', 'QTD_ARVORE']),
-                quantitativo: numDe(r, ['QUANTITATIVO']),
-              });
+              const m = metricaDeRegistro(p.tipoServico, r);
               const q = numDe(r, ['QUANTITATIVO']);
               const log = textoDe(r, ['LOGRADOURO', 'logradouro', 'distrito', 'Avenida / Rua']) || '—';
               const bairro = textoDe(r, ['BAIRRO', 'bairro', 'Setor', 'regional']) || '—';

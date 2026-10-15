@@ -36,6 +36,7 @@ import {
 } from './consolidadoProducaoPlanilhaParser';
 import { persistirArquivoOriginalUpload } from './planilhaOriginalStorage';
 import { carregarChavesProducaoExistentes, filtrarColetasProducaoNovas } from './producaoDedupService';
+import { executarImportacaoAtomica } from './substituicaoImportacaoProducao';
 
 export interface ResultadoImportConsolidadoServico {
   servicoId: string;
@@ -98,8 +99,9 @@ class ConsolidadoProducaoImportService {
     const coleta = new ColetaData();
     coleta.planilhaUploadId = uploadId;
     coleta.dataSaida = linha.dataSaida;
-    coleta.regional = this.trunc(linha.local, 50);
-    coleta.distrito = this.trunc(linha.local, 50);
+    const localCheio = linha.local;
+    coleta.regional = this.trunc(localCheio, 50);
+    coleta.distrito = this.trunc(localCheio, 50);
     coleta.motorista = null;
     coleta.tipoCaminhao = this.trunc(linha.equipamento, 30);
     coleta.turno = this.trunc(linha.tipoExecucao !== 'desconhecido' ? linha.tipoExecucao : null, 20);
@@ -111,7 +113,12 @@ class ConsolidadoProducaoImportService {
     coleta.viagensPorRota = 1;
     coleta.validoDashboard = true;
     coleta.motivosInconsistencia = null;
-    coleta.dados = { ...linha.dados };
+    coleta.dados = {
+      ...linha.dados,
+      ...(localCheio && localCheio.length > 50
+        ? { DISTRITO_COMPLETO: localCheio, LOCAL_COMPLETO: localCheio }
+        : {}),
+    };
     if (linha.dataSaida) {
       coleta.diaSemana = linha.dataSaida.getUTCDay() + 1;
     }
@@ -184,6 +191,10 @@ class ConsolidadoProducaoImportService {
       };
     }
 
+    const resultado = await executarImportacaoAtomica(servico.id, async (manager) => {
+    const coletaRepo = manager.getRepository(ColetaData);
+    const uploadRepo = manager.getRepository(PlanilhaUpload);
+    const servicoRepo = manager.getRepository(Servico);
     const tipoSistema = linhas[0].tipoSistema;
     const datasApagadas: { data: string; registrosRemovidos: number }[] = [];
     if (substituirPorData) {
@@ -192,10 +203,10 @@ class ConsolidadoProducaoImportService {
           .map((l) => (l.dataSaida ? l.dataSaida.toISOString().slice(0, 10) : null))
           .filter((d): d is string => !!d),
       )];
-      datasApagadas.push(...await apagarDatasDeUploadsAbertos(servico.id, datas));
+      datasApagadas.push(...await apagarDatasDeUploadsAbertos(servico.id, datas, manager));
     }
 
-    const existentes = await carregarChavesProducaoExistentes(servico.id);
+    const existentes = await carregarChavesProducaoExistentes(servico.id, manager);
     const { novas, ignoradas: ignoradasDuplicadas } = filtrarColetasProducaoNovas(
       linhas,
       (l) => this.montarColeta(l, 0),
@@ -235,7 +246,7 @@ class ConsolidadoProducaoImportService {
     const dias = new Set(novas.map((c) => (c.dataSaida ? c.dataSaida.toISOString().slice(0, 10) : null)).filter(Boolean)).size;
     const bairros = new Set(novas.map((c) => c.distrito || c.regional).filter(Boolean)).size;
 
-    const upload = this.uploadRepo.create({
+    const upload = uploadRepo.create({
       nomeArquivo,
       totalLinhas: totalLinhasBrutas,
       linhasImportadas: 0,
@@ -248,14 +259,14 @@ class ConsolidadoProducaoImportService {
       servico_id: servico.id,
       resumo: null,
     });
-    const uploadSalvo = await this.uploadRepo.save(upload);
+    const uploadSalvo = await uploadRepo.save(upload);
     const dataOp = [...new Set(
       novas.map((c) => (c.dataSaida ? c.dataSaida.toISOString().slice(0, 10) : null)).filter((d): d is string => !!d),
     )].sort().pop();
-    const urlOriginal = await persistirArquivoOriginalUpload(uploadSalvo.id, buffer, nomeArquivo, dataOp);
+    const urlOriginal = await persistirArquivoOriginalUpload(uploadSalvo.id, buffer, nomeArquivo, dataOp, manager);
     if (urlOriginal) uploadSalvo.urlDownload = urlOriginal;
 
-    const uploadIds = await obterUploadIdsModificaveis(servico.id);
+    const uploadIds = await obterUploadIdsModificaveis(servico.id, manager);
 
     const batch: ColetaData[] = [];
     let importados = 0;
@@ -265,20 +276,20 @@ class ConsolidadoProducaoImportService {
       batch.push(coleta);
       importados++;
       if (batch.length >= BATCH) {
-        await this.coletaRepo.save(batch);
+        await coletaRepo.save(batch);
         batch.length = 0;
       }
     }
-    if (batch.length) await this.coletaRepo.save(batch);
+    if (batch.length) await coletaRepo.save(batch);
 
     const uploadsRemovidosIds: number[] = [];
     for (const oldId of uploadIds) {
       if (oldId === uploadSalvo.id) continue;
-      const restantes = await this.coletaRepo.count({ where: { planilhaUploadId: oldId } });
+      const restantes = await coletaRepo.count({ where: { planilhaUploadId: oldId } });
       if (restantes > 0) continue;
-      const old = await this.uploadRepo.findOne({ where: { id: oldId } });
+      const old = await uploadRepo.findOne({ where: { id: oldId } });
       if (!old || old.cicloFechadoEm) continue;
-      await this.uploadRepo.remove(old);
+      await uploadRepo.remove(old);
       uploadsRemovidosIds.push(oldId);
     }
 
@@ -298,14 +309,14 @@ class ConsolidadoProducaoImportService {
         diasRemovidosAusentes: [],
       },
     };
-    await this.uploadRepo.save(uploadSalvo);
+    await uploadRepo.save(uploadSalvo);
 
     const datasImportadas = [...new Set(
       linhas
         .map((l) => (l.dataSaida ? l.dataSaida.toISOString().slice(0, 10) : null))
         .filter((d): d is string => !!d),
     )];
-    const servicoContrato = await this.servicoRepo.findOne({
+    const servicoContrato = await servicoRepo.findOne({
       where: { id: servico.id },
       relations: ['contract'],
     });
@@ -313,6 +324,7 @@ class ConsolidadoProducaoImportService {
       uploadSalvo.id,
       datasImportadas,
       normalizarDiaInicioCiclo(servicoContrato?.contract?.diaInicioCiclo),
+      manager,
     );
 
     const colunas = this.colunasPadrao(tipoSistema);
@@ -329,7 +341,7 @@ class ConsolidadoProducaoImportService {
       modeloPlanilha: 'consolidado_producao',
       abasUsadas,
     } as any;
-    await this.servicoRepo.save(servico);
+    await servicoRepo.save(servico);
 
     try {
       const cfgAtual = servico.configDashboard || {};
@@ -353,17 +365,10 @@ class ConsolidadoProducaoImportService {
         kpisTemplateAplicados: precisaKpis || !!cfgAtual.kpisTemplateAplicados,
         unidadeOperacional: tipoSistema,
       };
-      await this.servicoRepo.save(servico);
+      await servicoRepo.save(servico);
     } catch (err) {
       console.warn('[ConsolidadoProducao] Erro ao aplicar dashboard do tipo:', err);
     }
-
-    invalidarCacheDadosServico(servico.id);
-    invalidarCacheDashboardServico(servico.id);
-    dashboardCache.invalidar(servico.id);
-    agendarWarmupPosUpload(servico.id);
-    invalidarCacheSaudeContratos(servico.contract_id);
-    void recalcularTotaisDiaServicoSilencioso(servico.id);
 
     return {
       servicoId: servico.id,
@@ -380,6 +385,15 @@ class ConsolidadoProducaoImportService {
       datasIgnoradasCicloFechado: prep.bloqueadasFechado,
       ignoradasDuplicadas,
     };
+    });
+
+    invalidarCacheDadosServico(servico.id);
+    invalidarCacheDashboardServico(servico.id);
+    dashboardCache.invalidar(servico.id);
+    agendarWarmupPosUpload(servico.id);
+    invalidarCacheSaudeContratos(servico.contract_id);
+    void recalcularTotaisDiaServicoSilencioso(servico.id);
+    return resultado;
   }
 
   async importar(

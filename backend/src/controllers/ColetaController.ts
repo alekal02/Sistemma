@@ -19,6 +19,8 @@ import { User } from '../entities/User';
 import { TipoServico } from '../enums/TipoServico';
 import { buildConfigDashboardPadraoColeta } from '../config/dashboardPadraoColeta';
 import { Servico } from '../entities/Servico';
+import { PlanilhaUpload } from '../entities/PlanilhaUpload';
+import { alteracaoNegada } from '../middlewares/tenantGuard';
 import { inferirFiltroExecucaoServico } from '../utils/rocadaTipoExecucao';
 import { labelModeloRocada } from '../services/rocadaPlanilhaParser';
 import { invalidarCacheDashboardServico } from './ServicoController';
@@ -28,10 +30,27 @@ import { agendarWarmupPosUpload } from '../services/executivoCacheWarmupService'
 import { gerarConfigGraficosPadrao, reResolverGraficos } from '../services/graficosPadrao';
 import { invalidarCacheSaudeContratos } from './ContractController';
 import { mergePlacasAtivasPorUpload } from '../services/mergePlacasAtivasContratoService';
+import {
+  analisarConferenciaPlanilhaVsSistema,
+  type RelatorioAgenteUpload,
+} from '../services/agenteConferenciaUploadService';
 
 // Extensão para request com file do multer
 interface RequestWithFile extends Request {
   file?: Express.Multer.File;
+}
+
+async function conferirAgenteUpload(
+  buffer: Buffer,
+  nomeArquivo: string,
+  servicoId?: string,
+): Promise<RelatorioAgenteUpload | null> {
+  try {
+    return await analisarConferenciaPlanilhaVsSistema(buffer, nomeArquivo, servicoId);
+  } catch (err: any) {
+    console.warn('[ColetaController] Agente de conferência:', err?.message || err);
+    return null;
+  }
 }
 
 async function tentarMergePlacasContrato(
@@ -55,6 +74,36 @@ async function tentarMergePlacasContrato(
  * Controller para upload de planilhas e consulta de dados de coleta
  */
 export class ColetaController {
+  private negarContractId(req: Request, res: Response, contractId: string | null | undefined): boolean {
+    if (!alteracaoNegada(req.usuario, contractId)) return false;
+    res.status(403).json({ error: 'Sem permissão para alterar este contrato' });
+    return true;
+  }
+
+  private async contractIdDoUpload(uploadId: number | null | undefined): Promise<string | null> {
+    if (!uploadId) return null;
+    const upload = await AppDataSource.getRepository(PlanilhaUpload).findOne({
+      where: { id: uploadId },
+      select: ['id', 'servico_id'],
+    });
+    if (!upload?.servico_id) return null;
+    const servico = await AppDataSource.getRepository(Servico).findOne({
+      where: { id: upload.servico_id },
+      select: ['id', 'contract_id'],
+    });
+    return servico?.contract_id ?? null;
+  }
+
+  private async negarPorUploadId(
+    req: Request,
+    res: Response,
+    uploadId: number | null | undefined,
+  ): Promise<boolean> {
+    if (!req.usuario?.contractId || req.usuario.role === 'superadmin') return false;
+    const contractId = await this.contractIdDoUpload(uploadId);
+    return this.negarContractId(req, res, contractId);
+  }
+
   /**
    * Valida se o usuarioId realmente existe no banco.
    * Se o banco foi resetado, tokens antigos podem ter IDs inválidos.
@@ -100,10 +149,12 @@ export class ColetaController {
         res.status(400).json({ error: 'contract_id é obrigatório.' });
         return;
       }
+      if (this.negarContractId(req, res, contractId)) return;
 
       const usuarioIdValido = await this.validarUsuarioId(req.usuario?.id);
       const estrategiaRaw = req.body?.estrategia;
-      const substituir = estrategiaRaw === 'substituir' || estrategiaRaw === 'atualizar_data';
+      const { estrategiaSubstituiDatasProducao } = await import('../services/substituicaoImportacaoProducao');
+      const substituir = estrategiaSubstituiDatasProducao(estrategiaRaw);
 
       const { classificarPlanilhaContrato } = await import('../services/planilhaContratoClassifier');
       const { obterServicoPorTipoContrato } = await import('../services/servicosPadraoContratoService');
@@ -196,6 +247,7 @@ export class ColetaController {
         else if (estrategiaRaw === 'substituir') estrategia = 'substituir';
         else if (estrategiaRaw === 'inserir_data') estrategia = 'inserir_data';
 
+        const agente = await conferirAgenteUpload(file.buffer, file.originalname, alvo.id);
         const resultado = (estrategia === 'atualizar_data' || estrategia === 'inserir_data')
           ? await DeduplicacaoService.importarPorData(
             file.buffer,
@@ -227,9 +279,13 @@ export class ColetaController {
           servicoNome: alvo.nome,
           ...resultado,
           importadas: qtd,
-          mensagem: avisoCiclo
-            ? `Coleta importada em “${alvo.nome}”: ${qtd} registro(s). ${avisoCiclo}`
-            : `Coleta importada em “${alvo.nome}”: ${qtd} registro(s).`,
+          agente,
+          mensagem: [
+            avisoCiclo
+              ? `Coleta importada em “${alvo.nome}”: ${qtd} registro(s). ${avisoCiclo}`
+              : `Coleta importada em “${alvo.nome}”: ${qtd} registro(s).`,
+            agente?.mensagem,
+          ].filter(Boolean).join(' '),
         });
         return;
       }
@@ -313,6 +369,7 @@ export class ColetaController {
           where: { id: servico_id },
           select: ['id', 'tipo', 'nome', 'contract_id'],
         });
+        if (this.negarContractId(req, res, servicoTipo?.contract_id)) return;
 
         if (servicoTipo && detectarPlanilhaConsolidadoProducao(file.buffer)) {
           const substituirCons = estrategiaRaw === 'substituir' || estrategiaRaw === 'atualizar_data';
@@ -453,6 +510,8 @@ export class ColetaController {
         }
       }
 
+      if (!servico_id && this.negarContractId(req, res, null)) return;
+
       // Normalizar estratégia
       let estrategia: 'ignorar' | 'substituir' | 'atualizar_data' | 'inserir_data' = 'ignorar';
       if (estrategiaRaw === 'substituir') estrategia = 'substituir';
@@ -460,6 +519,7 @@ export class ColetaController {
       else if (estrategiaRaw === 'inserir_data') estrategia = 'inserir_data';
 
       let resultado: any;
+      const agente = await conferirAgenteUpload(file.buffer, file.originalname, servico_id);
 
       // Estratégias por data usam o novo pipeline
       if (estrategia === 'atualizar_data' || estrategia === 'inserir_data') {
@@ -564,7 +624,8 @@ export class ColetaController {
       res.json({
         sucesso: true,
         ...resultado,
-        mensagem,
+        agente,
+        mensagem: [mensagem, agente?.mensagem].filter(Boolean).join(' '),
       });
     } catch (error: any) {
       console.error('Erro ao importar planilha:', error);
@@ -784,6 +845,8 @@ export class ColetaController {
         diferencas: c.diferencas,
       }));
 
+      const agente = await conferirAgenteUpload(file.buffer, file.originalname, servico_id);
+
       res.json({
         sucesso: true,
         totalLinhas: analise.totalLinhas,
@@ -794,6 +857,7 @@ export class ColetaController {
         amostraConflitos,
         chaveUsada: analise.chaveUsada,
         arquivo: file.originalname,
+        agente,
       });
     } catch (error: any) {
       console.error('Erro ao analisar planilha:', error);
@@ -870,15 +934,46 @@ export class ColetaController {
         file.buffer,
         servico_id,
       );
+      const agente = await conferirAgenteUpload(file.buffer, file.originalname, servico_id);
 
       res.json({
         sucesso: true,
         arquivo: file.originalname,
         ...conferencia,
+        agente,
       });
     } catch (error: any) {
       console.error('Erro na conferência diária:', error);
       res.status(500).json({ error: error.message || 'Erro na conferência diária.' });
+    }
+  }
+
+  /**
+   * POST /api/coleta/upload/agente-conferencia
+   * Analisa rotas, retrabalho da sala técnica e cruzamento com o que já está no sistema.
+   */
+  async agenteConferencia(req: RequestWithFile, res: Response): Promise<void> {
+    try {
+      const file = req.file;
+      if (!file) {
+        res.status(400).json({ error: 'Nenhum arquivo enviado.' });
+        return;
+      }
+      const ext = file.originalname.split('.').pop()?.toLowerCase();
+      if (ext !== 'xlsx' && ext !== 'xls' && ext !== 'xlsm') {
+        res.status(400).json({ error: 'Formato inválido. Envie um arquivo .xlsx, .xls ou .xlsm.' });
+        return;
+      }
+      const servicoId = String(req.body?.servico_id || '').trim() || undefined;
+      const agente = await conferirAgenteUpload(file.buffer, file.originalname, servicoId);
+      if (!agente) {
+        res.status(500).json({ error: 'Não foi possível analisar a planilha.' });
+        return;
+      }
+      res.json({ sucesso: true, arquivo: file.originalname, ...agente });
+    } catch (error: any) {
+      console.error('Erro no agente de conferência:', error);
+      res.status(500).json({ error: error.message || 'Erro no agente de conferência.' });
     }
   }
 
@@ -1068,6 +1163,7 @@ export class ColetaController {
         res.status(404).json({ error: 'Registro não encontrado.' });
         return;
       }
+      if (await this.negarPorUploadId(req, res, registro.planilhaUploadId)) return;
 
       const camposPermitidos = [
         'turno', 'regional', 'distrito', 'placa', 'motorista',
@@ -1108,6 +1204,7 @@ export class ColetaController {
         res.status(404).json({ error: 'Registro não encontrado.' });
         return;
       }
+      if (await this.negarPorUploadId(req, res, registro.planilhaUploadId)) return;
 
       await repo.remove(registro);
       res.json({ sucesso: true, mensagem: 'Registro excluído.' });
@@ -1132,6 +1229,7 @@ export class ColetaController {
         res.status(400).json({ error: 'Nome inválido.' });
         return;
       }
+      if (await this.negarPorUploadId(req, res, id)) return;
       const upload = await PlanilhaService.renomearUpload(id, nome.trim());
       res.json(upload);
     } catch (error: any) {
@@ -1169,6 +1267,7 @@ export class ColetaController {
         res.status(400).json({ error: 'ID inválido.' });
         return;
       }
+      if (await this.negarPorUploadId(req, res, id)) return;
       const resultado = await PlanilhaService.excluirUpload(id);
       if (resultado.servicoId) {
         invalidarCacheDashboardServico(resultado.servicoId);

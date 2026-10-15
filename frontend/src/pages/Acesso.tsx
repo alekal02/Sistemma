@@ -4,19 +4,12 @@ import axios from 'axios'
 import { useAuth } from '../contexts/AuthContext'
 import { STORAGE_EMAIL, migrarStorageLegado } from '../utils/storage'
 import { ehGestor, homePath } from '../utils/homePath'
-import api from '../services/api'
 import '../styles/Acesso.css'
 import { useAppVersion } from '../hooks/useAppVersion'
 
 migrarStorageLegado()
 
-type ModoAcesso = 'escolha' | 'gestor' | 'contratos' | 'lista-contratos'
-
-type ContratoLocal = {
-  id: string
-  numeroContrato: string
-  status: string
-}
+type ModoAcesso = 'escolha' | 'gestor' | 'contratos'
 
 const IconEmail = () => (
   <svg xmlns="http://www.w3.org/2000/svg" className="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -42,7 +35,7 @@ const IconEye = ({ visible }: { visible: boolean }) => (
     ) : (
       <>
         <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" />
-        <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" />
+                <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" />
         <line x1="1" y1="1" x2="23" y2="23" />
       </>
     )}
@@ -56,9 +49,15 @@ const IconSpinner = () => (
 )
 
 function mensagemErro(err: unknown): string {
-  if (axios.isAxiosError(err) && err.response?.data && typeof err.response.data === 'object') {
-    const data = err.response.data as { error?: string }
-    if (data.error) return data.error
+  if (axios.isAxiosError(err)) {
+    const status = err.response?.status
+    if (status === 502 || status === 503 || status === 504 || err.code === 'ERR_NETWORK') {
+      return 'O backend não está no ar. Suba a API na porta 3200 e o Postgres (5433).'
+    }
+    if (err.response?.data && typeof err.response.data === 'object') {
+      const data = err.response.data as { error?: string }
+      if (data.error) return data.error
+    }
   }
   if (err instanceof Error && err.message) return err.message
   return 'Não foi possível entrar.'
@@ -66,14 +65,13 @@ function mensagemErro(err: unknown): string {
 
 function Acesso() {
   const navigate = useNavigate()
-  const { login, logout, entrarLocal } = useAuth()
+  const { login, logout } = useAuth()
 
   const emailSalvo = () => localStorage.getItem(STORAGE_EMAIL)
     || localStorage.getItem('abastecimento_email')
     || ''
 
   const [modo, setModo] = useState<ModoAcesso>('escolha')
-  const [acessoLivre, setAcessoLivre] = useState<boolean | null>(null)
   const [email, setEmail] = useState(emailSalvo)
   const [senha, setSenha] = useState('')
   const [carregando, setCarregando] = useState(false)
@@ -81,7 +79,6 @@ function Acesso() {
   const [lembrar, setLembrar] = useState(() => Boolean(emailSalvo()))
   const [mostrarSenha, setMostrarSenha] = useState(false)
   const [shake, setShake] = useState(false)
-  const [contratos, setContratos] = useState<ContratoLocal[]>([])
 
   const emailRef = useRef<HTMLInputElement>(null)
   const versaoLabel = useAppVersion()
@@ -89,32 +86,6 @@ function Acesso() {
   useEffect(() => {
     if (modo === 'gestor' || modo === 'contratos') emailRef.current?.focus()
   }, [modo])
-
-  useEffect(() => {
-    let cancelado = false
-    let tentativas = 0
-
-    const consultar = () => {
-      api.get<{ habilitado: boolean; contratos: ContratoLocal[] }>('/auth/acesso-local')
-        .then(({ data }) => {
-          if (cancelado) return
-          setAcessoLivre(Boolean(data.habilitado))
-          setContratos((data.contratos || []).filter((c) => c.status !== 'encerrado'))
-        })
-        .catch(() => {
-          if (cancelado) return
-          tentativas += 1
-          if (tentativas >= 8) {
-            setErro('Não foi possível confirmar o acesso. Tente de novo em alguns segundos.')
-            return
-          }
-          window.setTimeout(consultar, 1500)
-        })
-    }
-
-    consultar()
-    return () => { cancelado = true }
-  }, [])
 
   const triggerError = (msg: string) => {
     setErro(msg)
@@ -127,37 +98,6 @@ function Acesso() {
     else {
       localStorage.removeItem(STORAGE_EMAIL)
       localStorage.removeItem('abastecimento_email')
-    }
-  }
-
-  const entrarComoGestor = async () => {
-    setErro('')
-    setCarregando(true)
-    try {
-      await entrarLocal('gestor')
-      navigate('/visao-geral', { replace: true })
-    } catch (err: unknown) {
-      triggerError(mensagemErro(err))
-    } finally {
-      setCarregando(false)
-    }
-  }
-
-  const abrirListaContratos = () => {
-    setErro('')
-    setModo('lista-contratos')
-  }
-
-  const abrirUnidade = async (contractId: string) => {
-    setCarregando(true)
-    setErro('')
-    try {
-      await entrarLocal('contrato', contractId)
-      navigate(`/contratos/${contractId}`, { replace: true })
-    } catch (err: unknown) {
-      triggerError(mensagemErro(err))
-    } finally {
-      setCarregando(false)
     }
   }
 
@@ -222,10 +162,9 @@ function Acesso() {
           </div>
           <h1>Sistemma</h1>
           <p className="subtitle">
-            {modo === 'escolha' && (acessoLivre === null ? 'Carregando…' : acessoLivre ? 'Escolha a área' : 'Como você quer entrar?')}
+            {modo === 'escolha' && 'Como você quer entrar?'}
             {modo === 'gestor' && 'Gestor — todos os contratos para comparar'}
             {modo === 'contratos' && 'Contratos — acesso a uma unidade'}
-            {modo === 'lista-contratos' && 'Escolha a unidade'}
           </p>
         </div>
 
@@ -245,11 +184,8 @@ function Acesso() {
             <button
               type="button"
               className="login-modo"
-              disabled={carregando || acessoLivre === null}
-              onClick={() => {
-                if (acessoLivre) void entrarComoGestor()
-                else setModo('gestor')
-              }}
+              disabled={carregando}
+              onClick={() => { setErro(''); setModo('gestor') }}
             >
               <strong>Gestor</strong>
               <span>Ver e comparar dados de todos os contratos</span>
@@ -257,22 +193,16 @@ function Acesso() {
             <button
               type="button"
               className="login-modo"
-              disabled={carregando || acessoLivre === null}
-              onClick={() => {
-                if (acessoLivre) abrirListaContratos()
-                else setModo('contratos')
-              }}
+              disabled={carregando}
+              onClick={() => { setErro(''); setModo('contratos') }}
             >
               <strong>Contratos</strong>
               <span>Entrar numa unidade e ver só os dados dela</span>
             </button>
-            {(carregando || acessoLivre === null) && (
-              <p className="login-footer"><IconSpinner /> {acessoLivre === null ? 'Verificando acesso…' : 'Entrando…'}</p>
-            )}
           </div>
         )}
 
-        {(modo === 'gestor' || modo === 'contratos') && acessoLivre === false && (
+        {(modo === 'gestor' || modo === 'contratos') && (
           <form className="login-form" onSubmit={(e) => { void handleSubmit(e) }} noValidate>
             <div className="login-field">
               <label htmlFor="email">Email</label>
@@ -337,28 +267,6 @@ function Acesso() {
               Voltar
             </button>
           </form>
-        )}
-
-        {modo === 'lista-contratos' && (
-          <div className="login-lista-contratos">
-            {contratos.length === 0 ? (
-              <p className="login-footer">Nenhum contrato ativo encontrado.</p>
-            ) : contratos.map((c) => (
-              <button
-                key={c.id}
-                type="button"
-                className="login-modo"
-                disabled={carregando}
-                onClick={() => { void abrirUnidade(c.id) }}
-              >
-                <strong>{c.numeroContrato}</strong>
-                <span>Abrir somente esta unidade</span>
-              </button>
-            ))}
-            <button type="button" className="login-voltar" onClick={() => { logout(); setModo('escolha'); setErro('') }}>
-              Voltar
-            </button>
-          </div>
         )}
 
         <p className="login-footer">{versaoLabel}</p>

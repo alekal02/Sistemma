@@ -178,8 +178,7 @@
   margin: 0;
 }
 
-.login-modos,
-.login-lista-contratos {
+.login-modos {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;

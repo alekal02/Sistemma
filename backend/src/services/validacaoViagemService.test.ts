@@ -173,6 +173,52 @@ describe('sanitizarKmHodometro', () => {
     assert.equal(r.kmInvalidadoPorHodometro, false);
     assert.equal(c.kmTotal, 50);
   });
+
+  it('soma rota de 50 km com rota de 20 km (saída antes da chegada, formato ROTA 1)', () => {
+    const c = coleta({
+      kmTotal: 0,
+      dados: {
+        'KM SAIDA ROTA 1': 100000,
+        'KM CHEGADA ROTA 1': 100050,
+        'KM SAIDA ROTA 2': 100050,
+        'KM CHEGADA ROTA 2': 100070,
+        'KM TOTAL': 0,
+      },
+    });
+    const r = sanitizarKmHodometro(c);
+    assert.equal(r.kmInvalidadoPorHodometro, false);
+    assert.equal(r.problemas.length, 0);
+    assert.equal(c.kmTotal, 70);
+  });
+
+  it('interpreta ROTA 01 com acento como o mesmo trecho de ROTA 1', () => {
+    const c = coleta({
+      kmTotal: null,
+      dados: {
+        'KM SAÍDA ROTA 01': 100000,
+        'KM CHEGADA ROTA 01': 100050,
+        'KM SAIDA ROTA 02': 100050,
+        'KM CHEGADA ROTA 02': 100070,
+      },
+    });
+    sanitizarKmHodometro(c);
+    assert.equal(c.kmTotal, 70);
+  });
+
+  it('planilha padrão com chegada da rota menor que a saída continua somando 50 km + 20 km', () => {
+    const c = coleta({
+      kmTotal: null,
+      dados: {
+        ' KM CHEGADA ROTA 01 ': 1000,
+        ' KM SAÍDA ROTA 01 ': 1050,
+        ' KM CHEGADA ROTA 02 ': 1050,
+        ' KM SAÍDA ROTA 02 ': 1070,
+      },
+    });
+    const r = sanitizarKmHodometro(c);
+    assert.equal(r.problemas.length, 0);
+    assert.equal(c.kmTotal, 70);
+  });
 });
 
 describe('validarViagemParaDashboard — integração com alerta de hodômetro', () => {

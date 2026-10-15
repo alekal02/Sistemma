@@ -46,7 +46,7 @@ function metricaDoTipo(tipo: string, d: {
     return { valor: d.pesoTotalTon, und: 't', extra: extra || undefined };
   }
   if (t === 'rocadeira') return { valor: d.areaM2 || d.quantitativo, und: 'm²' };
-  if (t === 'varricao') return { valor: d.kmLinear || d.quantitativo, und: 'km' };
+  if (t === 'varricao') return { valor: d.kmLinear, und: 'km' };
   if (t === 'capina') {
     if (d.kmLinear > 0) return { valor: d.kmLinear, und: 'km' };
     return { valor: d.metroLinear || d.quantitativo, und: 'm' };

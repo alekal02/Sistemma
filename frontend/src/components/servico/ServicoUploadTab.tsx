@@ -410,6 +410,12 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
         try {
           conf = await coletaService.conferenciaDiaria(file, servicoId);
           setConferenciaDiaria(conf);
+          if (conf.agente?.retrabalhosMesmaRota?.length) {
+            adicionarToast(
+              `${conf.agente.rotasPlanilha} rota(s) na planilha · ${conf.agente.retrabalhosMesmaRota.length} retrabalho(s) da sala técnica (mesma operação com equipe diferente).`,
+              'warning',
+            );
+          }
           if (conf.diasDivergentes > 0) {
             adicionarToast(
               `${conf.diasDivergentes} dia(s) diferem do sistema — a importação atualizará conforme a planilha.`,
@@ -1154,6 +1160,21 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
                     </div>
                   )}
 
+                  {dadosViagens.conferenciaUpload?.mensagem && (
+                    <div style={{
+                      background: (dadosViagens.conferenciaUpload.retrabalhosMesmaRota || []).length
+                        || (dadosViagens.conferenciaUpload.rotasConflitantes || 0)
+                        ? '#fffbeb' : '#eff6ff',
+                      border: '1px solid #bfdbfe',
+                      borderRadius: '6px', padding: '0.45rem 0.65rem', marginBottom: '0.5rem',
+                      fontSize: '0.68rem', color: '#1e3a8a',
+                    }}>
+                      <strong>Agente de conferência:</strong> {dadosViagens.conferenciaUpload.mensagem}
+                      {(dadosViagens.conferenciaUpload.avisos || []).map((a: string, i: number) => (
+                        <div key={i} style={{ marginTop: '0.25rem' }}>{a}</div>
+                      ))}
+                    </div>
+                  )}
                   {dadosViagens.conferenciaCadastro?.ativa && (
                     <div style={{
                       background: dadosViagens.conferenciaCadastro.temDivergencia ? '#fffbeb' : '#f0fdf4',
@@ -1368,6 +1389,11 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
               </div>
               <p style={{ fontSize: '0.68rem', color: '#475569', margin: '0 0 0.5rem' }}>
                 {conferenciaDiaria.recomendacao}
+                {conferenciaDiaria.agente?.mensagem && (
+                  <span style={{ display: 'block', marginTop: '0.35rem', color: '#1e3a8a' }}>
+                    {conferenciaDiaria.agente.mensagem}
+                  </span>
+                )}
                 {conferenciaDiaria.ultimaDataSistema && (
                   <span style={{ display: 'block', marginTop: '0.2rem', color: '#64748b' }}>
                     Último dia no sistema: {conferenciaDiaria.ultimaDataSistema.split('-').reverse().join('/')}

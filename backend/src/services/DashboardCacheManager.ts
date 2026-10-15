@@ -48,6 +48,8 @@ class DashboardCacheManager {
   private carregouDisco = false;
 
   constructor() {
+    const suite = process.execArgv.includes('--test') || process.argv.includes('--test');
+    if (suite) return;
     this.garantirDir();
     this.carregarDisco();
     this.iniciarLimpezaPeriodica();
@@ -203,6 +205,7 @@ class DashboardCacheManager {
         }
       }
     }, INTERVALO_LIMPEZA);
+    this.timerId.unref?.();
   }
 
   get duracaoMs(): number {

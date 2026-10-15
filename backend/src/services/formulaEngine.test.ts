@@ -6,6 +6,8 @@ import {
   validarExpressao,
   parseNumeroBr,
   normalizarChave,
+  corrigirFormulaHorasLegada,
+  encontrarValorColuna,
 } from './FormulaEngine';
 
 const dadosColeta = [
@@ -43,8 +45,14 @@ const dadosMotoristas = [
 describe('FormulaEngine — funções básicas', () => {
   it('parseNumeroBr converte formato brasileiro', () => {
     assert.equal(parseNumeroBr('1.234,56'), 1234.56);
+    assert.equal(parseNumeroBr('1234,56'), 1234.56);
+    assert.equal(parseNumeroBr('1.234.567,89'), 1234567.89);
+    assert.equal(parseNumeroBr('1234.56'), 1234.56);
+    assert.equal(parseNumeroBr('485.073'), 485.073);
     assert.equal(parseNumeroBr('42'), 42);
+    assert.equal(parseNumeroBr(1234.56), 1234.56);
     assert.ok(Number.isNaN(parseNumeroBr(null)));
+    assert.ok(Number.isNaN(parseNumeroBr('')));
   });
 
   it('normalizarChave remove acentos e espaços', () => {
@@ -291,7 +299,7 @@ describe('ajustarKpisFaturamentoCicloConsolidada', async () => {
       valoresFixos,
       defs,
       [],
-      { dataInicio: '2026-06-01', dataFim: '2026-06-30' },
+      { dataInicio: '2026-06-01', dataFim: '2026-06-30', hoje: new Date(2026, 5, 15, 12, 0, 0) },
     );
     const fat = ajustados.find((k) => k.nome === 'Faturamento Estimado');
     const recKm = ajustados.find((k) => k.nome === 'Receita por Km');
@@ -303,9 +311,10 @@ describe('ajustarKpisFaturamentoCicloConsolidada', async () => {
 });
 
 describe('calcularProjecaoFaturamentoCiclo', async () => {
-  const { calcularProjecaoFaturamentoCiclo } = await import('./projecaoFaturamentoCicloService');
+  const { calcularProjecaoFaturamentoCiclo, contarDiasComDadosOperacionais } = await import('./projecaoFaturamentoCicloService');
+  const hojeNoCiclo = new Date(2026, 5, 15, 12, 0, 0);
 
-  it('projeta faturamento do ciclo pela média dos dias com dados', () => {
+  it('projeta pela média dos dias corridos, não só dos dias com dados', () => {
     const proj = calcularProjecaoFaturamentoCiclo(
       128139,
       [
@@ -314,14 +323,121 @@ describe('calcularProjecaoFaturamentoCiclo', async () => {
       ],
       '2026-06-01',
       '2026-06-30',
-      new Date('2026-06-15T12:00:00'),
+      hojeNoCiclo,
     );
     assert.equal(proj.realizado, 128139);
     assert.equal(proj.diasComDados, 2);
     assert.equal(proj.diasTotaisCiclo, 30);
-    assert.equal(proj.mediaDiaria, 64069.5);
-    assert.equal(proj.projetado, 1922085);
+    assert.equal(proj.diasDecorridos, 15);
+    assert.equal(proj.mediaDiaria, 8542.6);
+    assert.equal(proj.projetado, 256278);
     assert.equal(proj.cicloEmAndamento, true);
+    assert.notEqual(proj.mediaDiaria, 64069.5);
+  });
+
+  it('ciclo encerrado devolve o realizado, com data fixa', () => {
+    const proj = calcularProjecaoFaturamentoCiclo(
+      1400,
+      [{ 'DATA SAIDA': '2026-06-01' }, { 'DATA SAIDA': '2026-06-02' }],
+      '2026-06-01',
+      '2026-06-30',
+      new Date(2026, 6, 2, 12, 0, 0),
+    );
+    assert.equal(proj.cicloEmAndamento, false);
+    assert.equal(proj.projetado, 1400);
+    assert.equal(proj.realizado, 1400);
+  });
+
+  it('célula vazia e valor brasileiro não criam dia operacional', () => {
+    assert.equal(contarDiasComDadosOperacionais([
+      { 'DATA SAIDA': '' },
+      { 'DATA SAIDA': null },
+      { 'DATA SAIDA': '1.234,56' },
+      { 'DATA SAIDA': '02/06/2026' },
+      { 'DATA SAIDA': '02/06/2026' },
+    ]), 1);
+  });
+
+  it('virada do dia de referência entra no decorrido e o dia seguinte não', () => {
+    const noDia10 = calcularProjecaoFaturamentoCiclo(
+      300,
+      [{ 'DATA SAIDA': '2026-06-01' }],
+      '2026-06-01',
+      '2026-06-30',
+      new Date(2026, 5, 10, 23, 30, 0),
+    );
+    const noDia11 = calcularProjecaoFaturamentoCiclo(
+      300,
+      [{ 'DATA SAIDA': '2026-06-01' }],
+      '2026-06-01',
+      '2026-06-30',
+      new Date(2026, 5, 11, 0, 30, 0),
+    );
+    assert.equal(noDia10.diasDecorridos, 10);
+    assert.equal(noDia11.diasDecorridos, 11);
+  });
+});
+
+describe('horas e KM nos KPIs', async () => {
+  const { encontrarColunaKmDistancia } = await import('./AutoIndicatorService');
+
+  it('coluna de KM da varrição não é o hodômetro', () => {
+    const cols = [
+      { nome: 'KM SAIDA BASE' },
+      { nome: 'KM CHEGADA ROTA 01' },
+      { nome: 'KM Linear' },
+    ];
+    assert.equal(
+      encontrarColunaKmDistancia(cols, ['KM TOTAL', 'KM', 'KM LINEAR', 'QUILOMETROS_VARRIDOS']),
+      'KM Linear',
+    );
+    assert.equal(
+      encontrarColunaKmDistancia([{ nome: 'KM SAIDA BASE' }, { nome: 'KM TOTAL' }], ['KM', 'KM TOTAL']),
+      'KM TOTAL',
+    );
+  });
+
+  it('não troca SUM de relógio quando ele ainda é o denominador', () => {
+    const expr = 'DIVIDE(SUM(HORA CHEGADA BASE) - SUM(HORA SAIDA BASE), SUM(HORA CHEGADA BASE)) * 100';
+    assert.equal(corrigirFormulaHorasLegada(expr), expr);
+    const duracao = 'DIVIDE(FATURAMENTO_EST(PESO TOTAL, TIPO CAMINHAO), SUM(HORA CHEGADA BASE) - SUM(HORA SAIDA BASE))';
+    assert.match(corrigirFormulaHorasLegada(duracao), /HORAS_PRODUTIVAS\(HORA SAIDA BASE, HORA CHEGADA BASE\)/);
+  });
+
+  it('fórmula antiga de rota não conta a virada como quase 24h', () => {
+    const dados = [{
+      'HORA CHEGADA ROTA 01': 8 / 24,
+      'HORA SAÍDA ROTA 01': 10 / 24,
+    }];
+    const legado = 'HORAS_PRODUTIVAS(HORA SAÍDA ROTA 01, HORA CHEGADA ROTA 01)';
+    assert.match(corrigirFormulaHorasLegada(legado), /HORA CHEGADA ROTA 01, HORA SAÍDA ROTA 01/);
+    const { valor } = calcularExpressao(legado, { dados, valoresFixos: {} });
+    assert.equal(valor, 2);
+  });
+
+  it('jornada com virada de dia soma 4h, não 20h', () => {
+    const { valor } = calcularExpressao(
+      'HORAS_PRODUTIVAS(HORA SAIDA BASE, HORA CHEGADA BASE)',
+      {
+        dados: [{ 'HORA SAIDA BASE': 22 / 24, 'HORA CHEGADA BASE': 2 / 24 }],
+        valoresFixos: {},
+      },
+    );
+    assert.equal(valor, 4);
+  });
+
+  it('SUM(KM TOTAL) não lê hodômetro de KM SAIDA BASE', () => {
+    const linha = {
+      'KM SAIDA BASE': 82401,
+      'KM CHEGADA BASE': 82452,
+      'KM ROTA 01': 12,
+    };
+    assert.equal(encontrarValorColuna(linha, 'KM TOTAL'), undefined);
+    const { valor } = calcularExpressao('SUM(KM TOTAL)', { dados: [linha], valoresFixos: {} });
+    assert.equal(valor, 0);
+    const comTotal = { ...linha, 'KM TOTAL': '1.234,56' };
+    const soma = calcularExpressao('SUM(KM TOTAL)', { dados: [comTotal], valoresFixos: {} });
+    assert.equal(soma.valor, 1234.56);
   });
 });
 

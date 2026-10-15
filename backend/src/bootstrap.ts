@@ -11,6 +11,7 @@ import { migratePesoCelulasPlanilha } from './database/migrate_peso_celulas_plan
 import { migrateWhatsappPdfSobDemanda } from './database/migrate_whatsapp_pdf_sob_demanda';
 import { sincronizarKpisUniversaisBiblioteca } from './database/sincronizarKpisUniversaisBiblioteca';
 import { iniciarAgendamentoWarmupExecutivo } from './services/executivoCacheWarmupService';
+import { recuperarMensagensWhatsappPendentes } from './services/WhatsappPlanilhaPipelineService';
 
 export async function prepararBancoAtivo(): Promise<void> {
   const skipStartup = process.env.SKIP_STARTUP_SEED === 'true';
@@ -83,13 +84,29 @@ export async function iniciarAplicacao(app: Express, port: number): Promise<void
     await AppDataSource.initialize();
     console.log('✅ Banco de dados conectado com sucesso');
 
+    if (process.env.NODE_ENV === 'production' && !String(process.env.WUZAPI_WEBHOOK_SECRET || '').trim()) {
+      console.warn(
+        '[WuzapiWebhook] Produção sem WUZAPI_WEBHOOK_SECRET. O webhook continua aceitando chamadas sem segredo. '
+        + 'Definir o segredo sem a WuzAPI enviá-lo interrompe o chatbot até a sessão ser reconectada.',
+      );
+    }
+    const hmacConfigurada = Boolean(
+      String(process.env.WUZAPI_WEBHOOK_HMAC_KEY || process.env.WUZAPI_GLOBAL_HMAC_KEY || '').trim(),
+    );
+    console.log(
+      `[WuzapiWebhook] HMAC obrigatório=${process.env.WUZAPI_WEBHOOK_ENFORCE === 'true'} chaveConfigurada=${hmacConfigurada}`,
+    );
+
     if (isMultiTenant()) {
       const { contratosComBanco } = await import('./services/tenantFanout');
       const bancos = await contratosComBanco();
       console.log(`🗂️ Modo um-banco-por-contrato — ${bancos.length} contrato(s) para preparar`);
       for (const tenant of bancos) {
         try {
-          await runWithTenant(tenant.databaseName, () => prepararBancoAtivo());
+          await runWithTenant(tenant.databaseName, async () => {
+            await prepararBancoAtivo();
+            await recuperarMensagensWhatsappPendentes();
+          });
           console.log(`   ✔ ${tenant.numeroContrato} (${tenant.databaseName})`);
         } catch (err) {
           console.error(`   ✖ ${tenant.numeroContrato} (${tenant.databaseName}):`, err);
@@ -97,6 +114,7 @@ export async function iniciarAplicacao(app: Express, port: number): Promise<void
       }
     } else {
       await prepararBancoAtivo();
+      await recuperarMensagensWhatsappPendentes();
     }
 
     app.listen(port, () => {

@@ -7,7 +7,7 @@ import {
   runWithTenant,
 } from '../database/data-source';
 import { Tenant } from '../entities/Tenant';
-import { nomeBancoContrato, slugificarContrato } from '../utils/slugContrato';
+import { afirmarNomeBanco, nomeBancoContrato, slugificarContrato } from '../utils/slugContrato';
 import { seedKpisUniversais } from '../database/seedKpiUniversal';
 import { seedGraficosPadrao } from '../database/seedGraficosPadrao';
 
@@ -28,8 +28,9 @@ export async function bancoExiste(nome: string, via?: DataSource): Promise<boole
 
 export async function criarBancoSeNaoExiste(nome: string, via?: DataSource): Promise<boolean> {
   const ds = via ?? adminQuerySource();
-  if (await bancoExiste(nome, ds)) return false;
-  await ds.query(`CREATE DATABASE ${nome}`);
+  const identificador = afirmarNomeBanco(nome);
+  if (await bancoExiste(identificador, ds)) return false;
+  await ds.query(`CREATE DATABASE ${identificador}`);
   return true;
 }
 

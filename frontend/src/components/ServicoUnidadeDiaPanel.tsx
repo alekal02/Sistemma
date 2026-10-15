@@ -2,6 +2,7 @@
  * Dashboard do dia para serviços medidos por unidade (capina, varrição, poda, pintura).
  * Fonte: totais da API + registros da planilha (não usa fluxo de viagens/toneladas).
  */
+import { camposMetricaDeRegistro, metricaDeRegistro } from '@sistemma/shared';
 import type { CSSProperties } from 'react';
 import { FiMapPin, FiTrendingUp, FiList, FiUsers, FiLayers } from 'react-icons/fi';
 import {
@@ -91,11 +92,12 @@ export default function ServicoUnidadeDiaPanel({
 
   const agregLocal = registros.reduce(
     (acc, r) => {
-      acc.areaM2 += numDeRegistro(r, ['Area m²', 'AREA_M2', 'AREA_ROCADA']);
-      acc.metroLinear += numDeRegistro(r, ['Metro Linear', 'METRO_LINEAR', 'COMPRIMENTO']);
-      acc.kmLinear += numDeRegistro(r, ['KM Linear', 'KM_LINEAR', 'QUILOMETROS_VARRIDOS', 'kmTotal']);
-      acc.qtdArvore += numDeRegistro(r, ['Quantidade de Arvore', 'QTD_ARVORE', 'ARVORES_PODADAS']);
-      acc.quantitativo += numDeRegistro(r, ['QUANTITATIVO']);
+      const c = camposMetricaDeRegistro(r);
+      acc.areaM2 += c.areaM2 || 0;
+      acc.metroLinear += c.metroLinear || 0;
+      acc.kmLinear += c.kmLinear || 0;
+      acc.qtdArvore += c.qtdArvore || 0;
+      acc.quantitativo += c.quantitativo || 0;
       return acc;
     },
     { areaM2: 0, metroLinear: 0, kmLinear: 0, qtdArvore: 0, quantitativo: 0, rotas: registros.length },
@@ -113,13 +115,7 @@ export default function ServicoUnidadeDiaPanel({
   const metrica = metricaPrincipalDoDia(tipoServico, agreg);
   const qtdRegistros = totalRegistros || agreg.rotas || registros.length;
 
-  const valorLinha = (r: Record<string, unknown>) => metricaPrincipalDoDia(tipoServico, {
-    areaM2: numDeRegistro(r, ['Area m²', 'AREA_M2']),
-    metroLinear: numDeRegistro(r, ['Metro Linear', 'METRO_LINEAR', 'COMPRIMENTO']),
-    kmLinear: numDeRegistro(r, ['KM Linear', 'KM_LINEAR', 'QUILOMETROS_VARRIDOS']),
-    qtdArvore: numDeRegistro(r, ['Quantidade de Arvore', 'QTD_ARVORE']),
-    quantitativo: numDeRegistro(r, ['QUANTITATIVO']),
-  }).valor;
+  const valorLinha = (r: Record<string, unknown>) => metricaDeRegistro(tipoServico, r).valor;
 
   const topBairros = agruparSoma(
     registros,
@@ -179,28 +175,6 @@ export default function ServicoUnidadeDiaPanel({
           </div>
         </div>
 
-        {ehCapina && agreg.metroLinear > 0 && metrica.sufixo !== 'm' && (
-          <div style={cardStyle}>
-            <div style={labelStyle}>Metro linear</div>
-            <div style={valorStyle}>{formatarMetricaUnidade(agreg.metroLinear, 'm')}</div>
-          </div>
-        )}
-
-        {ehCapina && agreg.kmLinear > 0 && metrica.sufixo !== 'km' && (
-          <div style={cardStyle}>
-            <div style={labelStyle}>Extensão</div>
-            <div style={valorStyle}>{formatarMetricaUnidade(agreg.kmLinear, 'km')}</div>
-          </div>
-        )}
-
-        {agreg.quantitativo > 0 && (
-          <div style={cardStyle}>
-            <div style={labelStyle}>Quantitativo (planilha)</div>
-            <div style={valorStyle}>
-              {agreg.quantitativo.toLocaleString('pt-BR', { maximumFractionDigits: 3 })}
-            </div>
-          </div>
-        )}
 
         {(equipesAtivas > 0 || Number(kpisOperacao.find((k) => /equipe/i.test(k.nome || k.label || ''))?.valor || 0) > 0) && (
           <div style={cardStyle}>
@@ -311,13 +285,7 @@ export default function ServicoUnidadeDiaPanel({
               </thead>
               <tbody>
                 {registros.map((r, i) => {
-                  const m = metricaPrincipalDoDia(tipoServico, {
-                    areaM2: numDeRegistro(r, ['Area m²', 'AREA_M2']),
-                    metroLinear: numDeRegistro(r, ['Metro Linear', 'METRO_LINEAR', 'COMPRIMENTO']),
-                    kmLinear: numDeRegistro(r, ['KM Linear', 'KM_LINEAR']),
-                    qtdArvore: numDeRegistro(r, ['Quantidade de Arvore', 'QTD_ARVORE']),
-                    quantitativo: numDeRegistro(r, ['QUANTITATIVO']),
-                  });
+                  const m = metricaDeRegistro(tipoServico, r);
                   const q = numDeRegistro(r, ['QUANTITATIVO']);
                   return (
                     <tr key={String(r.id ?? i)} style={{ borderTop: '1px solid #f1f5f9' }}>

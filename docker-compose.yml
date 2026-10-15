@@ -147,8 +147,6 @@ services:
       DATABASE_NAME: ${DB_NAME:-abastecimento}
       CONTROL_DATABASE_NAME: ${CONTROL_DATABASE_NAME:-}
       MULTI_TENANT: ${MULTI_TENANT:-false}
-      # false = volta a pedir email/senha nos botões Gestor e Contratos
-      ACESSO_LIVRE: ${ACESSO_LIVRE:-true}
       JWT_SECRET: ${JWT_SECRET:?Defina JWT_SECRET no .env}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-8h}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?Defina JWT_REFRESH_SECRET no .env}
@@ -190,12 +188,18 @@ services:
       WUZAPI_ADMIN_TOKEN: ${WUZAPI_ADMIN_TOKEN:-1234ABCD}
       WUZAPI_WEBHOOK_URL: http://backend:3200/api/wuzapi/webhook
       WUZAPI_WEBHOOK_SECRET: ${WUZAPI_WEBHOOK_SECRET:-}
+      # A mesma chave do serviço wuzapi. O bloqueio permanece desligado até a validação.
+      WUZAPI_GLOBAL_HMAC_KEY: ${WUZAPI_GLOBAL_HMAC_KEY:-}
+      WUZAPI_WEBHOOK_ENFORCE: ${WUZAPI_WEBHOOK_ENFORCE:-false}
       WUZAPI_TIMEOUT_MS: ${WUZAPI_TIMEOUT_MS:-120000}
       WUZAPI_INSTANCE_NAME: ${WUZAPI_INSTANCE_NAME:-Sistemma}
       PLANILHAS_BACKUP_HOST_DIR: ${PLANILHAS_BACKUP_HOST_DIR:-./planilhas-ciclo}
       # Vazio = integração desligada. Preencha no .env só onde o Manu existir.
       MANU_WEBHOOK_URL: ${MANU_WEBHOOK_URL:-}
       MANU_CHATBOT_SECRET: ${MANU_CHATBOT_SECRET:-}
+      # Sala técnica (RelatoriosColeta.exe). No Docker use host.docker.internal
+      SALA_TECNICA_URL: ${SALA_TECNICA_URL:-}
+      SALA_TECNICA_SECRET: ${SALA_TECNICA_SECRET:-}
     env_file:
       - .env
     ports:

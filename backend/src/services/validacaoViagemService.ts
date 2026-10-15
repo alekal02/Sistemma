@@ -55,6 +55,36 @@ function lerKmColunaExata(raw: Record<string, unknown>, ...nomes: string[]): num
   return NaN;
 }
 
+/**
+ * "ROTA 1" e "ROTA 01" (e "KMROTA1") viram o mesmo rótulo.
+ * A comparação continua exata: "KM ROTA 01" não casa com "KM CHEGADA ROTA 01".
+ */
+function canonicoColunaKm(chave: string): string {
+  return chave
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\r\n]+/g, ' ')
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, ' ')
+    .replace(/\bKMROTA\s*0*(\d+)\b/g, (_m, n: string) => `KM ROTA ${String(Number(n)).padStart(2, '0')}`)
+    .replace(/\bROTA\s+0*(\d+)\b/g, (_m, n: string) => `ROTA ${String(Number(n)).padStart(2, '0')}`);
+}
+
+function lerKmCanonico(raw: Record<string, unknown>, ...alvos: string[]): number {
+  const esperados = new Set(alvos.map(canonicoColunaKm));
+  for (const [key, val] of Object.entries(raw)) {
+    if (!esperados.has(canonicoColunaKm(key))) continue;
+    const km = parseNumeroBr(val);
+    if (!isNaN(km) && km > 0) return km;
+  }
+  return NaN;
+}
+
+function rotuloRota(indice: number): string {
+  return String(indice).padStart(2, '0');
+}
+
 /** Normaliza rótulo da célula da planilha para comparação exata (sem fuzzy). */
 function rotuloCelulaPlanilha(chave: string): string {
   return chave.replace(/[\r\n]+/g, ' ').trim().toUpperCase().replace(/\s+/g, ' ');
@@ -243,7 +273,7 @@ export function enriquecerCamposColeta(coleta: ColetaData): void {
   for (let i = 1; i <= 4; i++) {
     const kmField = `kmRota${i}` as keyof ColetaData;
     if (coleta[kmField] === null || coleta[kmField] === undefined) {
-      const km = lerKmColunaExata(raw, `KM ROTA 0${i}`, `KM ROTA ${i}`, `KMROTA0${i}`, `KMROTA${i}`);
+      const km = lerKmCanonico(raw, `KM ROTA ${rotuloRota(i)}`);
       if (kmDistanciaPlausivel(km)) (coleta as any)[kmField] = km;
     }
   }
@@ -428,7 +458,7 @@ function calcularKmEfetivo(coleta: Partial<ColetaData>): number | null {
       rotas.push(Number(tipado));
       continue;
     }
-    const km = lerKmColunaExata(raw, `KM ROTA 0${i}`, `KM ROTA ${i}`, `KMROTA0${i}`, `KMROTA${i}`);
+    const km = lerKmCanonico(raw, `KM ROTA ${rotuloRota(i)}`);
     if (kmDistanciaPlausivel(km)) rotas.push(km);
   }
   const somaRotas = somaPositiva(rotas);
@@ -761,10 +791,13 @@ function garantirDadosColeta(coleta: ColetaData): Record<string, unknown> {
 
 /**
  * Soma KM a partir da sequência real do hodômetro:
- * Saída base → Chegada/Saída de cada rota → Chegada base.
+ * Saída base → cada rota em ordem cronológica → Chegada base.
+ * Dentro da rota, a leitura menor vem antes. Quando a saída é menor ou igual
+ * à chegada (trecho normal, "ROTA 1" ou "ROTA 01"), a saída entra antes da chegada.
+ * Quando a planilha padrão tem chegada menor que a saída, a chegada continua antes,
+ * e uma saída que volta ainda é descartada.
  * - Diff 0 (parado no ponto): ok, sem km
- * - Leitura que volta (chegada < saída): descarta esse ponto e religa a cadeia
- *   (evita inventar KM usando o valor errado como âncora do próximo trecho)
+ * - Leitura que volta: descarta esse ponto e religa a cadeia
  * - Salto absurdo: ignora a distância daquele trecho, mantém o ponto como âncora
  */
 function analisarHodometroColeta(coleta: Partial<ColetaData>): {
@@ -798,26 +831,18 @@ function analisarHodometroColeta(coleta: Partial<ColetaData>): {
   }
 
   for (let i = 1; i <= 4; i++) {
-    const cfg = COLUNAS_HODOMETRO.rotas[i - 1];
-    const kmChegadaRota = lerKmColunaExata(
-      raw,
-      cfg.kmChegada.trim(),
-      `KM CHEGADA ROTA 0${i}`,
-      `KM CHEGADA ROTA ${i}`,
-    );
-    const kmSaidaRota = lerKmColunaExata(
-      raw,
-      cfg.kmSaida.trim(),
-      `KM SAIDA ROTA 0${i}`,
-      `KM SAÍDA ROTA 0${i}`,
-      `KM SAIDA ROTA ${i}`,
-      `KM SAÍDA ROTA ${i}`,
-    );
-    if (!isNaN(kmChegadaRota) && kmChegadaRota > 0) {
-      pontos.push({ label: `Chegada Rota 0${i}`, km: kmChegadaRota });
-    }
-    if (!isNaN(kmSaidaRota) && kmSaidaRota > 0) {
-      pontos.push({ label: `Saída Rota 0${i}`, km: kmSaidaRota });
+    const n = rotuloRota(i);
+    const kmChegadaRota = lerKmCanonico(raw, `KM CHEGADA ROTA ${n}`);
+    const kmSaidaRota = lerKmCanonico(raw, `KM SAIDA ROTA ${n}`);
+    const temChegada = !isNaN(kmChegadaRota) && kmChegadaRota > 0;
+    const temSaida = !isNaN(kmSaidaRota) && kmSaidaRota > 0;
+    const chegada = { label: `Chegada Rota ${n}`, km: kmChegadaRota };
+    const saida = { label: `Saída Rota ${n}`, km: kmSaidaRota };
+    if (temSaida && temChegada && kmSaidaRota <= kmChegadaRota) {
+      pontos.push(saida, chegada);
+    } else {
+      if (temChegada) pontos.push(chegada);
+      if (temSaida) pontos.push(saida);
     }
   }
 
@@ -863,7 +888,7 @@ function analisarHodometroColeta(coleta: Partial<ColetaData>): {
   // confundir "KM ROTA 01" com o campo "id" (substring "ID" em "KMROTA01").
   if (segmentosValidos.length === 0) {
     for (let i = 1; i <= 4; i++) {
-      const km = lerKmColunaExata(raw, `KM ROTA 0${i}`, `KM ROTA ${i}`, `KMROTA0${i}`, `KMROTA${i}`);
+      const km = lerKmCanonico(raw, `KM ROTA ${rotuloRota(i)}`);
       if (kmDistanciaPlausivel(km)) {
         segmentosValidos.push(km);
       }

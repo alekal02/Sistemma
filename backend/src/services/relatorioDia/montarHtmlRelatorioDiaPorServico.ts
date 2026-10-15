@@ -2,6 +2,7 @@
  * Monta o HTML do PDF diário conforme o tipo do serviço.
  * Usado pelo chatbot (sob demanda) e pelos scripts de geração.
  */
+import { metricaDeRegistro, metricaOficialServico } from '@sistemma/shared';
 import { Servico } from '../../entities/Servico';
 import { Contract } from '../../entities/Contract';
 import PlanilhaService from '../PlanilhaService';
@@ -69,29 +70,22 @@ function agrupar(
     .sort((a, b) => b.valor - a.valor);
 }
 
-function metricaLinha(tipo: string, r: Record<string, unknown>): { valor: number; sufixo: string; label: string; tipoLabel: string } {
-  const area = numDe(r, ['Area m²', 'AREA_M2', 'M2', 'AREA_ROCADA']);
-  const mLin = numDe(r, ['Metro Linear', 'METRO_LINEAR', 'COMPRIMENTO']);
-  const kmLin = numDe(r, ['KM Linear', 'KM_LINEAR', 'QUILOMETROS_VARRIDOS']);
-  const arv = numDe(r, ['Quantidade de Arvore', 'QTD_ARVORE', 'ARVORES_PODADAS']);
-  const qtd = numDe(r, ['QUANTITATIVO', 'QUANTIDADE', 'QTD', 'QTDE']);
+function rotuloTipo(tipo: string): string {
   switch (tipo) {
-    case 'rocadeira':
-      return { valor: area || qtd, sufixo: 'm²', label: 'Área', tipoLabel: 'Roçada' };
-    case 'varricao':
-      return { valor: kmLin || qtd, sufixo: 'km', label: 'KM linear', tipoLabel: 'Varrição' };
-    case 'capina':
-      if (kmLin > 0) return { valor: kmLin, sufixo: 'km', label: 'Extensão', tipoLabel: 'Capina' };
-      return { valor: mLin || qtd, sufixo: 'm', label: 'Metro linear', tipoLabel: 'Capina' };
-    case 'poda':
-      return { valor: arv || qtd, sufixo: 'arv', label: 'Árvores', tipoLabel: 'Poda' };
-    case 'pintura_meio_fio':
-      return { valor: mLin || qtd, sufixo: 'm', label: 'Metro linear', tipoLabel: 'Pintura' };
-    case 'remocao':
-      return { valor: qtd || arv, sufixo: 'pts', label: 'Pontos', tipoLabel: 'Remoção' };
-    default:
-      return { valor: qtd || arv, sufixo: 'pts', label: 'Pontos', tipoLabel: 'Serviço' };
+    case 'rocadeira': return 'Roçada';
+    case 'varricao': return 'Varrição';
+    case 'capina': return 'Capina';
+    case 'poda': return 'Poda';
+    case 'pintura_meio_fio': return 'Pintura';
+    case 'remocao': return 'Remoção';
+    case 'geral': return 'Feiras';
+    default: return 'Serviço';
   }
+}
+
+function metricaLinha(tipo: string, r: Record<string, unknown>): { valor: number; sufixo: string; label: string; tipoLabel: string } {
+  const m = metricaDeRegistro(tipo, r);
+  return { valor: m.valor, sufixo: m.sufixo, label: m.label, tipoLabel: rotuloTipo(tipo) };
 }
 
 async function htmlRocada(servico: Servico, contrato: Contract | null, dataIso: string): Promise<string | null> {
@@ -134,15 +128,20 @@ async function htmlUnidade(servico: Servico, contrato: Contract | null, dataIso:
   });
   const regs = brutos.dados || [];
   const valorFn = (r: Record<string, unknown>) => metricaLinha(servico.tipo, r).valor;
-  const meta = metricaLinha(servico.tipo, {});
+  const oficial = metricaOficialServico(servico.tipo, {
+    areaM2: d?.areaM2,
+    metroLinear: d?.metroLinear,
+    kmLinear: d?.kmLinear,
+    qtdArvore: d?.qtdArvore,
+    quantitativo: d?.quantitativo,
+  });
+  const meta = {
+    tipoLabel: rotuloTipo(servico.tipo),
+    label: oficial.label,
+    sufixo: oficial.sufixo,
+  };
   const metricaTotal = d
-    ? (servico.tipo === 'varricao'
-      ? Number(d.kmLinear || d.quantitativo || 0)
-      : servico.tipo === 'poda'
-        ? Number(d.qtdArvore || d.quantitativo || d.rotas || 0)
-        : servico.tipo === 'remocao'
-          ? Number(d.quantitativo || d.qtdArvore || d.rotas || 0)
-          : Number(d.quantitativo || d.metroLinear || d.kmLinear || d.rotas || 0))
+    ? oficial.valor
     : regs.reduce((s, r) => s + valorFn(r), 0);
   const registros = Number(d?.rotas || brutos.total || regs.length);
   if (metricaTotal <= 0 && registros <= 0) return null;
@@ -160,7 +159,6 @@ async function htmlUnidade(servico: Servico, contrato: Contract | null, dataIso:
     sufixo: meta.sufixo,
     metricaTotal,
     registros,
-    quantitativo: Number(d?.quantitativo || 0) || undefined,
     porBairro,
     porEquipe,
     porOperador,

@@ -307,6 +307,16 @@ const coletaService = {
       ultimaDataPlanilha: string | null
       ultimaDataSistema: string | null
       recomendacao: string
+      agente?: {
+        mensagem: string
+        rotasPlanilha: number
+        linhasTemplate: number
+        rotasNovas: number
+        rotasJaNoSistema: number
+        rotasConflitantes: number
+        retrabalhosMesmaRota: Array<{ linhas: number[]; placa: string | null; data: string | null; motoristas: string[] }>
+        avisos: string[]
+      }
       dias: Array<{
         data: string
         dataBr: string

@@ -61,19 +61,23 @@ docker buildx create --name sistemma-amd64 --driver docker-container --use 2>/de
 docker buildx inspect --bootstrap >/dev/null
 
 docker buildx build --platform linux/amd64 --provenance=false --sbom=false \
+  --output type=registry,oci-mediatypes=false \
   -f backend/Dockerfile -t "${REGISTRY}/sistemma-backend:${TAG}" \
-  --build-arg "BUILD_SHA=${BUILD_SHA}" --push ./backend
+  --build-arg "BUILD_SHA=${BUILD_SHA}" .
 
 docker buildx build --platform linux/amd64 --provenance=false --sbom=false \
+  --output type=registry,oci-mediatypes=false \
   -f frontend/Dockerfile -t "${REGISTRY}/sistemma-frontend:${TAG}" \
   --build-arg "VITE_API_URL=/api" \
   --build-arg "VITE_APP_NAME=Sistemma" \
   --build-arg "VITE_APP_VERSION=${VITE_APP_VERSION}" \
-  --build-arg "VITE_ENV=production" --push ./frontend
+  --build-arg "VITE_ENV=production" .
 
 echo "Verificando manifest amd64..."
-docker buildx imagetools inspect "${REGISTRY}/sistemma-backend:${TAG}"
-docker buildx imagetools inspect "${REGISTRY}/sistemma-frontend:${TAG}"
+docker buildx imagetools inspect "${REGISTRY}/sistemma-backend:${TAG}" | tee /tmp/sistemma-backend-manifest.txt
+docker buildx imagetools inspect "${REGISTRY}/sistemma-frontend:${TAG}" | tee /tmp/sistemma-frontend-manifest.txt
+grep -q 'linux/amd64' /tmp/sistemma-backend-manifest.txt
+grep -q 'linux/amd64' /tmp/sistemma-frontend-manifest.txt
 
 echo ""
 echo "Concluido! Na outra maquina: TAG=${TAG} no .env  ->  docker compose up -d"

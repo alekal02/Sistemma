@@ -78,7 +78,7 @@ function corrigirExpressao(expressao: string): string {
   if (/SUM\(HORA SAÍDA ROTA \d+\)\s*-\s*SUM\(HORA CHEGADA ROTA \d+\)/i.test(resultado)) {
     resultado = resultado.replace(
       /SUM\(HORA SAÍDA ROTA (\d+)\)\s*-\s*SUM\(HORA CHEGADA ROTA (\d+)\)/gi,
-      (_, num1, num2) => `HORAS_PRODUTIVAS(HORA SAÍDA ROTA ${num1}, HORA CHEGADA ROTA ${num2})`
+      (_, num1, num2) => `HORAS_PRODUTIVAS(HORA CHEGADA ROTA ${num2}, HORA SAÍDA ROTA ${num1})`
     );
   }
 

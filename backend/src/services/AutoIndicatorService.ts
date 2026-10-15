@@ -87,16 +87,34 @@ const COL_NRO_COLETORES = ['N.DE COLETORES', 'NDECOLETORES', 'NUMERO DE COLETORE
 const COL_CUSTO = ['CUSTO', 'VALOR', 'CUSTO TOTAL', 'CUSTO_TOTAL', 'DESPESA', 'GASTO'];
 const COL_FATURAMENTO = ['FATURAMENTO', 'RECEITA', 'VALOR TOTAL', 'VALOR_TOTAL', 'TOTAL R$'];
 
+function colunaKmEhHodometro(nome: string): boolean {
+  const n = normalizarChave(nome);
+  return n.includes('KM') && (n.includes('SAIDA') || n.includes('CHEGADA') || n.includes('ROTA') || n.includes('BASE'));
+}
+
+function candidatoBuscaKmDistancia(norm: string): boolean {
+  if (norm.includes('SAIDA') || norm.includes('CHEGADA') || norm.includes('ROTA') || norm.includes('BASE')) return false;
+  return norm.includes('KM') || norm.includes('QUILOMET') || norm.includes('KILOMET') || norm.includes('DISTANCIA') || norm.includes('VARRID');
+}
+
+/** Escolhe coluna de KM de distância, sem hodômetro de saída/chegada/rota. */
+export function encontrarColunaKmDistancia(colunas: Pick<ColunaInfo, 'nome'>[], candidatos: string[]): string {
+  return encontrarColuna(colunas as ColunaInfo[], candidatos);
+}
+
 function encontrarColuna(colunas: ColunaInfo[], candidatos: string[]): string {
   for (const candidato of candidatos) {
     const norm = normalizarChave(candidato);
     for (const col of colunas) {
+      if (candidatoBuscaKmDistancia(norm) && colunaKmEhHodometro(col.nome)) continue;
       if (normalizarChave(col.nome) === norm) return col.nome;
     }
   }
   for (const candidato of candidatos) {
     const norm = normalizarChave(candidato);
+    if (norm.length < 4) continue;
     for (const col of colunas) {
+      if (candidatoBuscaKmDistancia(norm) && colunaKmEhHodometro(col.nome)) continue;
       const colNorm = normalizarChave(col.nome);
       if (colNorm.includes(norm) || norm.includes(colNorm)) return col.nome;
     }
@@ -186,8 +204,9 @@ export class AutoIndicatorService {
     const colCaminhao = encontrarColuna(colunas, COL_CAMINHAO);
     const colTipo = encontrarColuna(colunas, COL_TIPO);
     const colData = encontrarColuna(colunas, COL_DATA);
-    const colHora = encontrarColuna(colunas, COL_HORA);
-    const colHoraChegada = encontrarColuna(colunas, COL_HORA_CHEGADA);
+    const colunasSemRota = colunas.filter((c) => !normalizarChave(c.nome).includes('ROTA'));
+    const colHora = encontrarColuna(colunasSemRota, COL_HORA);
+    const colHoraChegada = encontrarColuna(colunasSemRota, COL_HORA_CHEGADA);
     const colMotorista = encontrarColuna(colunas, COL_MOTORISTA);
     const colPlaca = encontrarColuna(colunas, COL_PLACA);
     const colViagens = encontrarColuna(colunas, COL_VIAGENS);
@@ -583,7 +602,9 @@ export class AutoIndicatorService {
         });
       }
       if (!jaTemInd('Receita por Hora') && colPeso && temValorCaminhao) {
-        const formulaHoras = (colHora && colHoraChegada) ? 'SUM(' + cHoraCheg + ') - SUM(' + cHora + ')' : (colHora ? 'SUM(' + cHora + ')' : null);
+        const formulaHoras = (colHora && colHoraChegada)
+          ? 'HORAS_PRODUTIVAS(' + cHora + ', ' + cHoraCheg + ')'
+          : null;
         if (formulaHoras) {
           indicadores.push({
             coluna: cHoraCheg || cHora, operacao: 'avg', nomeSugerido: 'Receita por Hora',
@@ -597,7 +618,7 @@ export class AutoIndicatorService {
         indicadores.push({
           coluna: cHoraCheg, operacao: 'avg', nomeSugerido: 'Receita por Hora Produtiva',
           formato: 'moeda', categoria: 'Financeiro', descricao: 'Receita total dividida pelas horas produtivas (HR CHEGADA - HR SAIDA)',
-          expressao: 'DIVIDE(FATURAMENTO_EST(' + cPeso + ', ' + cTipo + '), SUM(' + cHoraCheg + ') - SUM(' + cHora + '))',
+          expressao: 'DIVIDE(FATURAMENTO_EST(' + cPeso + ', ' + cTipo + '), HORAS_PRODUTIVAS(' + cHora + ', ' + cHoraCheg + '))',
           unidade: 'R$/h', financeiro: true, performance: true, cor: '#be185d',
         });
       }
@@ -634,11 +655,11 @@ export class AutoIndicatorService {
           var colSaida = encontrarColuna(colunas, ['HORA SAIDA ROTA 0' + r, 'HORA SAIDA ROTA 0' + r]);
           if (colChegada && colSaida) {
             if (partesFormulaRota.length > 0) partesFormulaRota.push(' + ');
-            partesFormulaRota.push('SUM(' + colSaida + ') - SUM(' + colChegada + ')');
+            partesFormulaRota.push('HORAS_PRODUTIVAS(' + colChegada + ', ' + colSaida + ')');
           }
         }
         if (partesFormulaRota.length > 0) {
-          var expressaoHoraRota = 'ROUND(DIVIDE(' + partesFormulaRota.join('') + ', VIAGENS_POR_ROTA()) * 24, 1)';
+          var expressaoHoraRota = 'ROUND(DIVIDE(' + partesFormulaRota.join('') + ', VIAGENS_POR_ROTA()), 1)';
           indicadores.push({
             coluna: 'ROTA 01', operacao: 'avg', nomeSugerido: 'Hora Produtiva por Viagem',
             formato: 'numero', categoria: 'Produtividade',
@@ -649,7 +670,7 @@ export class AutoIndicatorService {
           indicadores.push({
             coluna: cHoraCheg, operacao: 'avg', nomeSugerido: 'Hora Produtiva por Viagem',
             formato: 'numero', categoria: 'Produtividade', descricao: 'Tempo medio produtivo (HR CHEGADA - HR SAIDA) por viagem',
-            expressao: 'DIVIDE(SUM(' + cHoraCheg + ') - SUM(' + cHora + '), VIAGENS_POR_ROTA())', unidade: 'h', performance: true, cor: '#f97316',
+            expressao: 'DIVIDE(HORAS_PRODUTIVAS(' + cHora + ', ' + cHoraCheg + '), VIAGENS_POR_ROTA())', unidade: 'h', performance: true, cor: '#f97316',
           });
         }
       }
@@ -688,20 +709,28 @@ export class AutoIndicatorService {
         indicadores.push({
           coluna: cKm, operacao: 'avg', nomeSugerido: 'KM por Hora Produtiva',
           formato: 'numero', categoria: 'Eficiencia', descricao: 'KM rodados por hora produtiva — eficiencia de deslocamento',
-          expressao: 'DIVIDE(SUM(' + cKm + '), SUM(' + cHoraCheg + ') - SUM(' + cHora + '))',
+          expressao: 'DIVIDE(SUM(' + cKm + '), HORAS_PRODUTIVAS(' + cHora + ', ' + cHoraCheg + '))',
           unidade: 'km/h', performance: true, cor: '#14b8a6',
         });
       }
 
-      // Percentual de Hora Produtiva
+      // Percentual de Hora Produtiva = horas dentro das rotas ÷ jornada base→base
       if (!jaTemInd('Percentual de Hora Produtiva') && colHora && colHoraChegada) {
-        indicadores.push({
-          coluna: cHoraCheg, operacao: 'avg', nomeSugerido: 'Percentual de Hora Produtiva',
-          formato: 'porcentagem', categoria: 'Produtividade',
-          descricao: 'Percentual de horas produtivas em relacao ao total de horas',
-          expressao: 'DIVIDE(SUM(' + cHoraCheg + ') - SUM(' + cHora + '), SUM(' + cHoraCheg + ')) * 100',
-          unidade: '%', performance: true, cor: '#f59e0b',
-        });
+        const partesRota: string[] = [];
+        for (let r = 1; r <= 4; r++) {
+          const colChegada = encontrarColuna(colunas, ['HORA CHEGADA ROTA 0' + r, 'HORA CHEGA ROTA 0' + r]);
+          const colSaida = encontrarColuna(colunas, ['HORA SAIDA ROTA 0' + r, 'HORA SAÍDA ROTA 0' + r]);
+          if (colChegada && colSaida) partesRota.push('HORAS_PRODUTIVAS(' + colChegada + ', ' + colSaida + ')');
+        }
+        if (partesRota.length > 0) {
+          indicadores.push({
+            coluna: cHoraCheg, operacao: 'avg', nomeSugerido: 'Percentual de Hora Produtiva',
+            formato: 'porcentagem', categoria: 'Produtividade',
+            descricao: 'Horas dentro das rotas divididas pela jornada base→base',
+            expressao: 'DIVIDE(' + partesRota.join(' + ') + ', HORAS_PRODUTIVAS(' + cHora + ', ' + cHoraCheg + ')) * 100',
+            unidade: '%', performance: true, cor: '#f59e0b',
+          });
+        }
       }
 
       // Faturamento por Coletor
@@ -816,12 +845,16 @@ export class AutoIndicatorService {
       const colRua = encontrarColuna(colunas, ['AVENIDA / RUA', 'AV/RUA', 'RUA', 'AVENIDA', 'LOGRADOURO']);
       const colComplemento = encontrarColuna(colunas, ['COMPLEMENTO']);
       const colDia = encontrarColuna(colunas, ['DIA', 'DATA']);
+      const colArvore = encontrarColuna(colunas, [
+        'QUANTIDADE DE ARVORE', 'QTD_ARVORE', 'ARVORES_PODADAS', 'ARVORES PODADAS',
+      ]);
 
-      if (!jaTemInd('Podas Realizadas')) {
+      if (colArvore && !jaTemInd('Podas Realizadas') && !jaTemInd('Total Arvores')) {
         indicadores.push({
-          coluna: '*', operacao: 'count', nomeSugerido: 'Podas Realizadas',
-          formato: 'numero', categoria: 'Operacional', descricao: 'Numero total de podas realizadas no periodo',
-          unidade: 'un', cor: '#22c55e',
+          coluna: colArvore, operacao: 'sum', nomeSugerido: 'Podas Realizadas',
+          formato: 'numero', categoria: 'Operacional', descricao: 'Soma da Quantidade de Arvore no periodo',
+          unidade: 'arvores', cor: '#22c55e',
+          expressao: 'SUM(' + colArvore + ')',
         });
       }
       if (colSetor && !jaTemInd('Setores Atendidos')) {
@@ -849,14 +882,18 @@ export class AutoIndicatorService {
         indicadores.push({
           coluna: colSetor, operacao: 'avg', nomeSugerido: 'Media de Podas por Setor',
           formato: 'numero', categoria: 'Produtividade', descricao: 'Media de podas realizadas por setor',
-          expressao: 'DIVIDE(COUNT(*), COUNT DISTINCT(' + colSetor + '))', unidade: 'podas/setor', performance: true, cor: '#14b8a6',
+          expressao: colArvore
+            ? 'DIVIDE(SUM(' + colArvore + '), COUNT DISTINCT(' + colSetor + '))'
+            : 'DIVIDE(COUNT(*), COUNT DISTINCT(' + colSetor + '))', unidade: 'podas/setor', performance: true, cor: '#14b8a6',
         });
       }
       if (valoresFixos['VALOR_PODA'] && !jaTemInd('Faturamento Estimado')) {
         indicadores.push({
           coluna: '*', operacao: 'count', nomeSugerido: 'Faturamento Estimado',
           formato: 'moeda', categoria: 'Financeiro', descricao: 'Faturamento estimado: total de podas x VALOR_PODA do contrato',
-          expressao: 'COUNT(*) * VALOR_PODA', unidade: 'R$', financeiro: true, cor: '#059669',
+          expressao: colArvore
+            ? 'SUM(' + colArvore + ') * VALOR_PODA'
+            : 'COUNT(*) * VALOR_PODA', unidade: 'R$', financeiro: true, cor: '#059669',
         });
       }
       if (colSetor && valoresFixos['VALOR_PODA'] && !jaTemInd('Faturamento por Setor')) {
@@ -959,7 +996,7 @@ export class AutoIndicatorService {
 
     // ─── VARRICAO ───
     else if (servico.tipo === TipoServico.VARRICAO) {
-      const colKmVarridos = encontrarColuna(colunas, ['QUILOMETROS_VARRIDOS', 'KM VARRIDOS', 'KM', 'KMVARRIDOS', 'KILOMETROS', 'DISTANCIA']);
+      const colKmVarridos = encontrarColuna(colunas, ['KM LINEAR', 'KM_LINEAR', 'QUILOMETROS_VARRIDOS', 'KM VARRIDOS', 'KM VARRICAO', 'KM VARRIÇÃO']);
       const colFuncionario = encontrarColuna(colunas, ['FUNCIONARIO', 'FUNCIONARIO', 'OPERADOR', 'NOME', 'EQUIPE', 'GARI']);
       const colData = encontrarColuna(colunas, ['DATA', 'DIA']);
       const colBairro = encontrarColuna(colunas, ['BAIRRO', 'REGIAO', 'REGIAO', 'SETOR', 'DISTRITO']);

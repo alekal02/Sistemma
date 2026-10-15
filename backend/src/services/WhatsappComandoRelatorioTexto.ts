@@ -71,6 +71,18 @@ export function ehPedidoOperacional(norm: string): boolean {
   return /^(operacional|relatorio operacional|pdf operacional)\b/.test(t);
 }
 
+/** Atalho para o PDF de evolução diária (gráficos Ótimo/Ruim/Péssimo/Excedido). */
+export function ehPedidoEvolucao(norm: string): boolean {
+  const t = String(norm || '').trim();
+  if (!t) return false;
+  if (textoPedeCicloAnterior(t)) return false;
+  if (/^evolucao(\s+por)?\s+ciclo$/.test(t)) return false;
+  if (/^(evolucao|graficos|grafico)\b/.test(t)) return true;
+  if (/^(relatorio(s)?|pdf|report)\s+(evolucao|grafico)/.test(t)) return true;
+  if (t.includes('evolucao diaria') || t.includes('evolucao por grafico')) return true;
+  return false;
+}
+
 /** Abre o menu de serviços (não gera PDF na hora). */
 export function ehPedidoMenuRelatorio(norm: string): boolean {
   const t = String(norm || '').trim();
@@ -116,6 +128,13 @@ export function ehPedidoFormatoCiclo(norm: string): boolean {
   const t = String(norm || '').trim();
   if (!t) return false;
   if (/^(2|ciclo|completo|ciclo completo)\b/.test(t)) return true;
+  return false;
+}
+
+export function ehPedidoFormatoEvolucao(norm: string): boolean {
+  const t = String(norm || '').trim();
+  if (!t) return false;
+  if (/^(3|evolucao|graficos|grafico)\b/.test(t)) return true;
   return false;
 }
 export function ehPedidoRelatorioDia(norm: string): boolean {

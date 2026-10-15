@@ -356,7 +356,7 @@ export function ajustarKpisFaturamentoCicloConsolidada(
   valoresFixos: Record<string, number>,
   defsPorChave: Map<string, any>,
   colunasServico: string[],
-  periodoCiclo?: { dataInicio: string; dataFim: string },
+  periodoCiclo?: { dataInicio: string; dataFim: string; hoje?: Date },
 ): KpiCalculadoResultado[] {
   if (!dadosNormCiclo.length) return kpis;
   const dados = dadosNormCiclo as Record<string, any>[];
@@ -407,6 +407,7 @@ export function ajustarKpisFaturamentoCicloConsolidada(
           dados,
           periodoCiclo.dataInicio,
           periodoCiclo.dataFim,
+          periodoCiclo.hoje,
         );
 
         const mostrarProjecao =

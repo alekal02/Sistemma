@@ -6,7 +6,7 @@
 import { detectarColunasCardViagem, extrairMetricasCardViagem } from './viagemCardDados';
 import { contarViagensPorRotaRegistro } from './viagensPorRota';
 import { normalizarDataParaIso } from './normalizarDataIso';
-import { toneladasDoPesoKg } from '@sistemma/shared';
+import { metricaOficialServico, toneladasDoPesoKg } from '@sistemma/shared';
 
 export { toneladasDoPesoKg } from '@sistemma/shared';
 
@@ -390,6 +390,13 @@ export function agruparCicloPorDiaFromApi(
     };
   }
 
+  const tipoMetrica = opts?.tipoServico
+    || (modo === 'rocada' ? 'rocadeira'
+      : modo === 'km_linear' ? 'varricao'
+        : modo === 'metro_linear' ? 'capina'
+          : modo === 'arvores' ? 'poda'
+            : '');
+
   const resolverMetrica = (raw: {
     areaM2?: number;
     metroLinear?: number;
@@ -403,28 +410,19 @@ export function agruparCicloPorDiaFromApi(
     const kmLinear = Number(raw.kmLinear || 0);
     const qtdArvore = Number(raw.qtdArvore || 0);
     const quantitativo = Number(raw.quantitativo || 0);
-
-    if (modo === 'rocada') {
-      return { areaM2, metroLinear, kmLinear, qtdArvore, quantitativo, metricaUnidade: areaM2, metricaSufixo: 'm²', metricaLabel: 'Área' };
-    }
-    if (modo === 'arvores') {
-      const v = qtdArvore || quantitativo;
-      return { areaM2, metroLinear, kmLinear, qtdArvore: v, quantitativo, metricaUnidade: v, metricaSufixo: 'arv', metricaLabel: 'Árvores' };
-    }
-    if (modo === 'km_linear') {
-      if (kmLinear > 0) {
-        return { areaM2, metroLinear, kmLinear, qtdArvore, quantitativo, metricaUnidade: kmLinear, metricaSufixo: 'km', metricaLabel: 'Extensão' };
-      }
-      if (metroLinear > 0) {
-        return { areaM2, metroLinear, kmLinear, qtdArvore, quantitativo, metricaUnidade: metroLinear, metricaSufixo: 'm', metricaLabel: 'Metro linear' };
-      }
-      return { areaM2, metroLinear, kmLinear, qtdArvore, quantitativo, metricaUnidade: quantitativo, metricaSufixo: 'km', metricaLabel: 'Extensão' };
-    }
-    if (modo === 'metro_linear') {
-      const v = metroLinear || (kmLinear > 0 ? kmLinear * 1000 : quantitativo);
-      return { areaM2, metroLinear: v, kmLinear, qtdArvore, quantitativo, metricaUnidade: v, metricaSufixo: 'm', metricaLabel: 'Metro linear' };
-    }
-    return { areaM2, metroLinear, kmLinear, qtdArvore, quantitativo, metricaUnidade: 0, metricaSufixo: '', metricaLabel: '' };
+    const oficial = metricaOficialServico(tipoMetrica, {
+      areaM2, metroLinear, kmLinear, qtdArvore, quantitativo,
+    });
+    return {
+      areaM2,
+      metroLinear,
+      kmLinear,
+      qtdArvore,
+      quantitativo,
+      metricaUnidade: oficial.valor,
+      metricaSufixo: oficial.sufixo,
+      metricaLabel: oficial.label,
+    };
   };
 
   const dias = todasDatas.map((data) => {

@@ -43,8 +43,10 @@ import {
   resolverEscolhaIndice,
   ehPedidoFormatoDiario,
   ehPedidoFormatoCiclo,
+  ehPedidoFormatoEvolucao,
   ehPedidoSaude,
   ehPedidoOperacional,
+  ehPedidoEvolucao,
   type QualCiclo,
 } from './WhatsappComandoRelatorioTexto';
 import { montarHtmlRelatorioDiaPorServico } from './relatorioDia/montarHtmlRelatorioDiaPorServico';
@@ -399,6 +401,7 @@ function menuTipoTexto(contratoNome: string): string {
     '',
     '*1* — Operacional',
     '*2* — Saúde dos dados',
+    '*3* — Evolução diária (gráficos)',
     '',
     '_cancelar_ sai.',
   ].join('\n');
@@ -421,14 +424,20 @@ function menuServicosTexto(
 }
 
 function menuFormatoTexto(item: ItemMenuServico): string {
+  const coleta = ehTipoColeta(item.tipo);
   return [
     `📄 *${item.nome}* · ${isoParaBr(item.ultimoDia)}`,
     '',
     '*1* — Diário',
     '*2* — Ciclo completo',
+    ...(coleta ? ['*3* — Evolução diária (gráficos)'] : []),
     '',
     '_data *16/09* · *voltar* · *cancelar*_',
   ].join('\n');
+}
+
+function ehTipoColeta(tipo: string): boolean {
+  return tipo === TipoServico.COLETA_CAMINHAO || tipo === 'coleta_caminhao';
 }
 
 async function gerarEEnviarDia(
@@ -992,6 +1001,18 @@ export async function processarComandoTextoWhatsapp(opts: {
     );
   };
 
+  const abrirMenuEvolucaoJanela = async () => {
+    sessoes.set(opts.grupoJid, {
+      etapa: 'menu_evolucao_janela',
+      expiresAt: Date.now() + TTL_MS,
+      servicoId: servico.id,
+      contratoId: servico.contract_id,
+      escolhido: sessao?.escolhido,
+      qualCiclo: 'atual',
+    });
+    await wuzapiService.enviarTexto(opts.grupoJid, menuEvolucaoJanelaTexto());
+  };
+
   const abrirMenuFormato = async (item: ItemMenuServico, dataIso?: string | null, servicosMenu?: ItemMenuServico[]) => {
     sessoes.set(opts.grupoJid, {
       etapa: 'menu_formato',
@@ -1056,12 +1077,18 @@ export async function processarComandoTextoWhatsapp(opts: {
       [
         '🤖 *Sistemma — comandos*',
         '',
-        '*relatorio* — *1* operacional ou *2* saúde',
+        '*relatorio* — *1* operacional, *2* saúde ou *3* evolução (gráficos)',
         '*saude* — PDF de saúde dos dados (coleta)',
         '*dia 16/09* — PDF do dia',
         '*ciclo* — PDF de ciclo',
         '*comparativo* / *peso* — PDF análise de peso',
         '*evolucao* — gráficos (semana, 15 dias, ciclo)',
+        ...(process.env.SALA_TECNICA_URL
+          ? [
+              '*gps* / *rastreio* — PDF da Sala técnica (cobertura GPS)',
+              '*gps 01/10* — GPS de um dia específico',
+            ]
+          : []),
         ...(process.env.MANU_WEBHOOK_URL
           ? [
               '',
@@ -1090,15 +1117,22 @@ export async function processarComandoTextoWhatsapp(opts: {
   }
 
   if (sessao?.etapa === 'menu_tipo') {
-    if (ehPedidoSaude(norm) || resolverEscolhaIndice(norm, 2) === 2) {
+    if (ehPedidoEvolucao(norm) || resolverEscolhaIndice(norm, 3) === 3) {
+      await abrirMenuEvolucaoJanela();
+      return { processado: true };
+    }
+    if (ehPedidoSaude(norm) || resolverEscolhaIndice(norm, 3) === 2) {
       await enviarSaude();
       return { processado: true };
     }
-    if (ehPedidoOperacional(norm) || resolverEscolhaIndice(norm, 2) === 1) {
+    if (ehPedidoOperacional(norm) || resolverEscolhaIndice(norm, 3) === 1) {
       await abrirMenuServicos(null, sessao.dataIso);
       return { processado: true };
     }
-    await wuzapiService.enviarTexto(opts.grupoJid, 'Responda *1* (operacional) ou *2* (saúde).');
+    await wuzapiService.enviarTexto(
+      opts.grupoJid,
+      'Responda *1* (operacional), *2* (saúde) ou *3* (evolução diária).',
+    );
     return { processado: true };
   }
 
@@ -1172,6 +1206,10 @@ export async function processarComandoTextoWhatsapp(opts: {
       await enviarDia(dataNoTexto, null, [item.id]);
       return { processado: true };
     }
+    if (ehTipoColeta(item.tipo) && (ehPedidoFormatoEvolucao(norm) || resolverEscolhaIndice(norm, 3) === 3)) {
+      await abrirMenuEvolucaoJanela();
+      return { processado: true };
+    }
     if (ehPedidoFormatoDiario(norm) || resolverEscolhaIndice(norm, 2) === 1) {
       await enviarDia(sessao.dataIso || item.ultimoDia, null, [item.id]);
       return { processado: true };
@@ -1183,7 +1221,9 @@ export async function processarComandoTextoWhatsapp(opts: {
     }
     await wuzapiService.enviarTexto(
       opts.grupoJid,
-      'Não entendi. Responda *1* (diário), *2* (ciclo completo), uma data (*16/09*) ou *voltar*.',
+      ehTipoColeta(item.tipo)
+        ? 'Não entendi. Responda *1* (diário), *2* (ciclo completo), *3* (evolução), uma data (*16/09*) ou *voltar*.'
+        : 'Não entendi. Responda *1* (diário), *2* (ciclo completo), uma data (*16/09*) ou *voltar*.',
     );
     return { processado: true };
   }
@@ -1195,6 +1235,11 @@ export async function processarComandoTextoWhatsapp(opts: {
 
   if (ehPedidoOperacional(norm)) {
     await abrirMenuServicos(tipoPedido, dataNoTexto);
+    return { processado: true };
+  }
+
+  if (ehPedidoEvolucao(norm)) {
+    await abrirMenuEvolucaoJanela();
     return { processado: true };
   }
 

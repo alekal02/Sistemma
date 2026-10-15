@@ -8,6 +8,12 @@ import {
   removerRoteamentoWhatsapp,
   sincronizarRoteamentoWhatsapp,
 } from '../services/whatsappRoteamentoService';
+import {
+  assinaturaRecebida,
+  segredoRecebidoWebhook,
+  segredoWebhookConfere,
+  webhookHmacDeveRecusar,
+} from '../services/wuzapiWebhookAuth';
 
 export class WuzapiController {
   /**
@@ -16,47 +22,53 @@ export class WuzapiController {
    */
   async webhook(req: Request, res: Response): Promise<void> {
     try {
+      const corpo = Buffer.isBuffer((req as Request & { rawBody?: Buffer }).rawBody)
+        ? (req as Request & { rawBody?: Buffer }).rawBody!
+        : null;
+      const hmacKey = (
+        process.env.WUZAPI_WEBHOOK_HMAC_KEY
+        || process.env.WUZAPI_GLOBAL_HMAC_KEY
+        || ''
+      ).trim();
+      if (webhookHmacDeveRecusar({
+        exigir: process.env.WUZAPI_WEBHOOK_ENFORCE === 'true',
+        segredo: hmacKey,
+        corpo,
+        assinatura: assinaturaRecebida(req.headers as Record<string, unknown>),
+      })) {
+        res.status(401).json({ sucesso: false, erro: 'Webhook não autenticado' });
+        return;
+      }
+
       const secret = wuzapiService.webhookSecret;
       if (secret) {
-        const headerSecret =
-          String(req.headers['x-webhook-secret'] || '') ||
-          String(req.query.secret || '');
-        if (headerSecret !== secret) {
+        const recebido = segredoRecebidoWebhook(
+          req.headers as Record<string, unknown>,
+          req.query as Record<string, unknown>,
+        );
+        if (!segredoWebhookConfere(secret, recebido)) {
           res.status(401).json({ sucesso: false, erro: 'Webhook secret inválido' });
           return;
         }
       }
 
-      // Responde rápido para a WuzAPI não reintentar; processa em seguida.
-      res.status(200).json({ sucesso: true, recebido: true });
-
-      const payload = req.body;
-      setImmediate(async () => {
-        try {
-          const resultado = await whatsappPlanilhaPipeline.processarWebhook(payload);
-          console.log('[WuzapiWebhook]', resultado.processado ? 'OK' : 'skip', resultado.motivo || '', resultado.resultado || '');
-        } catch (err: any) {
-          console.error('[WuzapiWebhook] Erro no pipeline:', err?.message || err);
-          try {
-            let chat = payload?.event?.Info?.Chat;
-            if (!chat && typeof payload?.jsonData === 'string') {
-              try {
-                chat = JSON.parse(payload.jsonData)?.event?.Info?.Chat;
-              } catch { /* ignore */ }
-            }
-            if (chat && String(chat).endsWith('@g.us') && wuzapiService.isConfigured) {
-              await wuzapiService.enviarTexto(
-                String(chat),
-                `❌ Falha ao processar planilha: ${err?.message || 'erro desconhecido'}`,
-              );
-            }
-          } catch { /* ignore */ }
-        }
-      });
+      // Reserva antes do 200. Se o registro falhar, a WuzAPI pode reenviar.
+      const aceite = await whatsappPlanilhaPipeline.aceitarWebhook(req.body);
+      res.status(aceite.status).json(aceite.body);
+      if (aceite.continuar) {
+        setImmediate(() => {
+          aceite.continuar!().catch((err: any) => {
+            console.error('[WuzapiWebhook] Erro no pipeline:', err?.message || err);
+          });
+        });
+      }
     } catch (error: any) {
       console.error('[WuzapiWebhook] Erro:', error?.message || error);
       if (!res.headersSent) {
-        res.status(500).json({ sucesso: false, erro: error?.message || 'Erro no webhook' });
+        res.status(503).json({
+          sucesso: false,
+          erro: 'Falha ao registrar a mensagem. A WuzAPI pode reenviar.',
+        });
       }
     }
   }
