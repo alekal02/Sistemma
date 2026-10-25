@@ -5,10 +5,12 @@ import type { ReactNode } from 'react'
 
 interface AdminRouteProps {
   children: ReactNode
+  /** Hub do gestor (sem contrato aberto), usado na configuração do WhatsApp. */
+  permitirHubGestor?: boolean
 }
 
 /** Rota restrita a administradores */
-export default function AdminRoute({ children }: AdminRouteProps) {
+export default function AdminRoute({ children, permitirHubGestor = false }: AdminRouteProps) {
   const { user, loading, isAdmin } = useAuth()
 
   if (loading) {
@@ -28,7 +30,7 @@ export default function AdminRoute({ children }: AdminRouteProps) {
     return <Navigate to={homePath(user)} replace />
   }
 
-  if (ehGestor(user) && !user.contractId) {
+  if (ehGestor(user) && !user.contractId && !permitirHubGestor) {
     return <Navigate to="/visao-geral" replace />
   }
 

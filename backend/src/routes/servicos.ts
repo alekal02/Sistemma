@@ -37,6 +37,9 @@ router.get('/:id/dados-brutos', authenticate, (req, res) => controller.listarDad
 // GET /api/contracts/:contractId/servicos/:id/dados-dia/:data
 router.get('/:id/dados-dia/:data', authenticate, (req, res) => controller.listarDadosDia(req, res));
 
+// DELETE /api/contracts/:contractId/servicos/:id/dados-dia/:data
+router.delete('/:id/dados-dia/:data', authenticate, (req, res) => controller.excluirDadosDia(req, res));
+
 // GET /api/contracts/:contractId/servicos/:id/rocada/agregacao
 router.get('/:id/rocada/agregacao', authenticate, (req, res) => controller.getRocadaAgregacao(req, res));
 

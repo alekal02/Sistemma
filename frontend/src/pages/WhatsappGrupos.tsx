@@ -3,9 +3,8 @@ import {
   FiCheckCircle, FiAlertTriangle, FiPlus, FiEdit2, FiTrash2,
   FiRefreshCw, FiMessageSquare, FiX, FiWifi, FiWifiOff,
 } from 'react-icons/fi'
-import { Navigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
-import { ehGestor, homePath } from '../utils/homePath'
+import { ehGestor } from '../utils/homePath'
 import { useToast } from '../contexts/ToastContext'
 import wuzapiService, {
   type WhatsappGrupoMapaItem,
@@ -21,6 +20,15 @@ interface ServicoOpcao {
   label: string
   contratoId: string
   nome: string
+  unidadeNome: string
+}
+
+interface RecebimentoItem {
+  em: string
+  grupoJid: string
+  nomeGrupo: string | null
+  tipo: 'relatorio' | 'planilha' | 'ignorado'
+  resumo: string
 }
 
 interface FormGrupo {
@@ -63,6 +71,9 @@ export default function WhatsappGrupos() {
   const [form, setForm] = useState<FormGrupo>(formVazio)
   const [salvando, setSalvando] = useState(false)
   const [excluindoId, setExcluindoId] = useState<string | null>(null)
+  const [contratosOpcoes, setContratosOpcoes] = useState<{ id: string; numeroContrato: string }[]>([])
+  const [unidadeId, setUnidadeId] = useState(contratoAtual)
+  const [recebimentos, setRecebimentos] = useState<RecebimentoItem[]>([])
   const [gruposWa, setGruposWa] = useState<WhatsappGrupoWhatsAppItem[]>([])
   const [carregandoGruposWa, setCarregandoGruposWa] = useState(false)
   const [filtroGrupo, setFiltroGrupo] = useState('')
@@ -93,6 +104,7 @@ export default function WhatsappGrupos() {
       const contratosAlvo = contratoAtual
         ? contratos.filter((c) => c.id === contratoAtual)
         : contratos
+      setContratosOpcoes(contratosAlvo.map((c) => ({ id: c.id, numeroContrato: c.numeroContrato })))
 
       const opcoes: ServicoOpcao[] = []
       await Promise.all(
@@ -104,14 +116,17 @@ export default function WhatsappGrupos() {
                 id: s.id,
                 contratoId: c.id,
                 nome: s.nome,
-                label: s.nome,
+                unidadeNome: c.numeroContrato,
+                label: contratoAtual ? s.nome : `${c.numeroContrato} · ${s.nome}`,
               })
             }
           } catch { /* ignora */ }
         }),
       )
       const servicoIdsUnidade = new Set(opcoes.map((s) => s.id))
-      setGrupos(lista.filter((g) => servicoIdsUnidade.has(g.servicoId)))
+      setGrupos(contratoAtual
+        ? lista.filter((g) => servicoIdsUnidade.has(g.servicoId))
+        : lista)
       opcoes.sort((a, b) => a.label.localeCompare(b.label, 'pt-BR'))
       setServicos(opcoes)
     } catch (error: unknown) {
@@ -123,6 +138,22 @@ export default function WhatsappGrupos() {
   }, [adicionarToast, contratoAtual])
 
   useEffect(() => { carregar() }, [carregar])
+
+  useEffect(() => {
+    let vivo = true
+    const tick = async () => {
+      try {
+        const lista = await wuzapiService.listarRecebimentos()
+        if (vivo) setRecebimentos(lista)
+      } catch { /* a verificação não deve derrubar a página */ }
+    }
+    void tick()
+    const id = window.setInterval(() => { void tick() }, 8000)
+    return () => {
+      vivo = false
+      window.clearInterval(id)
+    }
+  }, [])
 
   const logado = !!(status?.logado ?? status?.sessao?.loggedIn)
   useEffect(() => {
@@ -216,6 +247,7 @@ export default function WhatsappGrupos() {
 
   const abrirNovo = async () => {
     setEditandoId(null)
+    setUnidadeId(contratoAtual)
     setForm(formVazio)
     setFiltroGrupo('')
     setModoManual(false)
@@ -223,6 +255,8 @@ export default function WhatsappGrupos() {
     await carregarGruposWhatsApp()
   }
   const abrirEditar = (g: WhatsappGrupoMapaItem) => {
+    const servico = servicos.find((s) => s.id === g.servicoId)
+    setUnidadeId(servico?.contratoId || contratoAtual)
     setEditandoId(g.id)
     setForm({
       grupoJid: g.grupoJid,
@@ -315,18 +349,20 @@ export default function WhatsappGrupos() {
   const aguardandoQr = !!(status?.configurado && conectado && !logado && !wuzapiOffline)
   const qrCode = status?.qrCode || null
 
-  if (!contratoAtual) {
-    return <Navigate to={ehGestor(user) ? '/visao-geral' : homePath(user)} replace />
-  }
+  const servicosDaUnidade = unidadeId
+    ? servicos.filter((s) => s.contratoId === unidadeId)
+    : servicos
+  const noHubGestor = ehGestor(user) && !contratoAtual
 
   return (
     <div className="wa-grupos-container">
       <div className="wa-grupos-top">
         <div>
-          <h2>WhatsApp desta unidade</h2>
+          <h2>{noHubGestor ? 'WhatsApp do gestor' : 'WhatsApp desta unidade'}</h2>
           <p className="wa-subtitle">
-            Conecte o WhatsApp e mapeie o grupo a um serviço deste contrato.
-            A planilha entra só nesta unidade.
+            Escolha a unidade e o grupo. O número só atende esses grupos:
+            relatórios (e as variações, como Relatório diário ou de ciclo) e planilhas.
+            Conversas privadas e os demais grupos são descartados, sem leitura.
           </p>
         </div>
         <div className="wa-grupos-actions">
@@ -421,6 +457,29 @@ export default function WhatsappGrupos() {
           <p className="wa-qr-hint">O código atualiza sozinho a cada poucos segundos. Não feche esta página.</p>
         </div>
       )}
+
+      <div className="wa-recebimentos">
+        <div className="wa-picker-hd">
+          <strong>Verificação de recebimento</strong>
+          <span>Somente grupos selecionados</span>
+        </div>
+        {recebimentos.length === 0 ? (
+          <p className="wa-picker-empty">Nenhum relatório ou planilha recebido nesta sessão.</p>
+        ) : (
+          <ul className="wa-recebimentos-lista">
+            {recebimentos.map((r) => (
+              <li key={`${r.em}-${r.grupoJid}-${r.resumo}`}>
+                <span className={`wa-pill ${r.tipo === 'ignorado' ? 'off' : 'on'}`}>
+                  {r.tipo === 'planilha' ? 'Planilha' : r.tipo === 'relatorio' ? 'Relatório' : 'Ignorado'}
+                </span>
+                <span>{r.nomeGrupo || r.grupoJid}</span>
+                <span className="wa-recebimento-resumo">{r.resumo}</span>
+                <time>{new Date(r.em).toLocaleString('pt-BR')}</time>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
 
       {sessaoOk && (
         <div className="wa-ok-banner">
@@ -560,10 +619,27 @@ export default function WhatsappGrupos() {
                 </>
               )}
 
+              <label>Unidade *
+                <select
+                  value={unidadeId}
+                  onChange={(e) => {
+                    const id = e.target.value
+                    setUnidadeId(id)
+                    setForm((f) => ({ ...f, servicoId: '' }))
+                  }}
+                  required
+                  disabled={!!contratoAtual}
+                >
+                  <option value="">Selecione a unidade…</option>
+                  {contratosOpcoes.map((c) => (
+                    <option key={c.id} value={c.id}>{c.numeroContrato}</option>
+                  ))}
+                </select>
+              </label>
               <label>Serviço *
                 <select value={form.servicoId} onChange={(e) => setForm((f) => ({ ...f, servicoId: e.target.value }))} required>
-                  <option value="">Selecione…</option>
-                  {servicos.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+                  <option value="">{unidadeId ? 'Selecione…' : 'Escolha a unidade primeiro'}</option>
+                  {servicosDaUnidade.map((s) => <option key={s.id} value={s.id}>{s.nome}</option>)}
                 </select>
               </label>
               <label>Estratégia de importação

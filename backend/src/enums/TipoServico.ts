@@ -21,6 +21,10 @@ export enum TipoServico {
   REMOCAO = 'remocao',
   /** Capina / limpeza manual de terrenos e vias */
   CAPINA = 'capina',
+  /** Coleta seletiva (toneladas), layout CONSOLIDADO */
+  COLETA_SELETIVA = 'coleta_seletiva',
+  /** Viagens ao aterro, layout CONSOLIDADO */
+  ATERRO = 'aterro',
   /** Tipo genérico para serviços não mapeados */
   GERAL = 'geral',
 }
@@ -78,6 +82,18 @@ export const TIPOS_SERVICO_META: Record<string, { label: string; icone: string; 
     icone: '🌱',
     descricao: 'Capina manual ou mecanizada de terrenos, vias e logradouros públicos — medido por metro linear',
     colunasEsperadas: ['DATA', 'BAIRRO', 'Equipe', 'Funcionario', 'Metro Linear'],
+  },
+  [TipoServico.COLETA_SELETIVA]: {
+    label: '♻️ Coleta seletiva',
+    icone: '♻️',
+    descricao: 'Coleta seletiva medida em toneladas, a partir da planilha de produção',
+    colunasEsperadas: ['DATA', 'LOCAL', 'QUANTIDADE', 'UNIDADE', 'TIPO DE EQUIPAMENTO'],
+  },
+  [TipoServico.ATERRO]: {
+    label: '🏭 Aterro',
+    icone: '🏭',
+    descricao: 'Viagens destinadas ao aterro, a partir da planilha de produção',
+    colunasEsperadas: ['DATA', 'LOCAL', 'TIPO DE EQUIPAMENTO', 'QUANTIDADE', 'OBSERVAÇÃO'],
   },
   [TipoServico.GERAL]: {
     label: '📋 Geral',

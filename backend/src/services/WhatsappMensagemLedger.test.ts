@@ -4,8 +4,11 @@ import {
   _lerLedgerMemoriaParaTeste,
   _resetLedgerMemoriaParaTeste,
   decidirReservaMensagem,
+  decidirRetomadaAposQueda,
+  listarMensagensRecuperaveis,
   marcarFalhaMensagemWhatsapp,
   marcarSucessoMensagemWhatsapp,
+  MOTIVO_INTERROMPIDO,
   reservarMensagemWhatsapp,
   textoFalhaImportacao,
   textoGrupoNaoConfigurado,
@@ -27,6 +30,10 @@ describe('ledger do chatbot — decisão de reserva', () => {
       decidirReservaMensagem({ estado: 'processando', atualizadoEm: agora - 1000, tentativas: 1, motivo: null }, agora).acao,
       'ignorar',
     );
+    assert.equal(
+      decidirReservaMensagem({ estado: 'processando', atualizadoEm: agora - 5 * 60 * 1000, tentativas: 1, motivo: null }, agora).acao,
+      'ignorar',
+    );
   });
 
   it('reprocessa falha, processamento velho e processamento órfão no reinício', () => {
@@ -37,7 +44,7 @@ describe('ledger do chatbot — decisão de reserva', () => {
     assert.equal(
       decidirReservaMensagem({
         estado: 'processando',
-        atualizadoEm: agora - 3 * 60 * 1000,
+        atualizadoEm: agora - 16 * 60 * 1000,
         tentativas: 1,
         motivo: null,
       }, agora).acao,
@@ -94,5 +101,20 @@ describe('ledger do chatbot — memória com concorrência', () => {
   it('avisa grupo não configurado e falha de importação sem apagar o detalhe', () => {
     assert.match(textoGrupoNaoConfigurado(), /não está configurado/);
     assert.match(textoFalhaImportacao('ciclo fechado'), /ciclo fechado/);
+  });
+
+  it('depois da queda retoma uma vez, abandona na segunda e não repete no pull seguinte', async () => {
+    assert.equal(decidirRetomadaAposQueda(1, null), 'retomar');
+    assert.equal(decidirRetomadaAposQueda(2, null), 'abandonar');
+    assert.equal(decidirRetomadaAposQueda(4, MOTIVO_INTERROMPIDO), 'ignorar');
+
+    _resetLedgerMemoriaParaTeste();
+    await reservarMensagemWhatsapp({ messageId: 'QUEDA', grupoJid: '1@g.us', payload: { ok: true } });
+    const primeiraLista = await listarMensagensRecuperaveis();
+    assert.equal(primeiraLista.some((item) => item.messageId === 'QUEDA'), true);
+
+    await marcarFalhaMensagemWhatsapp('QUEDA', 'servidor reiniciou', MOTIVO_INTERROMPIDO);
+    const depoisDoPull = await listarMensagensRecuperaveis();
+    assert.equal(depoisDoPull.some((item) => item.messageId === 'QUEDA'), false);
   });
 });

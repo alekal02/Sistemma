@@ -9,6 +9,10 @@ import {
   sincronizarRoteamentoWhatsapp,
 } from '../services/whatsappRoteamentoService';
 import {
+  invalidarGruposAutorizados,
+  listarRecebimentosWhatsapp,
+} from '../services/whatsappEscopoGrupo';
+import {
   assinaturaRecebida,
   segredoRecebidoWebhook,
   segredoWebhookConfere,
@@ -22,9 +26,8 @@ export class WuzapiController {
    */
   async webhook(req: Request, res: Response): Promise<void> {
     try {
-      const corpo = Buffer.isBuffer((req as Request & { rawBody?: Buffer }).rawBody)
-        ? (req as Request & { rawBody?: Buffer }).rawBody!
-        : null;
+      const pedido = req as Request & { rawBody?: Buffer; hmacSha256?: string };
+      const corpo = Buffer.isBuffer(pedido.rawBody) ? pedido.rawBody : null;
       const hmacKey = (
         process.env.WUZAPI_WEBHOOK_HMAC_KEY
         || process.env.WUZAPI_GLOBAL_HMAC_KEY
@@ -35,6 +38,7 @@ export class WuzapiController {
         segredo: hmacKey,
         corpo,
         assinatura: assinaturaRecebida(req.headers as Record<string, unknown>),
+        hmacCalculado: pedido.hmacSha256,
       })) {
         res.status(401).json({ sucesso: false, erro: 'Webhook não autenticado' });
         return;
@@ -263,6 +267,11 @@ export class WuzapiController {
     }
   }
 
+  /** GET /api/wuzapi/recebimentos — só grupos autorizados, sem conteúdo de outras conversas */
+  async recebimentos(_req: Request, res: Response): Promise<void> {
+    res.json({ recebimentos: listarRecebimentosWhatsapp() });
+  }
+
   /** GET /api/wuzapi/grupos */
   async listarGrupos(_req: Request, res: Response): Promise<void> {
     try {
@@ -323,6 +332,7 @@ export class WuzapiController {
         ativo: ativo !== false,
       });
       const salvo = await repo.save(criado);
+      invalidarGruposAutorizados();
       await sincronizarRoteamentoWhatsapp(salvo, undefined, servico.contract_id);
       res.status(201).json(salvo);
     } catch (error: any) {
@@ -360,6 +370,7 @@ export class WuzapiController {
       }
 
       const salvo = await repo.save(item);
+      invalidarGruposAutorizados();
       const servicoAtual = await AppDataSource.getRepository(Servico).findOne({
         where: { id: salvo.servicoId },
       });
@@ -381,6 +392,7 @@ export class WuzapiController {
       }
       await removerRoteamentoWhatsapp(item.grupoJid);
       await repo.remove(item);
+      invalidarGruposAutorizados();
       res.json({ ok: true });
     } catch (error: any) {
       res.status(500).json({ error: error?.message || 'Erro ao excluir' });

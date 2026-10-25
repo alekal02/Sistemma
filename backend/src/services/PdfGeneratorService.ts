@@ -101,6 +101,8 @@ async function getBrowser(): Promise<Browser> {
           '--disable-extensions',
           '--disable-background-networking',
           '--font-render-hinting=none',
+          '--renderer-process-limit=1',
+          '--disable-features=Translate,BackForwardCache',
         ],
       });
     })()
@@ -176,9 +178,32 @@ export async function htmlToPdf(html: string, opts?: PdfGenerateOptions): Promis
       evictarPdfCache();
     }
     return buffer;
+  } catch (err) {
+    browserInstance = null;
+    await browser.close().catch(() => undefined);
+    throw err;
   } finally {
     await page.close().catch(() => undefined);
+    if (deveFecharNavegadorAposPdf(process.env.NODE_ENV, process.env.PDF_MANTER_NAVEGADOR)) {
+      await liberarNavegadorPdf();
+    }
   }
+}
+
+/** Fecha o Chrome do PDF e devolve memória ao processo. */
+export async function liberarNavegadorPdf(): Promise<void> {
+  const browser = browserInstance;
+  browserInstance = null;
+  if (browser) {
+    await browser.close().catch(() => undefined);
+  }
+  const gc = (global as { gc?: () => void }).gc;
+  if (typeof gc === 'function') gc();
+}
+
+/** Em produção o Chrome do PDF não fica residente. É ele que estourava a memória no relatório. */
+export function deveFecharNavegadorAposPdf(nodeEnv?: string, manterNavegador?: string): boolean {
+  return manterNavegador !== 'true' && nodeEnv === 'production';
 }
 
 export function invalidarCachePdfDashboard(): void {

@@ -12,6 +12,44 @@ import { migrateWhatsappPdfSobDemanda } from './database/migrate_whatsapp_pdf_so
 import { sincronizarKpisUniversaisBiblioteca } from './database/sincronizarKpisUniversaisBiblioteca';
 import { iniciarAgendamentoWarmupExecutivo } from './services/executivoCacheWarmupService';
 import { recuperarMensagensWhatsappPendentes } from './services/WhatsappPlanilhaPipelineService';
+import wuzapiService from './services/WuzapiService';
+import { iniciarVigiaSessaoWhatsapp } from './services/WhatsappSessaoVigia';
+
+/** A sessão já conectada guarda a URL antiga. Sem isso o chatbot fica mudo depois do deploy. */
+async function garantirWebhookWuzapi(): Promise<void> {
+  if (!wuzapiService.isConfigured) return;
+  try {
+    await wuzapiService.configurarWebhook(
+      wuzapiService.webhookUrl,
+      ['Message', 'Connected', 'QR'],
+    );
+    console.log(`[Wuzapi] Webhook da sessão: ${wuzapiService.webhookUrl}`);
+  } catch (err) {
+    console.warn('[Wuzapi] Não foi possível renovar o webhook:', (err as Error)?.message || err);
+  }
+}
+
+/** Só depois do servidor responder. Retomar planilha no boot derrubava o processo antes do healthcheck. */
+function agendarRetomadaWhatsapp(): void {
+  const espera = parseInt(process.env.WHATSAPP_RETOMADA_MS || '20000', 10);
+  setTimeout(() => {
+    void (async () => {
+      try {
+        if (isMultiTenant()) {
+          const { contratosComBanco } = await import('./services/tenantFanout');
+          const bancos = await contratosComBanco();
+          for (const tenant of bancos) {
+            await runWithTenant(tenant.databaseName, () => recuperarMensagensWhatsappPendentes());
+          }
+        } else {
+          await recuperarMensagensWhatsappPendentes();
+        }
+      } catch (err) {
+        console.error('[WhatsappLedger] Retomada adiada falhou:', (err as Error)?.message || err);
+      }
+    })();
+  }, espera);
+}
 
 export async function prepararBancoAtivo(): Promise<void> {
   const skipStartup = process.env.SKIP_STARTUP_SEED === 'true';
@@ -105,7 +143,6 @@ export async function iniciarAplicacao(app: Express, port: number): Promise<void
         try {
           await runWithTenant(tenant.databaseName, async () => {
             await prepararBancoAtivo();
-            await recuperarMensagensWhatsappPendentes();
           });
           console.log(`   ✔ ${tenant.numeroContrato} (${tenant.databaseName})`);
         } catch (err) {
@@ -114,12 +151,14 @@ export async function iniciarAplicacao(app: Express, port: number): Promise<void
       }
     } else {
       await prepararBancoAtivo();
-      await recuperarMensagensWhatsappPendentes();
     }
 
     app.listen(port, () => {
       console.log(`✅ Servidor rodando em http://localhost:${port}`);
       iniciarAgendamentoWarmupExecutivo();
+      void garantirWebhookWuzapi();
+      iniciarVigiaSessaoWhatsapp();
+      agendarRetomadaWhatsapp();
     });
   } catch (error) {
     console.error('❌ Erro ao conectar ao banco de dados:', error);

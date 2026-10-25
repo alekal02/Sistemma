@@ -8,6 +8,7 @@ import { useToast } from '../contexts/ToastContext';
 import { useBreadcrumbs } from '../contexts/BreadcrumbContext';
 import { useKpiCalculator } from '../hooks/useKpiCalculator';
 import servicoService from '../services/servicoService';
+import axios from 'axios';
 import contractService from '../services/contractService';
 import { isRequestAborted } from '../services/abortableRequest';
 import pdfService from '../services/pdfService';
@@ -104,6 +105,7 @@ export default function ServicoDiaDetalhe() {
   const [carregandoRegistros, setCarregandoRegistros] = useState(true);
   const [mostrarRegistros, setMostrarRegistros] = useState(false);
   const [exportandoPdf, setExportandoPdf] = useState(false);
+  const [apagandoRegistros, setApagandoRegistros] = useState(false);
   const [verificacaoViagens, setVerificacaoViagens] = useState<VerificacaoViagensData | null>(null);
   const [diaInicioCiclo, setDiaInicioCiclo] = useState(1);
   const ehRocada = tipoServico === 'rocadeira';
@@ -122,6 +124,7 @@ export default function ServicoDiaDetalhe() {
   const {
     kpiValores,
     loading: loadingKpis,
+    reload: recarregarKpis,
   } = useKpiCalculator({
     contractId: contractId || '',
     servicoId: servicoId || '',
@@ -310,6 +313,37 @@ export default function ServicoDiaDetalhe() {
       setCarregandoRegistros(false);
     }
   }, [contractId, servicoId, dataIso, dataValida, incluirTodos, adicionarToast, tipoServico, agregacaoUnidadeDia]);
+
+  const apagarRegistrosDoDia = useCallback(async () => {
+    if (!contractId || !servicoId || !dataValida || apagandoRegistros) return;
+    const qtd = totalRegistrosDia || registros.length;
+    const ok = window.confirm(
+      `Apagar os ${qtd.toLocaleString('pt-BR')} registros de ${formatarIsoParaBr(dataIso)}?\n\n`
+      + 'O dia fica vazio. Depois suba a planilha corrigida para gravar os dados certos. Essa ação não desfaz.',
+    );
+    if (!ok) return;
+    setApagandoRegistros(true);
+    try {
+      const resultado = await servicoService.apagarRegistrosDia(contractId, servicoId, dataIso);
+      adicionarToast(
+        resultado.mensagem || `${resultado.registrosRemovidos} registro(s) apagado(s).`,
+        'success',
+      );
+      await carregarMeta();
+      await recarregarKpis();
+    } catch (err) {
+      const corpo = axios.isAxiosError(err) ? err.response?.data : null;
+      const msg = corpo && typeof corpo === 'object' && 'error' in corpo && typeof corpo.error === 'string'
+        ? corpo.error
+        : '';
+      adicionarToast(msg || 'Não foi possível apagar os registros do dia', 'error');
+    } finally {
+      setApagandoRegistros(false);
+    }
+  }, [
+    contractId, servicoId, dataValida, dataIso, apagandoRegistros,
+    totalRegistrosDia, registros.length, adicionarToast, carregarMeta, recarregarKpis,
+  ]);
 
   useEffect(() => {
     carregarMeta();
@@ -622,6 +656,8 @@ export default function ServicoDiaDetalhe() {
           }}
           kpisOperacao={kpisOperacao}
           loadingKpis={loadingKpis}
+          apagandoRegistros={apagandoRegistros}
+          onApagarRegistros={() => { void apagarRegistrosDoDia(); }}
         />
       ) : (
         <>

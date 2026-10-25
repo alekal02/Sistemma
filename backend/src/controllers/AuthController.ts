@@ -168,6 +168,41 @@ class AuthController {
   }
 
   /**
+   * POST /api/auth/acesso-direto
+   * Abre a área do gestor sem e-mail nem senha.
+   * Desliga com ACESSO_LIVRE=false.
+   */
+  async acessoDireto(_req: Request, res: Response): Promise<void> {
+    try {
+      if (process.env.ACESSO_LIVRE === 'false') {
+        res.status(403).json({ error: 'Acesso direto está desligado.' });
+        return;
+      }
+
+      const ativos = await this.repository.find({ where: { ativo: true } });
+      const gestor = ativos.find((u) => u.role === 'superadmin')
+        || ativos.find((u) => u.role === 'admin' && !u.contractId);
+      if (!gestor) {
+        res.status(503).json({
+          error: 'Nenhum gestor ativo. É preciso um administrador sem contrato fixo.',
+        });
+        return;
+      }
+
+      const payload = payloadUsuario(gestor, null);
+      res.json({
+        message: 'Acesso do gestor',
+        token: gerarToken(payload),
+        refreshToken: gerarRefreshToken(payload),
+        user: userPublico(gestor, { contractId: null, tenantDb: null }),
+      });
+    } catch (error) {
+      console.error('Erro no acesso direto:', error);
+      res.status(500).json({ error: 'Erro interno ao abrir o gestor' });
+    }
+  }
+
+  /**
    * POST /api/auth/refresh
    * Renova access + refresh. Aceita refresh token (body ou Bearer) ou
    * access token expirado há menos de 7 dias (TV/kiosk).

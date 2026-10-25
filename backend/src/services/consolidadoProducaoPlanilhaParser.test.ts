@@ -14,6 +14,9 @@ import {
   gerarHtmlRelatorioCicloServicoProducao,
 } from './relatorioDia/gerarHtmlRelatorioDiaConsolidado';
 import { detectarPlanilhaServicosUnificados } from './servicosUnificadosPlanilhaParser';
+import { converterKpisParaConfig } from './TipoServicoTemplateService';
+
+const ARQUIVO_UNAI = 'C:/Users/Sistemma/Downloads/PRODUÇÃO - UNAÍ - OUT. 2026.xlsx';
 
 const ARQUIVO_APARECIDA =
   'C:/Users/Sistemma/Downloads/PRODUÇÃO - APARECIDA - SET. 2026 (2).xlsm';
@@ -38,6 +41,8 @@ describe('consolidadoProducaoPlanilhaParser', () => {
     assert.equal(mapearTipoServicoConsolidado('REMOÇÃO DE ENTULHO'), 'remocao');
     assert.equal(mapearTipoServicoConsolidado('LIMPEZA DE FEIRAS'), 'geral');
     assert.equal(mapearTipoServicoConsolidado('CAPINA'), 'capina');
+    assert.equal(mapearTipoServicoConsolidado('ATERRO'), 'aterro');
+    assert.equal(mapearTipoServicoConsolidado('COLETA SELETIVA'), 'coleta_seletiva');
     assert.equal(mapearTipoServicoConsolidado('XYZ'), null);
   });
 
@@ -173,5 +178,21 @@ describe('consolidadoProducaoPlanilhaParser', () => {
     assert.match(htmlDia, /Poda — operação do dia/);
     assert.match(htmlCiclo, /Poda — ciclo/);
     assert.doesNotMatch(htmlDia, /todos os serviços/);
+  });
+
+  it('Unaí: Aterro e Coleta Seletiva viram serviço com KPI, sem cair no tipo genérico', function () {
+    if (!fs.existsSync(ARQUIVO_UNAI)) return;
+    const buf = fs.readFileSync(ARQUIVO_UNAI);
+    const r = parsearPlanilhaConsolidadoProducao(buf);
+    const porAba = Object.fromEntries(r.porAba.map((p) => [p.chaveServico, p]));
+    assert.ok((porAba.aterro?.registros || 0) > 0);
+    assert.ok((porAba.coleta_seletiva?.registros || 0) > 0);
+    assert.ok((porAba.capina?.registros || 0) > 0);
+    assert.ok((porAba.poda?.registros || 0) > 0);
+    assert.equal(porAba.aterro?.tipoSistema, 'aterro');
+    assert.equal(porAba.coleta_seletiva?.tipoSistema, 'coleta_seletiva');
+    assert.ok(converterKpisParaConfig('aterro').length >= 2);
+    assert.ok(converterKpisParaConfig('coleta_seletiva').some((k) => k.nome === 'Toneladas'));
+    assert.equal(r.porAba.some((p) => p.tipoSistema === 'geral'), false);
   });
 });

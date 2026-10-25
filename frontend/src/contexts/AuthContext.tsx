@@ -21,6 +21,10 @@ interface AuthContextType {
   token: string | null
   /** Se está carregando o auto-login */
   loading: boolean
+  /** Falha ao abrir o gestor sem senha */
+  erroAcesso: string | null
+  /** Abre de novo a sessão do gestor */
+  entrarDireto: () => Promise<void>
   /** Fazer login com email + senha */
   login: (email: string, senha: string) => Promise<UserData>
   /** Super-admin entra no banco de um contrato */
@@ -61,6 +65,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserData | null>(null)
   const [token, setToken] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [erroAcesso, setErroAcesso] = useState<string | null>(null)
 
   const limparSessao = () => {
     limparSessaoLocal()
@@ -68,12 +73,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null)
   }
 
+  const entrarDireto = async () => {
+    const response = await api.post<AuthResponse>('/auth/acesso-direto')
+    const { token: newToken, refreshToken, user: userData } = response.data
+    gravarSessao(newToken, userData, refreshToken)
+    setToken(newToken)
+    setUser(userData)
+    setErroAcesso(null)
+  }
+
   /* ── Restaura sessão e valida token no backend ── */
   useEffect(() => {
     const storedToken = localStorage.getItem(STORAGE_TOKEN)
       || localStorage.getItem('@abastecimento:token')
     if (!storedToken) {
-      setLoading(false)
+      void entrarDireto()
+        .catch((err) => {
+          const msg = axios.isAxiosError(err)
+            ? (err.response?.data as { error?: string } | undefined)?.error
+            : null
+          setErroAcesso(msg || 'Não foi possível abrir o gestor.')
+        })
+        .finally(() => setLoading(false))
       return
     }
 
@@ -87,6 +108,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } catch (err) {
         if (axios.isAxiosError(err) && err.response?.status === 401) {
           limparSessao()
+          try {
+            await entrarDireto()
+          } catch {
+            setErroAcesso('A sessão expirou e não foi possível reabrir o gestor.')
+          }
           return
         }
         // Rede/backend fora: mantém a sessão da TV até o logout manual
@@ -159,7 +185,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider value={{
-      user, token, loading, login, entrarContrato, sairContrato, logout, isAdmin, isSuperadmin,
+      user, token, loading, erroAcesso, entrarDireto, login, entrarContrato, sairContrato, logout, isAdmin, isSuperadmin,
     }}>
       {children}
     </AuthContext.Provider>

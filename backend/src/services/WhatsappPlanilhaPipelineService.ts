@@ -1,3 +1,6 @@
+import { diretorioInboxWhatsapp } from './webhookCorpoStream';
+import fs from 'fs';
+import path from 'path';
 import AppDataSource, {
   getCurrentTenantDb,
   isMultiTenant,
@@ -18,7 +21,7 @@ import { obterServicoPorTipoContrato } from './servicosPadraoContratoService';
 import PlanilhaService from './PlanilhaService';
 import { invalidarCacheSaudeContratos } from '../controllers/ContractController';
 import { marcarOrigemPlanilhaUpload } from './planilhaOriginalStorage';
-import { htmlToPdf } from './PdfGeneratorService';
+import { htmlToPdf, liberarNavegadorPdf } from './PdfGeneratorService';
 import { gerarHtmlSaudeDadosServer } from './PdfSaudeDadosHtml';
 import { gerarHtmlRelatorioDiaRocadaServer } from './PdfRelatorioDiaHtml';
 import { analisarViagensPlanilha } from './analisarViagensPlanilhaService';
@@ -36,9 +39,9 @@ import wuzapiService from './WuzapiService';
 import {
   extrairTextoMensagem,
   processarComandoTextoWhatsapp,
+  sessaoComandoAtiva,
 } from './WhatsappComandoRelatorioService';
-import { encaminharComandoManu } from './ManuChatbotForwardService';
-import { processarComandoGpsWhatsapp } from './SalaTecnicaChatbotService';
+import { textoMereceProcessamento } from './WhatsappComandoRelatorioTexto';
 import {
   analisarConferenciaPlanilhaVsSistema,
   textoAgenteWhatsapp,
@@ -46,13 +49,20 @@ import {
 } from './agenteConferenciaUploadService';
 import {
   codigoFalhaMensagem,
+  decidirRetomadaAposQueda,
   listarMensagensRecuperaveis,
   marcarFalhaMensagemWhatsapp,
   marcarSucessoMensagemWhatsapp,
+  MOTIVO_INTERROMPIDO,
   reservarMensagemWhatsapp,
   textoFalhaImportacao,
   textoGrupoNaoConfigurado,
 } from './WhatsappMensagemLedger';
+import { liberarTrabalhoPesado, ocuparTrabalhoPesado } from './trabalhoPesado';
+import {
+  decidirEscopoDaMensagem,
+  registrarRecebimentoWhatsapp,
+} from './whatsappEscopoGrupo';
 
 const EXT_PLANILHA = /\.(xlsx|xls|xlsm)$/i;
 const MIME_PLANILHA = /spreadsheet|excel|ms-excel|officedocument\.spreadsheetml|octet-stream/i;
@@ -88,6 +98,8 @@ export interface WuzapiWebhookPayload {
     };
   };
   base64?: string;
+  /** Planilha grande gravada em disco para não estourar a memória nem o banco. */
+  base64Arquivo?: string;
   mimeType?: string;
   fileName?: string;
   userID?: string;
@@ -108,6 +120,7 @@ export function normalizarPayloadWebhook(body: unknown): WuzapiWebhookPayload {
         userID: raw.userID || parsed.userID,
         instanceName: raw.instanceName || parsed.instanceName,
         base64: raw.base64 || parsed.base64,
+        base64Arquivo: raw.base64Arquivo || parsed.base64Arquivo,
         mimeType: raw.mimeType || parsed.mimeType,
         fileName: raw.fileName || parsed.fileName,
       };
@@ -131,6 +144,96 @@ function normalizarGrupoJid(chat: string): string {
   if (!raw) return '';
   if (raw.includes('@')) return raw;
   return `${raw}@g.us`;
+}
+
+const BASE64_DISCO_A_PARTIR = 512 * 1024;
+
+function pastaInboxWhatsapp(): string {
+  return diretorioInboxWhatsapp();
+}
+
+function nomeArquivoInbox(messageId: string): string {
+  const seguro = messageId.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 80);
+  return `${seguro || 'msg'}.b64`;
+}
+
+function arquivoInboxPermitido(arquivo: string): string | null {
+  const dir = path.resolve(pastaInboxWhatsapp());
+  const alvo = path.resolve(arquivo);
+  if (alvo !== dir && !alvo.startsWith(dir + path.sep)) return null;
+  return alvo;
+}
+
+/** Recusa caminho fora da pasta da inbox (webhook não pode ler arquivo arbitrário). */
+export function caminhoInboxPermitido(arquivo: string): string | null {
+  return arquivoInboxPermitido(arquivo);
+}
+
+/**
+ * Tira o base64 grande da memória e do JSON gravado no Postgres.
+ * Na máquina de destino o heap é 768 MB: duas planilhas no banco reiniciavam o backend no meio do envio.
+ */
+export async function prepararPayloadPlanilhaWhatsapp(
+  payload: WuzapiWebhookPayload,
+  messageId: string,
+): Promise<WuzapiWebhookPayload> {
+  const base64 = payload.base64;
+  if (typeof base64 !== 'string' || base64.length < BASE64_DISCO_A_PARTIR) return payload;
+  const dir = pastaInboxWhatsapp();
+  const arquivo = path.join(dir, nomeArquivoInbox(messageId));
+  let gravou = false;
+  try {
+    await fs.promises.mkdir(dir, { recursive: true });
+    try {
+      const handle = await fs.promises.open(arquivo, 'wx');
+      await handle.writeFile(base64);
+      await handle.close();
+      gravou = true;
+    } catch (err: any) {
+      if (err?.code !== 'EEXIST') throw err;
+      gravou = true;
+    }
+  } catch (err: any) {
+    console.warn('[WhatsappPipeline] Não foi possível gravar a planilha em disco:', err?.message || err);
+  }
+  const copia: WuzapiWebhookPayload = { ...payload };
+  delete copia.base64;
+  if (gravou) {
+    copia.base64Arquivo = arquivo;
+    return copia;
+  }
+  Object.defineProperty(copia, 'base64', { value: base64, enumerable: false });
+  return copia;
+}
+
+async function lerBase64Arquivo(arquivo: string): Promise<string | null> {
+  const permitido = arquivoInboxPermitido(arquivo);
+  if (!permitido) return null;
+  try {
+    return await fs.promises.readFile(permitido, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+async function apagarBase64Arquivo(payload: WuzapiWebhookPayload): Promise<void> {
+  const arquivo = payload.base64Arquivo;
+  if (!arquivo) return;
+  const permitido = arquivoInboxPermitido(arquivo);
+  if (!permitido) return;
+  try {
+    await fs.promises.unlink(permitido);
+  } catch {
+    /* já removido */
+  }
+}
+
+let filaProcessamento: Promise<unknown> = Promise.resolve();
+
+function enfileirarProcessamento<T>(fn: () => Promise<T>): Promise<T> {
+  const run = filaProcessamento.then(fn, fn);
+  filaProcessamento = run.then(() => undefined, () => undefined);
+  return run;
 }
 
 async function avisarGrupoWhatsapp(grupoJid: string, texto: string): Promise<void> {
@@ -185,6 +288,14 @@ function isPlanilha(fileName: string, mimetype: string): boolean {
 async function obterBufferPlanilha(payload: WuzapiWebhookPayload, doc: Record<string, any>): Promise<{ buffer: Buffer; nomeArquivo: string }> {
   const { fileName } = extrairDocumento(payload);
   const nome = fileName || `planilha_${Date.now()}.xlsx`;
+
+  if (payload.base64Arquivo) {
+    const doDisco = await lerBase64Arquivo(payload.base64Arquivo);
+    if (doDisco) {
+      const raw = doDisco.includes(',') ? doDisco.split(',').pop()! : doDisco;
+      return { buffer: Buffer.from(raw, 'base64'), nomeArquivo: nome };
+    }
+  }
 
   if (payload.base64) {
     const raw = payload.base64.includes(',')
@@ -481,21 +592,49 @@ export class WhatsappPlanilhaPipelineService {
     const chat = String(info?.Chat || '');
     const isGroup = info?.IsGroup === true || chat.endsWith('@g.us');
     if (!info || !isGroup) {
-      return { status: 200, body: { sucesso: true, recebido: true }, continuar: null };
+      return {
+        status: 200,
+        body: { sucesso: true, recebido: true, ignorado: 'conversa_privada' },
+        continuar: null,
+      };
     }
 
     const grupoJid = normalizarGrupoJid(chat);
+    const escopo = await decidirEscopoDaMensagem({ isGroup: true, grupoJid });
+    if (escopo !== 'autorizado') {
+      return {
+        status: 200,
+        body: { sucesso: true, recebido: true, ignorado: escopo },
+        continuar: null,
+      };
+    }
+
+    const { fileName, mimetype } = extrairDocumento(payload);
+    const parecePlanilha = isPlanilha(fileName, mimetype) || EXT_PLANILHA.test(fileName || '');
+    const textoMsg = extrairTextoMensagem(payload);
+    const pedidoRelatorio = sessaoComandoAtiva(grupoJid) || textoMereceProcessamento(textoMsg);
+    if (!parecePlanilha && !pedidoRelatorio) {
+      return {
+        status: 200,
+        body: { sucesso: true, recebido: true, ignorado: 'conversa' },
+        continuar: null,
+      };
+    }
+
     if (isMultiTenant() && !getCurrentTenantDb()) {
       const rota = await buscarRoteamentoGrupo(grupoJid);
       if (rota) return runWithTenant(rota.tenantDb, () => this.aceitarWebhook(rawPayload));
     }
 
     const msgId = String(info.ID || '').trim();
+    const payloadParaFila = msgId
+      ? await prepararPayloadPlanilhaWhatsapp(payload, msgId)
+      : payload;
     if (msgId) {
       const reserva = await reservarMensagemWhatsapp({
         messageId: msgId,
         grupoJid,
-        payload: rawPayload,
+        payload: payloadParaFila,
       });
       if (reserva.acao === 'ignorar') {
         return {
@@ -510,11 +649,23 @@ export class WhatsappPlanilhaPipelineService {
     return {
       status: 200,
       body: { sucesso: true, recebido: true },
-      continuar: () => {
-        const run = () => this.processarWebhook(rawPayload, { reservaPronta: true });
-        return tenantDb ? runWithTenant(tenantDb, run) : run();
-      },
+      continuar: () => this.processarEmFila(payloadParaFila, tenantDb),
     };
+  }
+
+  /** Uma planilha ou um relatório por vez, com o Chrome fechado antes e depois. */
+  processarEmFila(payload: unknown, tenantDb?: string | null): Promise<unknown> {
+    return enfileirarProcessamento(async () => {
+      ocuparTrabalhoPesado();
+      try {
+        await liberarNavegadorPdf();
+        const run = () => this.processarWebhook(payload, { reservaPronta: true });
+        return tenantDb ? await runWithTenant(tenantDb, run) : await run();
+      } finally {
+        liberarTrabalhoPesado();
+        await liberarNavegadorPdf();
+      }
+    });
   }
 
   async processarWebhook(
@@ -539,10 +690,14 @@ export class WhatsappPlanilhaPipelineService {
     const chat = String(info.Chat || '');
     const isGroup = info.IsGroup === true || chat.endsWith('@g.us');
     if (!isGroup) {
-      return { processado: false, motivo: 'Não é mensagem de grupo' };
+      return { processado: false, motivo: 'Conversa privada ignorada' };
     }
 
     const grupoJid = normalizarGrupoJid(chat);
+    const escopo = await decidirEscopoDaMensagem({ isGroup: true, grupoJid });
+    if (escopo !== 'autorizado') {
+      return { processado: false, motivo: 'Grupo não autorizado' };
+    }
     if (isMultiTenant() && !getCurrentTenantDb()) {
       const rota = await buscarRoteamentoGrupo(grupoJid);
       if (rota) {
@@ -568,7 +723,9 @@ export class WhatsappPlanilhaPipelineService {
 
     try {
       const resultado = await this.processarGrupoReservado(payload, grupoJid, info);
-      return this.encerrarMensagem(msgId, reservou, grupoJid, resultado);
+      const encerrado = await this.encerrarMensagem(msgId, reservou, grupoJid, resultado);
+      if (encerrado.processado) await apagarBase64Arquivo(payload);
+      return encerrado;
     } catch (err: any) {
       const detalhe = err?.message || 'erro desconhecido';
       if (msgId && reservou) {
@@ -589,7 +746,10 @@ export class WhatsappPlanilhaPipelineService {
     const codigo = codigoFalhaMensagem(resultado.motivo);
     if (codigo) {
       await marcarFalhaMensagemWhatsapp(msgId, resultado.motivo || codigo, codigo);
-      if (codigo === 'grupo_nao_mapeado' || codigo === 'servico_nao_encontrado') {
+      if (codigo === 'grupo_nao_mapeado') {
+        return resultado;
+      }
+      if (codigo === 'servico_nao_encontrado') {
         await avisarGrupoWhatsapp(grupoJid, textoGrupoNaoConfigurado());
       } else if (codigo !== 'wuzapi_nao_configurada') {
         await avisarGrupoWhatsapp(grupoJid, textoFalhaImportacao(resultado.motivo || codigo));
@@ -622,22 +782,13 @@ export class WhatsappPlanilhaPipelineService {
           isFromMe: info.IsFromMe === true,
         });
         if (cmd.processado) {
+          registrarRecebimentoWhatsapp({
+            grupoJid,
+            nomeGrupo: null,
+            tipo: 'relatorio',
+            resumo: textoMsg.slice(0, 80),
+          });
           return { processado: true, motivo: 'comando-texto', resultado: { comando: true } };
-        }
-        const gps = await processarComandoGpsWhatsapp({
-          grupoJid,
-          texto: textoMsg,
-        });
-        if (gps.processado) {
-          return { processado: true, motivo: gps.motivo || 'comando-gps', resultado: { comando: true } };
-        }
-        const manu = await encaminharComandoManu({
-          grupoJid,
-          texto: textoMsg,
-          sender: String(info.Sender || ''),
-        });
-        if (manu.processado) {
-          return { processado: true, motivo: 'comando-manu', resultado: { comando: true } };
         }
       }
     }
@@ -688,6 +839,20 @@ export class WhatsappPlanilhaPipelineService {
     if (!wuzapiService.isConfigured) {
       return { processado: false, motivo: 'WuzAPI não configurada (WUZAPI_URL/WUZAPI_TOKEN)' };
     }
+
+    const tamanhoMb = Number(doc.fileLength || doc.FileLength || 0) / (1024 * 1024);
+    const tamanhoTxt = tamanhoMb >= 0.1 ? ` (${tamanhoMb.toFixed(1)} MB)` : '';
+    registrarRecebimentoWhatsapp({
+      grupoJid,
+      nomeGrupo: mapa.nomeGrupo,
+      tipo: 'planilha',
+      resumo: fileName || 'planilha',
+    });
+    console.log(`[WhatsappPipeline] Importando ${fileName || 'planilha'}${tamanhoTxt} grupo=${grupoJid}`);
+    await avisarGrupoWhatsapp(
+      grupoJid,
+      `Recebi a planilha *${fileName || 'arquivo'}*${tamanhoTxt}. Estou importando. Pode levar alguns minutos.`,
+    );
 
     const { buffer, nomeArquivo: nomeRaw } = await obterBufferPlanilha(payload, doc);
     const nomeArquivo = EXT_PLANILHA.test(nomeRaw) ? nomeRaw : `${nomeRaw.replace(/\.[^.]+$/, '') || 'planilha'}.xlsx`;
@@ -985,7 +1150,24 @@ export class WhatsappPlanilhaPipelineService {
   }
 }
 
+async function limparInboxAntiga(): Promise<void> {
+  try {
+    const dir = pastaInboxWhatsapp();
+    const nomes = await fs.promises.readdir(dir);
+    const limite = Date.now() - 48 * 60 * 60 * 1000;
+    for (const nome of nomes) {
+      const arquivo = arquivoInboxPermitido(path.join(dir, nome));
+      if (!arquivo) continue;
+      const st = await fs.promises.stat(arquivo);
+      if (st.mtimeMs < limite) await fs.promises.unlink(arquivo).catch(() => undefined);
+    }
+  } catch {
+    /* pasta ainda não existe */
+  }
+}
+
 export async function recuperarMensagensWhatsappPendentes(): Promise<number> {
+  await limparInboxAntiga();
   let pendentes: Awaited<ReturnType<typeof listarMensagensRecuperaveis>> = [];
   try {
     pendentes = await listarMensagensRecuperaveis();
@@ -997,6 +1179,24 @@ export async function recuperarMensagensWhatsappPendentes(): Promise<number> {
   let retomadas = 0;
   for (const item of pendentes) {
     if (!item.payload) continue;
+    const retomada = decidirRetomadaAposQueda(item.tentativas, item.motivo);
+    if (retomada === 'ignorar') continue;
+    if (retomada === 'abandonar') {
+      await marcarFalhaMensagemWhatsapp(
+        item.messageId,
+        'Interrompida para o servidor não reiniciar de novo',
+        MOTIVO_INTERROMPIDO,
+      );
+      if (item.grupoJid && wuzapiService.isConfigured) {
+        try {
+          await wuzapiService.enviarTexto(
+            item.grupoJid,
+            '⚠️ A mensagem anterior foi interrompida porque o servidor ficou sem fôlego. Envie a planilha ou o pedido de relatório de novo.',
+          );
+        } catch { /* grupo pode estar indisponível no boot */ }
+      }
+      continue;
+    }
     try {
       const reserva = await reservarMensagemWhatsapp({
         messageId: item.messageId,
@@ -1006,10 +1206,11 @@ export async function recuperarMensagensWhatsappPendentes(): Promise<number> {
         recuperarInterrompidos: true,
       });
       if (reserva.acao !== 'processar') continue;
-      await pipeline.processarWebhook(item.payload, { reservaPronta: true });
+      await pipeline.processarEmFila(item.payload, getCurrentTenantDb());
       retomadas++;
     } catch (err: any) {
-      console.error('[WhatsappLedger] Reprocessamento falhou:', item.messageId, err?.message || err);
+      console.error('[WhatsappLedger] Reprocessamento falhou e o lote parou:', item.messageId, err?.message || err);
+      break;
     }
   }
   if (retomadas > 0) {

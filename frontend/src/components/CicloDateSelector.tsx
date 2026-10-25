@@ -729,7 +729,7 @@ export default function CicloDateSelector({
     try {
       const recorte = recortarPeriodoAteReferencia(ciclo.dataInicio, ciclo.dataFim);
       const servicos = await servicoService.listarServicosContrato(contractId, { force: true });
-      const tiposOk = new Set(['rocadeira', 'capina', 'varricao', 'poda', 'remocao', 'geral']);
+      const tiposOk = new Set(['rocadeira', 'capina', 'varricao', 'poda', 'remocao', 'coleta_seletiva', 'aterro', 'geral']);
       const alvos = servicos.filter((s) => tiposOk.has(String(s.tipo)));
       const tipos: Array<{
         tipo: string;

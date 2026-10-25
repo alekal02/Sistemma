@@ -3,9 +3,12 @@ import AppDataSource from '../database/data-source';
 
 export type EstadoMensagemWhatsapp = 'processando' | 'sucesso' | 'falha';
 
-export const WHATSAPP_MSG_STALE_MS = 2 * 60 * 1000;
+/** Importar planilha grande passa de 2 minutos. Antes disso a reentrega abria outra importação e derrubava o processo. */
+export const WHATSAPP_MSG_STALE_MS = 15 * 60 * 1000;
 export const WHATSAPP_MSG_MAX_TENTATIVAS = 5;
 export const MOTIVO_GRUPO_NAO_MAPEADO = 'grupo_nao_mapeado';
+/** Queda no meio do trabalho. Não retomar no próximo boot: isso derrubava o processo de novo. */
+export const MOTIVO_INTERROMPIDO = 'interrompido';
 
 export interface RegistroMensagemWhatsapp {
   messageId: string;
@@ -56,6 +59,19 @@ export function decidirReservaMensagem(
     return { acao: 'ignorar', motivo: 'Grupo não configurado: aguarda novo envio' };
   }
   return { acao: 'reprocessar' };
+}
+
+/**
+ * Depois de um pull/restart: uma tentativa nova no máximo.
+ * A partir da segunda, abandona e avisa uma vez. Interrompida não entra de novo.
+ */
+export function decidirRetomadaAposQueda(
+  tentativas: number,
+  motivo: string | null,
+): 'retomar' | 'abandonar' | 'ignorar' {
+  if (motivo === MOTIVO_INTERROMPIDO || motivo === MOTIVO_GRUPO_NAO_MAPEADO) return 'ignorar';
+  if (tentativas >= 2) return 'abandonar';
+  return 'retomar';
 }
 
 export function textoGrupoNaoConfigurado(): string {
@@ -297,6 +313,7 @@ export async function listarMensagensRecuperaveis(limite = 20): Promise<Registro
   if (usarMemoria) {
     const agora = Date.now();
     return [...memoriaGlobal.values()].filter((item) => {
+      if (decidirRetomadaAposQueda(item.tentativas, item.motivo) === 'ignorar') return false;
       const decisao = decidirReservaMensagem(item, agora, {
         recuperacaoAutomatica: true,
         recuperarInterrompidos: true,
@@ -309,13 +326,15 @@ export async function listarMensagensRecuperaveis(limite = 20): Promise<Registro
       `SELECT "messageId", "grupoJid", estado, tentativas, "ultimoErro", motivo, "atualizadoEm", payload
        FROM whatsapp_mensagem_processamento
        WHERE tentativas < $1
+         AND COALESCE(motivo, '') <> $2
+         AND COALESCE(motivo, '') <> $3
          AND (
            estado = 'processando'
-           OR (estado = 'falha' AND COALESCE(motivo, '') <> $2)
+           OR estado = 'falha'
          )
        ORDER BY "atualizadoEm" ASC
-       LIMIT $3`,
-      [WHATSAPP_MSG_MAX_TENTATIVAS, MOTIVO_GRUPO_NAO_MAPEADO, limite],
+       LIMIT $4`,
+      [WHATSAPP_MSG_MAX_TENTATIVAS, MOTIVO_GRUPO_NAO_MAPEADO, MOTIVO_INTERROMPIDO, limite],
     );
     return (rows || []).map((row: Record<string, unknown>) => linhaParaRegistro(row));
   } catch (err) {

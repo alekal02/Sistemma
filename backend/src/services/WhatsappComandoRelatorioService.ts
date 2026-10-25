@@ -99,6 +99,12 @@ function limparSessoes(): void {
   }
 }
 
+/** Menu em andamento: a resposta seguinte ("1", nome do serviço) precisa entrar na fila. */
+export function sessaoComandoAtiva(grupoJid: string): boolean {
+  limparSessoes();
+  return sessoes.has(grupoJid);
+}
+
 function normalizarTexto(raw: string): string {
   return String(raw || '')
     .normalize('NFD')
@@ -146,8 +152,8 @@ function menuRelatorioTexto(qual: QualCiclo = 'atual'): string {
     '*2* — Análise de peso (ciclo)',
     'PDF da análise de peso vs ideal do *seu* contrato (mesmo critério da Análise de Peso no sistema).',
     '',
-    '*3* — Evolução diária (gráficos)',
-    'PDF com gráficos de qualidade vs peso ideal *deste contrato*. Depois escolha a janela: semana, 15 dias, ciclo atual ou *ciclo anterior*.',
+    '*3* — Evolução por ciclo (gráfico)',
+    'PDF com o gráfico de linhas da qualidade vs peso ideal do ciclo, igual ao painel da TV. Depois dá para trocar a janela: semana, 15 dias ou ciclo anterior.',
     '',
     '*4* — Relatório do dia (operação)',
     'Varre os serviços do contrato e envia o PDF certo de cada tipo que teve dado no dia.',
@@ -190,6 +196,26 @@ function resolverJanelaEvolucao(norm: string): JanelaEvolucao | null {
     return JANELAS_EVOLUCAO[2];
   }
   return null;
+}
+
+/** Atalho e opção 3 do menu: o PDF do ciclo completo, no gráfico de linhas. */
+export function janelaEvolucaoDoChatbot(texto: string): { dias: number; label: string; cicloCompleto: boolean } {
+  const norm = normalizarTexto(texto);
+  if (
+    norm === '3'
+    || norm === 'evolucao ciclo'
+    || norm === 'evolucao por ciclo'
+    || norm === 'por ciclo'
+    || norm === 'completo'
+  ) {
+    return { dias: JANELAS_EVOLUCAO[2].dias, label: JANELAS_EVOLUCAO[2].label, cicloCompleto: true };
+  }
+  const janela = resolverJanelaEvolucao(norm) || JANELAS_EVOLUCAO[0];
+  return {
+    dias: janela.dias,
+    label: janela.label,
+    cicloCompleto: janela.dias === 0 && !janela.cicloAnterior,
+  };
 }
 
 function fmtEixoDia(iso: string): string {
@@ -399,9 +425,12 @@ function menuTipoTexto(contratoNome: string): string {
   return [
     `📊 *Relatórios* — ${contratoNome}`,
     '',
-    '*1* — Operacional',
-    '*2* — Saúde dos dados',
-    '*3* — Evolução diária (gráficos)',
+    '*1* — Diário (último dia de cada serviço)',
+    '*2* — Ciclo atual',
+    '*3* — Evolução por ciclo (gráfico)',
+    '*4* — Saúde dos dados',
+    '',
+    'Atalhos: *dia 16/09* · *ciclo* · *evolucao* · *evolucao 15* · *evolucao ciclo* · *evolucao anterior* · *saude*',
     '',
     '_cancelar_ sai.',
   ].join('\n');
@@ -430,7 +459,7 @@ function menuFormatoTexto(item: ItemMenuServico): string {
     '',
     '*1* — Diário',
     '*2* — Ciclo completo',
-    ...(coleta ? ['*3* — Evolução diária (gráficos)'] : []),
+    ...(coleta ? ['*3* — Evolução por ciclo (gráfico)'] : []),
     '',
     '_data *16/09* · *voltar* · *cancelar*_',
   ].join('\n');
@@ -908,7 +937,7 @@ async function gerarEEnviarEvolucaoDiaria(
     blocos,
   });
 
-  const pdf = await htmlToPdf(html, { useCache: false, waitMs: 4500 });
+  const pdf = await htmlToPdf(html, { useCache: false, waitMs: 0 });
   const nomeSafe = String(contratoNome).replace(/[^\w\-]+/g, '_');
   const nome = `Evolucao_Diaria_${nomeSafe}_${diasJanela[0]}_${diasJanela[diasJanela.length - 1]}.pdf`;
   await wuzapiService.enviarDocumento(
@@ -1001,18 +1030,6 @@ export async function processarComandoTextoWhatsapp(opts: {
     );
   };
 
-  const abrirMenuEvolucaoJanela = async () => {
-    sessoes.set(opts.grupoJid, {
-      etapa: 'menu_evolucao_janela',
-      expiresAt: Date.now() + TTL_MS,
-      servicoId: servico.id,
-      contratoId: servico.contract_id,
-      escolhido: sessao?.escolhido,
-      qualCiclo: 'atual',
-    });
-    await wuzapiService.enviarTexto(opts.grupoJid, menuEvolucaoJanelaTexto());
-  };
-
   const abrirMenuFormato = async (item: ItemMenuServico, dataIso?: string | null, servicosMenu?: ItemMenuServico[]) => {
     sessoes.set(opts.grupoJid, {
       etapa: 'menu_formato',
@@ -1077,25 +1094,13 @@ export async function processarComandoTextoWhatsapp(opts: {
       [
         '🤖 *Sistemma — comandos*',
         '',
-        '*relatorio* — *1* operacional, *2* saúde ou *3* evolução (gráficos)',
+        '*relatorio* — *1* diário, *2* ciclo, *3* evolução por ciclo, *4* saúde',
         '*saude* — PDF de saúde dos dados (coleta)',
         '*dia 16/09* — PDF do dia',
         '*ciclo* — PDF de ciclo',
         '*comparativo* / *peso* — PDF análise de peso',
-        '*evolucao* — gráficos (semana, 15 dias, ciclo)',
-        ...(process.env.SALA_TECNICA_URL
-          ? [
-              '*gps* / *rastreio* — PDF da Sala técnica (cobertura GPS)',
-              '*gps 01/10* — GPS de um dia específico',
-            ]
-          : []),
-        ...(process.env.MANU_WEBHOOK_URL
-          ? [
-              '',
-              '*manutencao* — relatório de equipamentos (ManuControl)',
-              '*os abertas* — equipamentos parados na unidade',
-            ]
-          : []),
+        '*evolucao* — gráficos da semana',
+        '*evolucao 15* · *evolucao ciclo* · *evolucao anterior*',
         '',
         'Envie a planilha para importar. Digite *relatorio* para o menu curto.',
       ].join('\n'),
@@ -1117,21 +1122,45 @@ export async function processarComandoTextoWhatsapp(opts: {
   }
 
   if (sessao?.etapa === 'menu_tipo') {
-    if (ehPedidoEvolucao(norm) || resolverEscolhaIndice(norm, 3) === 3) {
-      await abrirMenuEvolucaoJanela();
+    if (ehPedidoEvolucao(norm) || resolverEscolhaIndice(norm, 4) === 3) {
+      sessoes.delete(opts.grupoJid);
+      const janela = resolverEscolhaIndice(norm, 4) === 3
+        ? JANELAS_EVOLUCAO[2]
+        : (resolverJanelaEvolucao(norm) || JANELAS_EVOLUCAO[0]);
+      try {
+        await gerarEEnviarEvolucaoDiaria(opts.grupoJid, servico, contrato, janela);
+      } catch (err: any) {
+        console.error('[WhatsappComandoRelatorio]', err?.message || err);
+        await wuzapiService.enviarTexto(
+          opts.grupoJid,
+          `❌ Falha ao gerar evolução diária: ${err?.message || 'erro desconhecido'}`,
+        );
+      }
       return { processado: true };
     }
-    if (ehPedidoSaude(norm) || resolverEscolhaIndice(norm, 3) === 2) {
+    if (ehPedidoSaude(norm) || resolverEscolhaIndice(norm, 4) === 4) {
       await enviarSaude();
       return { processado: true };
     }
-    if (ehPedidoOperacional(norm) || resolverEscolhaIndice(norm, 3) === 1) {
+    if (norm === '2' || ehPedidoFormatoCiclo(norm) || norm === 'ciclo') {
+      sessoes.delete(opts.grupoJid);
+      try {
+        await gerarEEnviarCiclo(opts.grupoJid, servico, contrato, 'atual');
+      } catch (err: any) {
+        await wuzapiService.enviarTexto(
+          opts.grupoJid,
+          `❌ Falha ao gerar o ciclo: ${err?.message || 'erro'}`,
+        );
+      }
+      return { processado: true };
+    }
+    if (ehPedidoOperacional(norm) || resolverEscolhaIndice(norm, 4) === 1 || ehPedidoFormatoDiario(norm)) {
       await abrirMenuServicos(null, sessao.dataIso);
       return { processado: true };
     }
     await wuzapiService.enviarTexto(
       opts.grupoJid,
-      'Responda *1* (operacional), *2* (saúde) ou *3* (evolução diária).',
+      'Responda *1* (diário), *2* (ciclo), *3* (evolução por ciclo) ou *4* (saúde).',
     );
     return { processado: true };
   }
@@ -1207,7 +1236,16 @@ export async function processarComandoTextoWhatsapp(opts: {
       return { processado: true };
     }
     if (ehTipoColeta(item.tipo) && (ehPedidoFormatoEvolucao(norm) || resolverEscolhaIndice(norm, 3) === 3)) {
-      await abrirMenuEvolucaoJanela();
+      sessoes.delete(opts.grupoJid);
+      try {
+        await gerarEEnviarEvolucaoDiaria(opts.grupoJid, servico, contrato, JANELAS_EVOLUCAO[2]);
+      } catch (err: any) {
+        console.error('[WhatsappComandoRelatorio]', err?.message || err);
+        await wuzapiService.enviarTexto(
+          opts.grupoJid,
+          `❌ Falha ao gerar evolução diária: ${err?.message || 'erro desconhecido'}`,
+        );
+      }
       return { processado: true };
     }
     if (ehPedidoFormatoDiario(norm) || resolverEscolhaIndice(norm, 2) === 1) {
@@ -1222,7 +1260,7 @@ export async function processarComandoTextoWhatsapp(opts: {
     await wuzapiService.enviarTexto(
       opts.grupoJid,
       ehTipoColeta(item.tipo)
-        ? 'Não entendi. Responda *1* (diário), *2* (ciclo completo), *3* (evolução), uma data (*16/09*) ou *voltar*.'
+        ? 'Não entendi. Responda *1* (diário), *2* (ciclo), *3* (evolução por ciclo), uma data (*16/09*) ou *voltar*.'
         : 'Não entendi. Responda *1* (diário), *2* (ciclo completo), uma data (*16/09*) ou *voltar*.',
     );
     return { processado: true };
@@ -1239,7 +1277,21 @@ export async function processarComandoTextoWhatsapp(opts: {
   }
 
   if (ehPedidoEvolucao(norm)) {
-    await abrirMenuEvolucaoJanela();
+    sessoes.delete(opts.grupoJid);
+    try {
+      await gerarEEnviarEvolucaoDiaria(
+        opts.grupoJid,
+        servico,
+        contrato,
+        resolverJanelaEvolucao(norm) || JANELAS_EVOLUCAO[0],
+      );
+    } catch (err: any) {
+      console.error('[WhatsappComandoRelatorio]', err?.message || err);
+      await wuzapiService.enviarTexto(
+        opts.grupoJid,
+        `❌ Falha ao gerar evolução diária: ${err?.message || 'erro desconhecido'}`,
+      );
+    }
     return { processado: true };
   }
 
@@ -1404,21 +1456,6 @@ export async function processarComandoTextoWhatsapp(opts: {
         `❌ Falha ao gerar evolução diária: ${err?.message || 'erro'}`,
       );
     }
-    return { processado: true };
-  }
-  if (
-    norm === 'evolucao'
-    || norm === 'evolucao diaria'
-    || norm === 'pdf evolucao'
-    || norm === 'graficos'
-  ) {
-    sessoes.set(opts.grupoJid, {
-      etapa: 'menu_evolucao_janela',
-      expiresAt: Date.now() + TTL_MS,
-      servicoId: servico.id,
-      contratoId: servico.contract_id,
-    });
-    await wuzapiService.enviarTexto(opts.grupoJid, menuEvolucaoJanelaTexto());
     return { processado: true };
   }
   if (norm === 'evolucao ciclo' || norm === 'evolucao por ciclo') {

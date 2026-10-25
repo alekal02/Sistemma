@@ -13,6 +13,7 @@ router.post('/connect', authenticate, (req, res) => controller.connect(req, res)
 router.post('/disconnect', authenticate, (req, res) => controller.disconnect(req, res));
 router.get('/qr', authenticate, (req, res) => controller.qr(req, res));
 router.get('/grupos-whatsapp', authenticate, (req, res) => controller.listarGruposWhatsApp(req, res));
+router.get('/recebimentos', authenticate, (req, res) => controller.recebimentos(req, res));
 router.get('/grupos', authenticate, (req, res) => controller.listarGrupos(req, res));
 router.post('/grupos', authenticate, (req, res) => controller.criarGrupo(req, res));
 router.put('/grupos/:id', authenticate, (req, res) => controller.atualizarGrupo(req, res));

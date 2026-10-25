@@ -417,6 +417,132 @@ const FAIXAS_EVOLUCAO: Array<{ id: FaixaEvolucao; label: string; cor: string; re
   { id: 'excedido', label: 'Excedido', cor: '#a855f7', regra: 'acima de 110%' },
 ];
 
+const TENSAO_CHART = 0.25;
+
+function num(v: number): string {
+  return v.toFixed(1);
+}
+
+/**
+ * Mesma curva do Chart.js 4 (tension 0.25) usada no PDF até a 4.0.11.
+ * Arredonda a virada do dia em vez de deixar quina.
+ */
+function caminhoChart(pontos: Array<{ x: number; y: number }>): string {
+  const n = pontos.length;
+  if (n < 2) return '';
+  if (n === 2) {
+    return `M ${num(pontos[0].x)} ${num(pontos[0].y)} L ${num(pontos[1].x)} ${num(pontos[1].y)}`;
+  }
+  const dist = (a: { x: number; y: number }, b: { x: number; y: number }) =>
+    Math.hypot(b.x - a.x, b.y - a.y);
+  const entrada: Array<{ x: number; y: number }> = [];
+  const saida: Array<{ x: number; y: number }> = [];
+  for (let i = 0; i < n; i += 1) {
+    const prev = pontos[i - 1] || pontos[i];
+    const curr = pontos[i];
+    const next = pontos[i + 1] || pontos[i];
+    const d01 = dist(prev, curr);
+    const d12 = dist(curr, next);
+    let s01 = d01 / (d01 + d12);
+    let s12 = d12 / (d01 + d12);
+    if (!Number.isFinite(s01)) s01 = 0;
+    if (!Number.isFinite(s12)) s12 = 0;
+    const fa = TENSAO_CHART * s01;
+    const fb = TENSAO_CHART * s12;
+    entrada.push({
+      x: curr.x - fa * (next.x - prev.x),
+      y: curr.y - fa * (next.y - prev.y),
+    });
+    saida.push({
+      x: curr.x + fb * (next.x - prev.x),
+      y: curr.y + fb * (next.y - prev.y),
+    });
+  }
+  let d = `M ${num(pontos[0].x)} ${num(pontos[0].y)}`;
+  for (let i = 0; i < n - 1; i += 1) {
+    const c1 = saida[i];
+    const c2 = entrada[i + 1];
+    const p = pontos[i + 1];
+    d += ` C ${num(c1.x)} ${num(c1.y)}, ${num(c2.x)} ${num(c2.y)}, ${num(p.x)} ${num(p.y)}`;
+  }
+  return d;
+}
+
+function indicesEixoX(n: number): number[] {
+  const passo = n <= 14 ? 1 : Math.max(1, Math.round(n / 10));
+  const indices: number[] = [];
+  for (let i = 0; i < n; i += passo) indices.push(i);
+  if (indices[indices.length - 1] !== n - 1) {
+    if (n - 1 - indices[indices.length - 1] <= Math.floor(passo / 2)) indices[indices.length - 1] = n - 1;
+    else indices.push(n - 1);
+  }
+  return indices;
+}
+
+/** Gráfico de linhas do PDF gerencial (deploy até 4.0.11), sem depender da internet. */
+export function svgGraficoEvolucaoCiclo(linhas: SerieDiaEvolucao[]): string {
+  const w = 780;
+  const h = 280;
+  const left = 42;
+  const right = 16;
+  const top = 16;
+  const bottom = 34;
+  const plotW = w - left - right;
+  const plotH = h - top - bottom;
+  const n = Math.max(linhas.length, 1);
+  const xDe = (i: number) => left + (n === 1 ? plotW / 2 : (i / (n - 1)) * plotW);
+  const yDe = (pct: number) => top + ((100 - Math.max(0, Math.min(100, pct))) / 100) * plotH;
+  const ticksX = new Set(indicesEixoX(n));
+
+  const grades = [0, 25, 50, 75, 100].map((tick) => {
+    const y = yDe(tick);
+    return `<line x1="${left}" y1="${y.toFixed(1)}" x2="${w - right}" y2="${y.toFixed(1)}" stroke="#e8eef5"/>
+      <text x="${left - 8}" y="${(y + 3).toFixed(1)}" text-anchor="end" fill="#64748b" font-size="10" font-family="Segoe UI, Arial, sans-serif">${tick}%</text>`;
+  }).join('');
+
+  const eixos = linhas.map((l, i) => {
+    if (!ticksX.has(i)) return '';
+    const x = xDe(i);
+    return `<line x1="${x.toFixed(1)}" y1="${top}" x2="${x.toFixed(1)}" y2="${(top + plotH).toFixed(1)}" stroke="#f1f5f9"/>
+      <text x="${x.toFixed(1)}" y="${h - 12}" text-anchor="middle" fill="#334155" font-size="10" font-family="Segoe UI, Arial, sans-serif">${esc(l.label || l.data.slice(5))}</text>`;
+  }).join('');
+
+  const ordem = [...FAIXAS_EVOLUCAO].reverse();
+  const series = ordem.map((faixa) => {
+    const grupos: Array<Array<{ x: number; y: number }>> = [];
+    let atual: Array<{ x: number; y: number }> = [];
+    linhas.forEach((l, i) => {
+      const valor = l[faixa.id];
+      if (valor == null || Number.isNaN(valor)) {
+        if (atual.length) grupos.push(atual);
+        atual = [];
+        return;
+      }
+      atual.push({ x: xDe(i), y: yDe(valor) });
+    });
+    if (atual.length) grupos.push(atual);
+    const largura = faixa.id === 'otimo' ? 3 : 2;
+    const traços = grupos
+      .filter((g) => g.length >= 2)
+      .map((g) => `<path d="${caminhoChart(g)}" fill="none" stroke="${faixa.cor}" stroke-width="${largura}" stroke-linejoin="round" stroke-linecap="round"/>`)
+      .join('');
+    const pontos = grupos.flat().map((p) => `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="2.6" fill="#fff" stroke="${faixa.cor}" stroke-width="1.6"/>`).join('');
+    return traços + pontos;
+  }).join('');
+
+  const legenda = FAIXAS_EVOLUCAO.map((f) => `<span class="leg"><i style="background:${f.cor}"></i>${esc(f.label)}</span>`).join('');
+
+  return `<div class="chart-wrap">
+    <svg class="grafico" viewBox="0 0 ${w} ${h}" width="100%" height="268" role="img" aria-label="Gráfico de evolução por ciclo">
+      <rect x="${left}" y="${top}" width="${plotW}" height="${plotH}" fill="#fbfdff" stroke="#e2e8f0"/>
+      ${grades}
+      ${eixos}
+      ${series}
+    </svg>
+    <div class="legenda">${legenda}</div>
+  </div>`;
+}
+
 /**
  * PDF de Evolução Diária (mesmo conceito do TV Mode):
  * uma linha por faixa de qualidade vs peso ideal, um gráfico por contrato.
@@ -438,7 +564,7 @@ export function gerarHtmlEvolucaoDiariaWhatsapp(opts: {
       <span class="cr">${esc(f.regra)}</span>
     </div>`).join('');
 
-  const cards = opts.blocos.map((b, idx) => {
+  const cards = opts.blocos.map((b) => {
     const pcts = FAIXAS_EVOLUCAO.map((f) => `
       <span class="p"><i style="background:${f.cor}"></i>${b.pct[f.id].toFixed(0)}%</span>`).join('');
     return `
@@ -450,22 +576,13 @@ export function gerarHtmlEvolucaoDiariaWhatsapp(opts: {
         </div>
         <div class="bpcts">${pcts}</div>
       </div>
-      <div class="chart-wrap"><canvas id="ev${idx}"></canvas></div>
+      <div class="chart-box">${svgGraficoEvolucaoCiclo(b.linhas)}</div>
     </section>`;
   }).join('');
-
-  const payload = JSON.stringify(opts.blocos.map((b) => ({
-    labels: b.linhas.map((l) => l.label),
-    otimo: b.linhas.map((l) => l.otimo),
-    ruim: b.linhas.map((l) => l.ruim),
-    pessimo: b.linhas.map((l) => l.pessimo),
-    excedido: b.linhas.map((l) => l.excedido),
-  })));
 
   return `<!DOCTYPE html>
 <html lang="pt-BR"><head><meta charset="utf-8"/>
 <title>Evolução Diária — ${esc(opts.tipoLabel)}</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <style>
   * { box-sizing: border-box; }
   body { font-family: Segoe UI, Arial, sans-serif; font-size: 11px; color: #0f172a; margin: 0; padding: 14px 16px; background: #fff; }
@@ -478,14 +595,18 @@ export function gerarHtmlEvolucaoDiariaWhatsapp(opts: {
   .chip .cl { font-size: 9px; font-weight: 700; color: #334155; }
   .chip strong { font-size: 14px; margin-left: auto; }
   .chip .cr { font-size: 8px; color: #64748b; white-space: nowrap; }
-  .bloco { border: 1px solid #e2e8f0; border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; page-break-inside: avoid; }
+  .bloco { border: 1px solid #e2e8f0; border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; page-break-inside: avoid; background: #fff; }
   .bh { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; margin-bottom: 6px; flex-wrap: wrap; }
   .bnome { font-size: 12px; font-weight: 800; color: #0f172a; }
   .bmeta { font-size: 9px; color: #64748b; margin-top: 2px; }
   .bpcts { display: flex; gap: 8px; flex-wrap: wrap; }
   .bpcts .p { display: inline-flex; align-items: center; gap: 3px; font-size: 9px; font-weight: 700; color: #334155; }
   .bpcts i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
-  .chart-wrap { height: 210px; position: relative; }
+  .chart-box { margin-top: 4px; }
+  .grafico { display: block; width: 100%; height: auto; background: #fff; }
+  .legenda { display: flex; justify-content: center; gap: 14px; margin-top: 2px; }
+  .leg { display: inline-flex; align-items: center; gap: 4px; font-size: 9px; color: #334155; font-weight: 700; }
+  .leg i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
   .foot { margin-top: 8px; font-size: 8px; color: #94a3b8; text-align: center; }
 </style></head><body>
   <div class="header">
@@ -496,51 +617,5 @@ export function gerarHtmlEvolucaoDiariaWhatsapp(opts: {
   <div class="chips">${chips}</div>
   ${cards}
   <div class="foot">Sistemma · mesmas faixas do painel Evolução Diária (TV) · Ótimo = 90–110% do peso ideal do tipo</div>
-  <script>
-    (function() {
-      var FAIXAS = ${JSON.stringify(FAIXAS_EVOLUCAO.map((f) => ({ id: f.id, label: f.label, cor: f.cor })))};
-      var blocos = ${payload};
-      blocos.forEach(function(b, i) {
-        var el = document.getElementById('ev' + i);
-        if (!el || typeof Chart === 'undefined') return;
-        new Chart(el, {
-          type: 'line',
-          data: {
-            labels: b.labels,
-            datasets: FAIXAS.map(function(f) {
-              return {
-                label: f.label,
-                data: b[f.id],
-                borderColor: f.cor,
-                backgroundColor: f.cor,
-                borderWidth: f.id === 'otimo' ? 3 : 2,
-                pointRadius: 3,
-                pointHoverRadius: 4,
-                tension: 0.25,
-                spanGaps: false,
-              };
-            })
-          },
-          options: {
-            animation: false,
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-              legend: { position: 'bottom', labels: { font: { size: 9 }, boxWidth: 10, padding: 8 } },
-              tooltip: { titleFont: { size: 9 }, bodyFont: { size: 9 } }
-            },
-            scales: {
-              x: { ticks: { font: { size: 8 }, maxRotation: 0 }, grid: { color: '#f1f5f9' } },
-              y: {
-                min: 0, max: 100,
-                ticks: { font: { size: 8 }, callback: function(v) { return v + '%'; }, stepSize: 25 },
-                grid: { color: '#e2e8f0' }
-              }
-            }
-          }
-        });
-      });
-    })();
-  </script>
 </body></html>`;
 }

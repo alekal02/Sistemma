@@ -19,11 +19,7 @@ import { dashboardCache } from './DashboardCacheManager';
 import { agendarWarmupPosUpload } from './executivoCacheWarmupService';
 import { gerarConfigGraficosPadrao, reResolverGraficos } from './graficosPadrao';
 import { converterKpisParaConfig } from './TipoServicoTemplateService';
-import {
-  garantirServicosPadraoContrato,
-  garantirServicoNomeadoContrato,
-  TIPOS_SERVICO_PADRAO_CONSOLIDADO,
-} from './servicosPadraoContratoService';
+import { garantirServicoNomeadoContrato } from './servicosPadraoContratoService';
 import {
   detectarPlanilhaConsolidadoProducao,
   parsearPlanilhaConsolidadoProducao,
@@ -138,6 +134,10 @@ class ConsolidadoProducaoImportService {
         return [...base, 'Quantidade de Arvore', 'QTD_ARVORE'];
       case TipoServico.REMOCAO:
         return [...base, 'OBSERVAÇÃO'];
+      case TipoServico.COLETA_SELETIVA:
+        return [...base, 'Toneladas', 'TONELADAS', 'Peso'];
+      case TipoServico.ATERRO:
+        return [...base, 'OBSERVAÇÃO', 'Descrição do serviço', 'Peso', 'Viagens'];
       default:
         return base;
     }
@@ -523,14 +523,20 @@ class ConsolidadoProducaoImportService {
       );
     }
 
-    const { servicos, criados } = await garantirServicosPadraoContrato(contractId);
-    const entrada = servicos.find((s) =>
-      TIPOS_SERVICO_PADRAO_CONSOLIDADO.includes(s.tipo as typeof TIPOS_SERVICO_PADRAO_CONSOLIDADO[number]),
-    ) || servicos[0];
-
-    if (!entrada) {
-      throw new Error('Não foi possível criar/localizar serviços padrão no contrato.');
+    const parsed = parsearPlanilhaConsolidadoProducao(buffer);
+    if (parsed.linhas.length === 0) {
+      throw new Error(parsed.avisos[0] || 'Nenhuma linha válida nas abas de serviço.');
     }
+    const primeiro = agruparLinhasPorServicoAba(parsed.linhas).values().next().value?.[0];
+    if (!primeiro) {
+      throw new Error('Nenhuma linha válida nas abas de serviço.');
+    }
+
+    const { servico: entrada } = await garantirServicoNomeadoContrato(
+      contractId,
+      primeiro.nomeServico,
+      primeiro.tipoSistema,
+    );
 
     const resultado = await this.importar(
       buffer,
@@ -540,14 +546,13 @@ class ConsolidadoProducaoImportService {
       substituirPorData,
     );
 
-    if (criados.length > 0) {
-      resultado.avisos = [
-        `${criados.length} serviço(s) padrão criado(s) neste upload.`,
-        ...resultado.avisos,
-      ];
-    }
+    const criadosNaPlanilha = resultado.splitPorServico.length;
+    resultado.avisos = [
+      `${criadosNaPlanilha} serviço(s) saíram desta planilha, com KPI do próprio tipo.`,
+      ...resultado.avisos,
+    ];
 
-    return { ...resultado, servicosGarantidos: criados.length };
+    return { ...resultado, servicosGarantidos: criadosNaPlanilha };
   }
 }
 

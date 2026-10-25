@@ -42,6 +42,14 @@ export interface WhatsappGrupoWhatsAppItem {
   jaMapeado?: boolean
 }
 
+export interface RecebimentoWhatsapp {
+  em: string
+  grupoJid: string
+  nomeGrupo: string | null
+  tipo: 'relatorio' | 'planilha' | 'ignorado'
+  resumo: string
+}
+
 export interface WhatsappGrupoPayload {
   grupoJid: string
   nomeGrupo?: string | null
@@ -75,6 +83,11 @@ const wuzapiService = {
   async listarGruposWhatsApp(): Promise<WhatsappGrupoWhatsAppItem[]> {
     const { data } = await api.get<{ grupos: WhatsappGrupoWhatsAppItem[] }>('/wuzapi/grupos-whatsapp')
     return data.grupos || []
+  },
+
+  async listarRecebimentos(): Promise<RecebimentoWhatsapp[]> {
+    const { data } = await api.get<{ recebimentos: RecebimentoWhatsapp[] }>('/wuzapi/recebimentos')
+    return data.recebimentos || []
   },
 
   async listarGrupos(): Promise<WhatsappGrupoMapaItem[]> {

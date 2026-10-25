@@ -76,7 +76,9 @@ api.interceptors.response.use(
   async (error) => {
     const cfg = error.config as RetryConfig | undefined
     const url = String(cfg?.url || '')
-    const isAuthLivre = url.includes('/auth/login') || url.includes('/auth/refresh')
+    const isAuthLivre = url.includes('/auth/login')
+      || url.includes('/auth/refresh')
+      || url.includes('/auth/acesso-direto')
     if (error.response?.status !== 401 || isAuthLivre || !cfg || cfg._retry) {
       return Promise.reject(error)
     }

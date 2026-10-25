@@ -7,7 +7,8 @@ dotenv.config();
 import express, { Express, Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import AppDataSource from './database/data-source';
-import { MAX_BODY_BYTES } from './config/limitesRecursos';
+import { MAX_BODY_BYTES, limiteCorpoPorRota } from './config/limitesRecursos';
+import { receberCorpoWebhook } from './services/webhookCorpoStream';
 import { iniciarAplicacao } from './bootstrap';
 
 const app: Express = express();
@@ -34,16 +35,11 @@ app.use(cors({
   credentials: process.env.CORS_CREDENTIALS !== 'false',
 }));
 app.use((req, res, next) => {
-  const limite = req.path.startsWith('/api/sala-tecnica') ? '40mb' : MAX_BODY_BYTES;
-  return express.json({
-    limit: limite,
-    verify: (reqOriginal, _res, buf) => {
-      const url = reqOriginal.url || '';
-      if (url.startsWith('/api/wuzapi/webhook')) {
-        (reqOriginal as { rawBody?: Buffer }).rawBody = Buffer.from(buf);
-      }
-    },
-  })(req, res, next);
+  if (req.method === 'POST' && (req.path || '').startsWith('/api/wuzapi/webhook')) {
+    return receberCorpoWebhook(req, res, next);
+  }
+  const limite = limiteCorpoPorRota(req.path || '');
+  return express.json({ limit: limite })(req, res, next);
 });
 app.use(express.urlencoded({ limit: MAX_BODY_BYTES, extended: true }));
 
@@ -317,10 +313,28 @@ app.post('/api/generate-pdf', authenticate, (req, res) => {
 });
 
 // Middleware de erro global
-app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
+app.use((err: Error & { status?: number; statusCode?: number; type?: string }, req: Request, res: Response, _next: NextFunction) => {
+  if (res.headersSent) return;
+  const status = Number(err?.status || err?.statusCode || 0);
+  const corpoGrande = status === 413 || err?.type === 'entity.too.large';
+  if (corpoGrande) {
+    console.error(`[HTTP] Corpo grande demais em ${req.method} ${req.path}: ${err?.message || err}`);
+    res.status(413).json({
+      sucesso: false,
+      erro: 'Arquivo grande demais para o servidor receber. Reenvie a planilha como documento.',
+    });
+    return;
+  }
   console.error('Erro não tratado:', err);
   const detalhe = !isProd && err.message ? err.message : 'Erro interno do servidor';
   res.status(500).json({ error: detalhe });
+});
+
+process.on('unhandledRejection', (motivo) => {
+  console.error('[processo] Promessa sem tratamento (o chatbot continua no ar):', motivo);
+});
+process.on('uncaughtException', (erro) => {
+  console.error('[processo] Exceção não tratada (o chatbot continua no ar):', erro);
 });
 
 iniciarAplicacao(app, PORT);

@@ -28,10 +28,12 @@ import { dashboardCache, type ExecutivoCacheParams } from './DashboardCacheManag
 import PlanilhaService from './PlanilhaService';
 import type { DashboardExecutivoController } from '../controllers/DashboardExecutivoController';
 import { calcularWarmupPedido } from './warmupPolicy';
+import { trabalhoPesadoEmAndamento } from './trabalhoPesado';
 export { calcularWarmupPedido } from './warmupPolicy';
 export type { WarmupPedido } from './warmupPolicy';
 
 let aquecendo = false;
+let adiadoPorChatbot: ReturnType<typeof setTimeout> | null = null;
 let controllerRef: DashboardExecutivoController | null = null;
 let timerDiario: ReturnType<typeof setInterval> | null = null;
 let warmupPosUploadTimer: ReturnType<typeof setTimeout> | null = null;
@@ -89,6 +91,16 @@ export async function aquecerCacheExecutivo(opts?: {
   servicoId?: string;
 }): Promise<void> {
   if (!WARMUP_ENABLED || !controllerRef) return;
+  if (trabalhoPesadoEmAndamento()) {
+    if (!adiadoPorChatbot) {
+      console.log('[DashboardWarmup] Adiado: chatbot importando planilha ou gerando relatório');
+      adiadoPorChatbot = setTimeout(() => {
+        adiadoPorChatbot = null;
+        void aquecerCacheExecutivo(opts);
+      }, 60_000);
+    }
+    return;
+  }
   if (aquecendo) {
     warmupPendente = { contractId: opts?.contractId, servicoId: opts?.servicoId };
     return;

@@ -1,4 +1,4 @@
-# =============================================================================
+﻿# =============================================================================
 # atualizar-destino.ps1 - NA MAQUINA DESTINO (C:\Sistemma)
 # =============================================================================
 # Puxa a TAG do .env, recria backend/frontend, espera o /health e SO ENTAO
@@ -53,7 +53,7 @@ function StatusSaude([string]$nome) {
 }
 
 function Esperar-Saudavel {
-  Write-Host "3/4 Esperando backend e frontend ficarem saudaveis..."
+  Write-Host "4/5 Esperando backend e frontend ficarem saudaveis..."
   $ok = $false
   for ($i = 0; $i -lt 48; $i++) {
     Start-Sleep -Seconds 5
@@ -77,14 +77,14 @@ function Esperar-Saudavel {
 }
 
 function Limpar-ImagensSistemmaAntigas {
-  Write-Host "4/4 Removendo imagens antigas do Sistemma (so backend/frontend sem uso)..."
+  Write-Host "5/5 Removendo imagens antigas do Sistemma (so backend/frontend sem uso)..."
   $keep = @()
   foreach ($nome in @("sistemma-backend", "sistemma-frontend")) {
     $id = IdImagemDoContainer $nome
     if ($id) { $keep += $id }
   }
   if ($keep.Count -eq 0) {
-    Write-Host "   Nenhum container Sistemma em execucao — nao apaguei imagens."
+    Write-Host "   Nenhum container Sistemma em execucao. Nao apaguei imagens."
     return 0
   }
 
@@ -134,12 +134,17 @@ Write-Host "1/4 Imagens atuais:"
 Write-Host "   backend  $imgBackAntes"
 Write-Host "   frontend $imgFrontAntes"
 
-Write-Host "2/4 Puxando e recriando backend/frontend (TAG=$tag)..."
+Write-Host "2/4 Recriando a WuzAPI para apontar o webhook para o backend..."
+Write-Host "   A sessao do WhatsApp e o banco ficam nos volumes. Nada e apagado."
+docker compose up -d --force-recreate --no-deps wuzapi
+if ($LASTEXITCODE -ne 0) { throw "Nao foi possivel recriar a WuzAPI. Banco e volumes nao foram alterados." }
+
+Write-Host "3/4 Puxando e recriando backend/frontend (TAG=$tag)..."
 docker compose pull backend frontend
 if ($LASTEXITCODE -ne 0) { throw "docker compose pull falhou. Confira o login no Nexus e a TAG no .env." }
 
 docker compose up -d --force-recreate --no-deps backend frontend
-if ($LASTEXITCODE -ne 0) { throw "docker compose up falhou. Imagens antigas foram MANTIDAS." }
+if ($LASTEXITCODE -ne 0) { throw "docker compose up falhou. Imagens antigas foram MANTIDAS. O banco nao foi apagado." }
 
 Esperar-Saudavel
 [void](Limpar-ImagensSistemmaAntigas)

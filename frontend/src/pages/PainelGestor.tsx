@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import WhatsappGrupos from './WhatsappGrupos';
+import Contratos from './Contratos';
 import { FiAlertCircle, FiRefreshCw } from 'react-icons/fi';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
@@ -10,8 +12,52 @@ import CompararPorTipoTv from '../components/CompararPorTipoTv';
 import '../styles/Dashboard.css';
 import '../styles/PainelGestor.css';
 
+function RelatoriosGestor({
+  unidades,
+  carregando,
+  onAbrir,
+}: {
+  unidades: ContratoSaude[];
+  carregando: boolean;
+  onAbrir: (contratoId: string) => void;
+}) {
+  if (carregando && unidades.length === 0) {
+    return <p className="painel-gestor-vazio">Carregando contratos…</p>;
+  }
+  if (unidades.length === 0) {
+    return <p className="painel-gestor-vazio">Nenhum contrato ativo.</p>;
+  }
+  return (
+    <div className="painel-gestor-relatorios">
+      <header className="painel-gestor-header">
+        <div>
+          <p className="painel-gestor-kicker">Relatórios</p>
+          <h2>Todos os contratos</h2>
+          <p>Abra o contrato já na aba de relatórios: ciclo, dia e PDFs daquela unidade.</p>
+        </div>
+      </header>
+      <ul className="painel-gestor-relatorios-lista">
+        {unidades.map((c) => (
+          <li key={c.id}>
+            <div>
+              <strong>{c.numeroContrato}</strong>
+              <span>{c.tiposServico?.length ? `${c.tiposServico.length} tipo(s) de serviço` : 'Sem serviço'}</span>
+            </div>
+            <button type="button" className="btn btn-sm btn-primary" onClick={() => onAbrir(c.id)}>
+              Abrir relatórios
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export default function PainelGestor() {
   const navigate = useNavigate();
+  const [params, setParams] = useSearchParams();
+  const aba = params.get('aba') || 'contratos';
+  const abaWhatsapp = aba === 'whatsapp';
   const { user, entrarContrato } = useAuth();
   const { adicionarToast } = useToast();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -20,8 +66,8 @@ export default function PainelGestor() {
   const [erro, setErro] = useState('');
 
   useEffect(() => {
-    setBreadcrumbs([{ label: 'Gestor' }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: abaWhatsapp ? 'WhatsApp' : 'Gestor' }]);
+  }, [setBreadcrumbs, abaWhatsapp]);
 
   const carregar = useCallback(async (force = false) => {
     setCarregando(true);
@@ -70,7 +116,7 @@ export default function PainelGestor() {
     [unidades],
   );
 
-  const abrirUnidade = useCallback(async (contratoId: string) => {
+  const abrirUnidade = useCallback(async (contratoId: string, abaDestino?: string) => {
     if (ehGestor(user) && user?.contractId !== contratoId) {
       try {
         await entrarContrato(contratoId);
@@ -78,11 +124,27 @@ export default function PainelGestor() {
         /* banco único: segue para a unidade */
       }
     }
-    navigate(`/contratos/${contratoId}`);
+    const destino = abaDestino ? `?aba=${abaDestino}` : '';
+    navigate(`/contratos/${contratoId}${destino}`);
   }, [user, entrarContrato, navigate]);
 
   return (
     <div className="painel-gestor">
+      <div className="painel-gestor-abas" role="tablist" aria-label="Área do gestor">
+        <button type="button" role="tab" aria-selected={aba === 'contratos'} className={aba === 'contratos' ? 'ativa' : ''} onClick={() => setParams({ aba: 'contratos' }, { replace: true })}>Contratos</button>
+        <button type="button" role="tab" aria-selected={aba === 'relatorios'} className={aba === 'relatorios' ? 'ativa' : ''} onClick={() => setParams({ aba: 'relatorios' }, { replace: true })}>Relatórios</button>
+        <button type="button" role="tab" aria-selected={aba === 'comparativo'} className={aba === 'comparativo' ? 'ativa' : ''} onClick={() => setParams({ aba: 'comparativo' }, { replace: true })}>Comparativo</button>
+        <button type="button" role="tab" aria-selected={abaWhatsapp} className={abaWhatsapp ? 'ativa' : ''} onClick={() => setParams({ aba: 'whatsapp' }, { replace: true })}>WhatsApp</button>
+      </div>
+
+      {aba === 'contratos' ? <Contratos /> : aba === 'relatorios' ? (
+        <RelatoriosGestor
+          unidades={unidades}
+          carregando={carregando}
+          onAbrir={(id) => { void abrirUnidade(id, 'relatorios'); }}
+        />
+      ) : abaWhatsapp ? <WhatsappGrupos /> : (
+      <>
       <header className="painel-gestor-header">
         <div>
           <p className="painel-gestor-kicker">Área do gestor</p>
@@ -131,6 +193,8 @@ export default function PainelGestor() {
           dataReferenciaHint={dataReferenciaHint}
           onAbrirContrato={(id) => { void abrirUnidade(id); }}
         />
+      )}
+      </>
       )}
     </div>
   );

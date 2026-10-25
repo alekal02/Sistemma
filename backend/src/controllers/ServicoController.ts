@@ -37,10 +37,13 @@ import { removerRoteamentoPorServico } from '../services/whatsappRoteamentoServi
 import ValidacaoViagemService from '../services/validacaoViagemService';
 import { verificarContagemViagens } from '../services/verificarContagemViagensService';
 import {
+  apagarDatasDeUploadsAbertos,
   cicloEstaFechado,
   fecharCicloServico,
   listarCiclosFechados,
+  montarAvisoDatasCicloFechado,
   reabrirCicloServico,
+  verificarDatasEmCicloFechado,
 } from '../services/cicloPlanilhaService';
 import {
   gerarRelatorioSobrecargaPeso,
@@ -1307,6 +1310,57 @@ export class ServicoController {
     } catch (error) {
       console.error('Erro ao carregar dados do dia:', error);
       return res.status(500).json({ error: 'Erro ao carregar dados do dia' });
+    }
+  }
+
+  /**
+   * DELETE /api/contracts/:contractId/servicos/:id/dados-dia/:data
+   * Apaga os registros de um dia em uploads ainda abertos, para permitir
+   * reenviar a planilha corrigida sem manter o preenchimento errado.
+   */
+  async excluirDadosDia(req: Request, res: Response): Promise<any> {
+    try {
+      const contractId = req.params.contractId as string;
+      const id = req.params.id as string;
+      const data = req.params.data as string;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) {
+        return res.status(400).json({ error: 'Data inválida. Use YYYY-MM-DD.' });
+      }
+
+      const servico = await this.repository.findOne({ where: { id, contract_id: contractId } });
+      if (!servico) {
+        return res.status(404).json({ error: 'Serviço não encontrado' });
+      }
+
+      const { bloqueadas, ciclos } = await verificarDatasEmCicloFechado(id, [data]);
+      if (bloqueadas.includes(data)) {
+        return res.status(409).json({ error: montarAvisoDatasCicloFechado(bloqueadas, ciclos) });
+      }
+
+      const removidos = await apagarDatasDeUploadsAbertos(id, [data]);
+      const registrosRemovidos = removidos.reduce((soma, item) => soma + item.registrosRemovidos, 0);
+      if (registrosRemovidos === 0) {
+        return res.status(404).json({
+          error: 'Nenhum registro em ciclo aberto encontrado neste dia.',
+        });
+      }
+
+      invalidarCacheDadosServico(id);
+      invalidarCacheDashboardServico(id);
+      try {
+        const { dashboardCache } = await import('../services/DashboardCacheManager');
+        dashboardCache.invalidar(id);
+      } catch { /* cache opcional */ }
+
+      return res.json({
+        sucesso: true,
+        data,
+        registrosRemovidos,
+        mensagem: `${registrosRemovidos} registro(s) do dia apagado(s). Você pode subir a planilha corrigida.`,
+      });
+    } catch (error: any) {
+      console.error('Erro ao apagar registros do dia:', error);
+      return res.status(500).json({ error: error.message || 'Erro ao apagar registros do dia' });
     }
   }
 

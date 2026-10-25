@@ -65,6 +65,8 @@ export type TipoServico =
   | 'pintura_meio_fio'
   | 'remocao'
   | 'capina'
+  | 'coleta_seletiva'
+  | 'aterro'
   | 'geral';
 
 export const TIPOS_SERVICO = {
@@ -75,6 +77,8 @@ export const TIPOS_SERVICO = {
   PINTURA_MEIO_FIO: 'pintura_meio_fio',
   REMOCAO: 'remocao',
   CAPINA: 'capina',
+  COLETA_SELETIVA: 'coleta_seletiva',
+  ATERRO: 'aterro',
   GERAL: 'geral',
 } as const;
 
@@ -86,6 +90,8 @@ export const TIPOS_SERVICO_LABELS: Record<TipoServico, string> = {
   pintura_meio_fio: '🎨 Pintura Meio-Fio',
   remocao: '🚛 Remoção',
   capina: '🌱 Capina',
+  coleta_seletiva: '♻️ Coleta seletiva',
+  aterro: '🏭 Aterro',
   geral: '📋 Geral',
 };
 
@@ -118,6 +124,14 @@ export const TIPOS_SERVICO_META: Record<TipoServico, { descricao: string; coluna
   capina: {
     descricao: 'Capina manual ou mecanizada de terrenos, vias e logradouros públicos',
     colunas: ['DATA', 'BAIRRO', 'Equipe', 'Funcionario', 'Metro Linear'],
+  },
+  coleta_seletiva: {
+    descricao: 'Coleta seletiva medida em toneladas na planilha de produção',
+    colunas: ['DATA', 'LOCAL', 'QUANTIDADE', 'UNIDADE', 'TIPO DE EQUIPAMENTO'],
+  },
+  aterro: {
+    descricao: 'Viagens ao aterro na planilha de produção',
+    colunas: ['DATA', 'LOCAL', 'TIPO DE EQUIPAMENTO', 'QUANTIDADE', 'OBSERVAÇÃO'],
   },
   geral: {
     descricao: 'Tipo genérico — usar quando nenhum tipo específico se aplicar',

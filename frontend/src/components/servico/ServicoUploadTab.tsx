@@ -46,7 +46,7 @@ const ServicoUploadTab = memo(function ServicoUploadTab({
   const { adicionarToast } = useToast();
   const ehRocada = tipoServico === 'rocadeira';
   /** Tipos que podem receber o layout unificado (não altera fluxo legado de roçada) */
-  const aceitaUnificado = ['rocadeira', 'capina', 'varricao', 'poda', 'geral', 'remocao'].includes(tipoServico);
+  const aceitaUnificado = ['rocadeira', 'capina', 'varricao', 'poda', 'geral', 'remocao', 'coleta_seletiva', 'aterro'].includes(tipoServico);
 
   const [uploading, setUploading] = useState(false);
   const [uploadPct, setUploadPct] = useState(0);

@@ -1,33 +1,84 @@
-INSTRUÇÕES WHATSAPP (máquina destino)
-=====================================
+INSTRUÇÕES — atualizar a outra máquina SEM perder o banco
+=======================================================
 
-A partir da 2.3.5 a WuzAPI sobe DENTRO do docker compose (não precisa
-instalar nada no Windows nem usar host.docker.internal).
+O WhatsApp para de importar planilha e de responder *relatorio* quando o
+webhook da sessão ainda aponta para host.docker.internal. A mensagem chega
+no celular, mas não entra no Sistemma.
 
-Passos:
-1. SUBSTITUA o docker-compose.yml pelo deste pacote (obrigatório)
-2. No .env:
+A imagem 4.0.15 regrava esse webhook para
+http://sistemma-backend:3200/api/wuzapi/webhook
+assim que o backend sobe, desde que a WuzAPI esteja na rede do Docker.
 
-TAG=4.0.11
-WUZAPI_TOKEN=sistemma_wuzapi_token_local
-WUZAPI_ADMIN_TOKEN=1234ABCD
-WUZAPI_INSTANCE_NAME=Sistemma
+O banco, o MinIO, os uploads e a sessão do WhatsApp ficam em volumes.
+Esta atualização NÃO apaga volume. NÃO restaura dump por cima do banco.
 
-IMPORTANTE: remova do .env (se existirem) estas linhas antigas:
-  WUZAPI_URL=http://host.docker.internal:8080
-  WUZAPI_WEBHOOK_URL=http://host.docker.internal:3200/...
+NA MÁQUINA DESTINO (C:\Sistemma)
+--------------------------------
 
-3. Suba tudo de novo:
+1. Backup primeiro (só cópia; não mexe no que está rodando):
 
-docker compose pull
-docker compose up -d --force-recreate
+   cd C:\Sistemma
+   .\scripts\backup-destino.cmd
 
-4. Confira:
+   Guarde a pasta C:\Sistemma\backups. Não apague.
 
-docker ps
-docker exec sistemma-backend printenv WUZAPI_URL
-# deve mostrar: http://wuzapi:8080
+2. Copie deste pacote PARA C:\Sistemma, por cima, só estes arquivos:
 
-docker logs sistemma-wuzapi --tail 30
+   docker-compose.yml
+   scripts\atualizar-destino.ps1
+   scripts\atualizar-destino.cmd
+   scripts\backup-destino.ps1
+   scripts\backup-destino.cmd
+   scripts\conferir-whatsapp.ps1
+   scripts\conferir-whatsapp.cmd
 
-5. Na tela Grupos WhatsApp → Conectar / Gerar QR
+   NÃO substitua o .env.
+   NÃO copie backend\, frontend\ nem a pasta do banco.
+   NÃO rode docker compose down -v
+   NÃO apague volumes no Docker Desktop.
+
+3. No .env que JÁ EXISTE, mude somente a linha da versão:
+
+   TAG=4.0.15
+
+   Apague, se existirem, estas linhas (o compose já define o endereço certo):
+
+   WUZAPI_URL=http://host.docker.internal:8080
+   WUZAPI_WEBHOOK_URL=http://host.docker.internal:3200/...
+   WUZAPI_GLOBAL_WEBHOOK=http://host.docker.internal:3200/...
+   WUZAPI_WEBHOOK_ENFORCE=true
+
+   Deixe WUZAPI_WEBHOOK_ENFORCE desligado ou ausente. Se estiver true,
+   a WuzAPI não autentica o webhook e a mensagem é recusada.
+
+   Não altere DB_PASSWORD, DB_NAME, DB_USER, JWT_SECRET nem MULTI_TENANT.
+
+4. Atualize:
+
+   cd C:\Sistemma
+   .\scripts\atualizar-destino.cmd
+
+   O script puxa backend e frontend do Nexus, recria a WuzAPI
+   (a sessão continua no volume) e recria backend e frontend.
+   Postgres e MinIO não são recriados com down. Os volumes permanecem.
+
+5. Confira:
+
+   .\scripts\conferir-whatsapp.cmd
+
+   WUZAPI_URL deve ser http://wuzapi:8080
+   WUZAPI_WEBHOOK_URL e WUZAPI_GLOBAL_WEBHOOK devem ser
+   http://sistemma-backend:3200/api/wuzapi/webhook
+   O log do backend deve mostrar: Webhook confirmado
+
+6. No grupo do WhatsApp, envie a planilha e, depois, a palavra relatorio.
+   O número precisa continuar pareado. Não é necessário escanear o QR
+   de novo se a sessão já estava conectada.
+
+Se o pull falhar
+----------------
+A imagem 4.0.15 precisa estar no Nexus. Na máquina de desenvolvimento:
+
+   .\publicar.ps1 -Tag 4.0.15
+
+Depois, na destino, repita o passo 4. O banco não entra nessa publicação.

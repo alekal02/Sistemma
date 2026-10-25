@@ -30,6 +30,8 @@ type Props = {
   carregandoRegistros?: boolean;
   mostrarRegistros?: boolean;
   onToggleRegistros?: () => void;
+  apagandoRegistros?: boolean;
+  onApagarRegistros?: () => void;
   kpisOperacao?: Array<{
     id?: string;
     nome: string;
@@ -82,6 +84,8 @@ export default function ServicoUnidadeDiaPanel({
   carregandoRegistros,
   mostrarRegistros,
   onToggleRegistros,
+  apagandoRegistros,
+  onApagarRegistros,
   kpisOperacao = [],
   loadingKpis,
 }: Props) {
@@ -246,17 +250,36 @@ export default function ServicoUnidadeDiaPanel({
       </div>
 
       {onToggleRegistros && (
-        <button
-          type="button"
-          onClick={onToggleRegistros}
-          style={{
-            fontSize: '0.75rem', fontWeight: 600, padding: '0.4rem 0.75rem',
-            borderRadius: '8px', border: '1px solid #cbd5e1', background: '#fff',
-            color: '#334155', cursor: 'pointer', marginBottom: '0.75rem',
-          }}
-        >
-          {mostrarRegistros ? 'Ocultar registros' : `Ver registros (${qtdRegistros.toLocaleString('pt-BR')})`}
-        </button>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '0.75rem', alignItems: 'center' }}>
+          <button
+            type="button"
+            onClick={onToggleRegistros}
+            style={{
+              fontSize: '0.75rem', fontWeight: 600, padding: '0.4rem 0.75rem',
+              borderRadius: '8px', border: '1px solid #cbd5e1', background: '#fff',
+              color: '#334155', cursor: 'pointer',
+            }}
+          >
+            {mostrarRegistros ? 'Ocultar registros' : `Ver registros (${qtdRegistros.toLocaleString('pt-BR')})`}
+          </button>
+          {mostrarRegistros && onApagarRegistros && qtdRegistros > 0 && (
+            <button
+              type="button"
+              onClick={onApagarRegistros}
+              disabled={apagandoRegistros}
+              style={{
+                fontSize: '0.75rem', fontWeight: 700, padding: '0.4rem 0.75rem',
+                borderRadius: '8px', border: '1px solid #fecaca',
+                background: apagandoRegistros ? '#fee2e2' : '#fff',
+                color: '#b91c1c', cursor: apagandoRegistros ? 'wait' : 'pointer',
+              }}
+            >
+              {apagandoRegistros
+                ? 'Apagando...'
+                : `Apagar registros do dia (${qtdRegistros.toLocaleString('pt-BR')})`}
+            </button>
+          )}
+        </div>
       )}
 
       {mostrarRegistros && (

@@ -6,6 +6,54 @@
   margin: 0 auto;
 }
 
+.painel-gestor-abas {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.painel-gestor-abas button {
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  color: #475569;
+  border-radius: 999px;
+  padding: 0.45rem 0.9rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.painel-gestor-abas button.ativa {
+  background: #1e293b;
+  color: #fff;
+  border-color: #1e293b;
+}
+
+.painel-gestor-relatorios-lista {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.painel-gestor-relatorios-lista li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.85rem 1rem;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+}
+
+.painel-gestor-relatorios-lista span {
+  display: block;
+  color: #64748b;
+  font-size: 0.82rem;
+  margin-top: 0.15rem;
+}
+
 .painel-gestor-header {
   display: flex;
   align-items: flex-start;

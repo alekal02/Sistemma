@@ -105,7 +105,9 @@ services:
       WUZAPI_ADMIN_TOKEN: ${WUZAPI_ADMIN_TOKEN:-1234ABCD}
       WUZAPI_GLOBAL_ENCRYPTION_KEY: ${WUZAPI_GLOBAL_ENCRYPTION_KEY:-wuzapi-sistemma-aes256-key-32ch!}
       WUZAPI_GLOBAL_HMAC_KEY: ${WUZAPI_GLOBAL_HMAC_KEY:-wuzapi-sistemma-hmac-key-min-32chars!}
-      WUZAPI_GLOBAL_WEBHOOK: ${WUZAPI_WEBHOOK_URL:-http://backend:3200/api/wuzapi/webhook}
+      # Fixo na rede Docker. Não leia WUZAPI_WEBHOOK_URL do .env: o valor antigo
+      # host.docker.internal entrega a mensagem duas vezes ou para o lugar errado.
+      WUZAPI_GLOBAL_WEBHOOK: http://sistemma-backend:3200/api/wuzapi/webhook
       DB_USER: wuzapi
       DB_PASSWORD: ${WUZAPI_DB_PASSWORD:-wuzapi}
       DB_NAME: wuzapi
@@ -119,6 +121,7 @@ services:
     volumes:
       - wuzapi_files:/app/files
       - wuzapi_dbdata:/app/dbdata
+    shm_size: "256mb"
     networks:
       - sistemma-net
 
@@ -179,14 +182,14 @@ services:
       DASHBOARD_WARMUP_ENABLED: ${DASHBOARD_WARMUP_ENABLED:-true}
       DASHBOARD_WARMUP_DELAY_MS: ${DASHBOARD_WARMUP_DELAY_MS:-45000}
       DASHBOARD_WARMUP_INTERVAL_MS: ${DASHBOARD_WARMUP_INTERVAL_MS:-86400000}
-      NODE_OPTIONS: ${NODE_OPTIONS:---max-old-space-size=768}
+      NODE_OPTIONS: ${NODE_OPTIONS:---max-old-space-size=768 --expose-gc}
       BUILD_SHA: ${BUILD_SHA:-unknown}
       IMAGE_TAG: ${TAG:-latest}
       # URLs internas fixas (mesma rede Docker) — não use host.docker.internal aqui
       WUZAPI_URL: http://wuzapi:8080
       WUZAPI_TOKEN: ${WUZAPI_TOKEN:-sistemma_wuzapi_token_local}
       WUZAPI_ADMIN_TOKEN: ${WUZAPI_ADMIN_TOKEN:-1234ABCD}
-      WUZAPI_WEBHOOK_URL: http://backend:3200/api/wuzapi/webhook
+      WUZAPI_WEBHOOK_URL: http://sistemma-backend:3200/api/wuzapi/webhook
       WUZAPI_WEBHOOK_SECRET: ${WUZAPI_WEBHOOK_SECRET:-}
       # A mesma chave do serviço wuzapi. O bloqueio permanece desligado até a validação.
       WUZAPI_GLOBAL_HMAC_KEY: ${WUZAPI_GLOBAL_HMAC_KEY:-}
@@ -206,6 +209,7 @@ services:
       - "${BACKEND_PORT:-3200}:3200"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    shm_size: "256mb"
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3200/health"]
       interval: 30s

@@ -1,0 +1,49 @@
+Levar para a outra máquina — Sistemma 4.0.15
+=============================================
+
+Problema
+--------
+As mensagens do WhatsApp chegam no celular e não entram no sistema:
+a planilha não é importada e o comando relatorio não envia o PDF.
+A WuzAPI está chamando um endereço antigo (host.docker.internal)
+em vez do backend que roda dentro do Docker.
+
+O que vai na pasta
+------------------
+docker-compose.yml
+env.docker.example          (modelo; NAO substitua o .env da outra máquina)
+INSTRUCOES-WHATSAPP.txt
+LEIA-ME-DESTINO.txt
+scripts\atualizar-destino.cmd / .ps1
+scripts\backup-destino.cmd / .ps1
+scripts\conferir-whatsapp.cmd / .ps1
+
+O banco NÃO vai nesta pasta. Ele continua no volume postgres_data
+da outra máquina.
+
+O que não fazer
+---------------
+- docker compose down -v
+- apagar volume no Docker Desktop (postgres_data, minio_data, uploads_data,
+  wuzapi_pg_data, wuzapi_files, wuzapi_dbdata)
+- substituir o .env da outra máquina por este exemplo
+- restaurar um dump por cima do banco que já está lá
+- copiar a pasta do PostgreSQL entre máquinas
+
+Ordem na outra máquina
+----------------------
+1. cd C:\Sistemma
+2. .\scripts\backup-destino.cmd
+3. Copiar os arquivos deste pacote por cima, sem o .env
+4. No .env existente, só TAG=4.0.15
+   e apagar linhas com host.docker.internal e WUZAPI_WEBHOOK_ENFORCE=true
+5. .\scripts\atualizar-destino.cmd
+6. .\scripts\conferir-whatsapp.cmd
+7. Testar no grupo: enviar a planilha e depois escrever relatorio
+
+A imagem vem do Nexus. Se o pull disser que a tag 4.0.15 não existe,
+publique antes na máquina de desenvolvimento:
+
+   .\publicar.ps1 -Tag 4.0.15
+
+Detalhe em INSTRUCOES-WHATSAPP.txt.

@@ -42,3 +42,16 @@ export const PDF_CACHE_MAX_ENTRADAS = parseInt(process.env.PDF_CACHE_MAX_ENTRADA
 
 /** Body parser Express (bytes) — alinhar com MAX_FILE_SIZE do compose */
 export const MAX_BODY_BYTES = parseInt(process.env.MAX_FILE_SIZE || '10485760', 10);
+
+/**
+ * Webhook do WhatsApp. A planilha chega em base64 (~33% maior que o arquivo).
+ * O limite geral de 10 MB recusava o POST, a WuzAPI desistia e o grupo via o chatbot mudo.
+ */
+export const WEBHOOK_BODY_LIMIT = process.env.WUZAPI_WEBHOOK_BODY_LIMIT || '64mb';
+
+/** O webhook do WhatsApp aceita a planilha. As outras rotas continuam no teto pequeno. */
+export function limiteCorpoPorRota(caminho: string): string | number {
+  if (caminho.startsWith('/api/sala-tecnica')) return '40mb';
+  if (caminho.startsWith('/api/wuzapi/webhook')) return WEBHOOK_BODY_LIMIT;
+  return MAX_BODY_BYTES;
+}

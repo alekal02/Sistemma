@@ -17,14 +17,14 @@ cd frontend && npm install && npm run dev  # :5175
 
 | Onde | Comando |
 |------|---------|
-| **Dev** | `.\publicar.ps1 -Tag 4.0.11` |
+| **Dev** | `.\publicar.ps1 -Tag 4.1.0` |
 | **Destino** | Editar `TAG` no `.env` → `docker compose up -d` |
 
 ### Dev — publicar
 
 ```powershell
 Copy-Item env.nexus.example .env.nexus   # primeira vez
-.\publicar.ps1 -Tag 4.0.11
+.\publicar.ps1 -Tag 4.0.15
 ```
 
 Gera `dist\deploy\` para copiar em `C:\Sistemma`.
@@ -72,13 +72,15 @@ assinado. Equivalente manual:
 ### Toda atualização
 
 ```powershell
-# Dev
-.\publicar.ps1 -Tag 4.0.11
-docker compose pull
-docker compose up -d --force-recreate backend frontend
+# Dev — publica a imagem no Nexus e gera dist\deploy
+.\publicar.ps1 -Tag 4.0.15
+
+# Destino — backup antes. Recria WuzAPI, backend e frontend. Não apaga volume.
+cd C:\Sistemma
+.\scripts\atualizar-destino.cmd
 ```
 
-### Atualizar para a 4.0.11 sem perder dados
+### Atualizar para a 4.0.15 sem perder dados
 
 Na máquina atual, faça o backup antes de atualizar. O script não apaga volume, imagem nem banco:
 
@@ -116,7 +118,7 @@ serviços, copie esses arquivos para a pasta `backups` e extraia cada um no
 volume de mesmo papel. O prefixo `sistemma_` pode variar; confirme com `docker volume ls`.
 Pare o serviço antes de extrair e não use `docker compose down -v`.
 
-Para uma máquina que já possui os volumes, altere apenas `TAG=4.0.11` no `.env` e
+Para uma máquina que já possui os volumes, altere apenas `TAG=4.0.15` no `.env` e
 execute `docker compose pull backend frontend` seguido de `docker compose up -d --force-recreate backend frontend`.
 Não use `docker compose down -v`, não remova volumes e não substitua o `.env`.
 Se for necessário restaurar um dump, pare apenas o backend e restaure no mesmo
@@ -127,7 +129,47 @@ O compose **não tem build** — sempre puxa `backend` e `frontend` do Nexus (`p
 
 Build local na dev usa override: `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build`
 
-Imagem local no formato da produção, sem enviar ao Nexus: `.\build-and-push.ps1 -Tag 4.0.11 -Load`
+Imagem local no formato da produção, sem enviar ao Nexus: `.\build-and-push.ps1 -Tag 4.0.15 -Load`
+
+### O que entra na 4.1.0
+
+- WhatsApp: o chatbot só lê os grupos marcados no gestor. Conversa privada e grupo não escolhido não são respondidos.
+- No grupo marcado, só entram planilha e pedido de relatório (menu e atalhos). Conversa solta, foto, GPS e manutenção não entram na fila do PDF.
+- Planilha de produção (modelo Unaí): o primeiro upload cria só os serviços que estão na aba CONSOLIDADO (Capina, Poda, Aterro, Coleta Seletiva e os demais reconhecidos), cada um com os KPIs do próprio tipo. Aterro e Coleta Seletiva não caem mais no tipo genérico.
+
+### O que entra na 4.0.18
+
+- WhatsApp: o PDF de evolução por ciclo volta ao gráfico de linhas do relatório gerencial (curva suave, ponto em cada dia, faixas ótimo/ruim/péssimo/excedido). A opção *3* e o atalho *evolucao por ciclo* usam o ciclo completo.
+
+### O que entra na 4.0.17
+
+- WhatsApp: planilha grande (acima de ~48 MB) não é mais recusada. O arquivo vai para disco em pedaços, sem segurar o JSON inteiro na memória.
+- Se o servidor cair no meio, retoma uma vez. Na segunda queda avisa o grupo e não entra em ciclo no próximo pull.
+- Relatório e planilha não rodam juntos, e o Chrome do PDF fecha ao terminar.
+
+### O que entra na 4.0.16
+
+- WhatsApp: a planilha grande (medição `.xls` de vários MB) não é mais lida inteira só para descobrir o tipo. O grupo recebe "Recebi a planilha" na hora; a importação segue em seguida.
+
+### O que entra na 4.0.15
+
+- WhatsApp na máquina destino: planilha e comando `relatorio` voltam a ser processados. Com a WuzAPI na rede Docker, o backend ignora `WUZAPI_WEBHOOK_URL` antiga (`host.docker.internal`) e regrava o webhook da sessão em `http://sistemma-backend:3200/api/wuzapi/webhook`.
+- A atualização recria o container da WuzAPI para o webhook global acompanhar. Os volumes do Postgres, do MinIO e da sessão do WhatsApp não são removidos.
+
+### O que entra na 4.0.14
+
+- WhatsApp volta a receber mensagem e planilha: o webhook global aponta para `sistemma-backend` dentro do Docker, e o backend regrava essa URL na sessão já conectada.
+
+### O que entra na 4.0.13
+
+- Apagar o dia não dispara mais o aquecimento do dashboard (isso derrubava o Docker).
+- WhatsApp: *relatorio* agora é *1* diário, *2* ciclo, *3* evolução da semana, *4* saúde. *evolucao* gera a semana na hora; *evolucao 15*, *evolucao ciclo* e *evolucao anterior* mudam a janela.
+- O PDF de evolução não baixa mais gráfico da internet.
+- O webhook global da WuzAPI deixa de ir para `host.docker.internal` (a mensagem chegava duas vezes).
+
+### O que entra na 4.0.12
+
+- Dia de capina, varrição, poda e pintura: em **Ver registros**, o botão **Apagar registros do dia** remove só aquela data (ciclo aberto) para reenviar a planilha corrigida.
 
 ### O que entra na 4.0.11
 

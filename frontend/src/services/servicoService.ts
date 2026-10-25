@@ -1238,6 +1238,18 @@ const servicoService = {
     };
   },
 
+  /** Apaga os registros de um dia (ciclo aberto) para permitir reenviar a planilha. */
+  async apagarRegistrosDia(contractId: string, servicoId: string, data: string) {
+    invalidateCachesServico(contractId, servicoId);
+    const { data: body } = await api.delete<{
+      sucesso: boolean;
+      data: string;
+      registrosRemovidos: number;
+      mensagem: string;
+    }>(`/contracts/${contractId}/servicos/${servicoId}/dados-dia/${data}`);
+    return body;
+  },
+
   async excluirServico(contractId: string, servicoId: string) {
     invalidateCachesServico(contractId, servicoId);
     const { data } = await api.delete<{

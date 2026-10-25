@@ -11,8 +11,6 @@ import {
   FiBarChart2,
   FiActivity,
   FiPieChart,
-  FiLogOut,
-  FiMessageSquare,
   FiColumns,
   FiFileText,
 } from 'react-icons/fi'
@@ -44,7 +42,7 @@ function getInitials(nome: string): string {
 }
 
 function Layout({ children }: LayoutProps) {
-  const { user, logout, sairContrato } = useAuth()
+  const { user, sairContrato } = useAuth()
   const gestor = ehGestor(user)
   const hubGestor = gestor && !user?.contractId
   const naUnidade = Boolean(user?.contractId)
@@ -137,20 +135,28 @@ function Layout({ children }: LayoutProps) {
                 Gestor
               </div>
               <Link
-                to="/visao-geral"
-                className={`sidebar-link ${location.pathname === '/visao-geral' ? 'active' : ''}`}
-                onClick={fecharSidebarMobile}
-              >
-                <span className="sidebar-icon"><FiActivity size={20} /></span>
-                <span className={sidebarAberta ? '' : 'hidden-text'}>Comparativo</span>
-              </Link>
-              <Link
-                to="/contratos"
-                className={`sidebar-link ${location.pathname.startsWith('/contratos') ? 'active' : ''}`}
+                to="/visao-geral?aba=contratos"
+                className={`sidebar-link ${location.pathname === '/visao-geral' && !location.search.includes('aba=comparativo') && !location.search.includes('aba=relatorios') && !location.search.includes('aba=whatsapp') ? 'active' : ''}`}
                 onClick={fecharSidebarMobile}
               >
                 <span className="sidebar-icon"><FiDatabase size={20} /></span>
                 <span className={sidebarAberta ? '' : 'hidden-text'}>Contratos</span>
+              </Link>
+              <Link
+                to="/visao-geral?aba=relatorios"
+                className={`sidebar-link ${location.search.includes('aba=relatorios') ? 'active' : ''}`}
+                onClick={fecharSidebarMobile}
+              >
+                <span className="sidebar-icon"><FiFileText size={20} /></span>
+                <span className={sidebarAberta ? '' : 'hidden-text'}>Relatórios</span>
+              </Link>
+              <Link
+                to="/visao-geral?aba=comparativo"
+                className={`sidebar-link ${location.search.includes('aba=comparativo') ? 'active' : ''}`}
+                onClick={fecharSidebarMobile}
+              >
+                <span className="sidebar-icon"><FiActivity size={20} /></span>
+                <span className={sidebarAberta ? '' : 'hidden-text'}>Comparativo</span>
               </Link>
               <Link
                 to="/dashboard/executivo"
@@ -183,14 +189,6 @@ function Layout({ children }: LayoutProps) {
               >
                 <span className="sidebar-icon"><FiFileText size={20} /></span>
                 <span className={sidebarAberta ? '' : 'hidden-text'}>Relatórios</span>
-              </Link>
-              <Link
-                to="/whatsapp-grupos"
-                className={`sidebar-link ${location.pathname === '/whatsapp-grupos' ? 'active' : ''}`}
-                onClick={fecharSidebarMobile}
-              >
-                <span className="sidebar-icon"><FiMessageSquare size={20} /></span>
-                <span className={sidebarAberta ? '' : 'hidden-text'}>WhatsApp</span>
               </Link>
             </>
           )}
@@ -263,8 +261,8 @@ function Layout({ children }: LayoutProps) {
               <button
                 type="button"
                 className="btn-logout-header"
-                onClick={() => { void sairContrato().then(() => navigate('/visao-geral')) }}
-                title="Voltar à comparação de todos os contratos"
+                onClick={() => { void sairContrato().then(() => navigate('/visao-geral?aba=contratos')) }}
+                title="Voltar para todos os contratos"
               >
                 <span>Todos os contratos</span>
               </button>
@@ -275,10 +273,6 @@ function Layout({ children }: LayoutProps) {
               </div>
               <span className="header-user-name">{gestor ? 'Gestor' : 'Unidade'}</span>
             </div>
-            <button type="button" className="btn-logout-header" onClick={logout} title="Trocar área">
-              <FiLogOut size={16} />
-              <span>Trocar área</span>
-            </button>
           </div>
         </header>
 

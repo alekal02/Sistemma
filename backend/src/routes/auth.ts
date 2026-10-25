@@ -12,6 +12,7 @@ if (allowPublicRegister) {
   router.post('/register', authenticate, authorize('admin'), AuthController.register.bind(AuthController));
 }
 router.post('/login', AuthController.login.bind(AuthController));
+router.post('/acesso-direto', AuthController.acessoDireto.bind(AuthController));
 router.post('/refresh', AuthController.refresh.bind(AuthController));
 router.post('/entrar-contrato', authenticate, AuthController.entrarContrato.bind(AuthController));
 router.post('/sair-contrato', authenticate, AuthController.sairContrato.bind(AuthController));

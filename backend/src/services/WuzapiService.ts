@@ -47,12 +47,12 @@ export class WuzapiService {
     return process.env.WUZAPI_WEBHOOK_SECRET || '';
   }
 
-  /** URL pública do webhook do Sistemma (para a WuzAPI chamar). */
+  /** URL que a WuzAPI deve chamar. Dentro do Docker ignora host.docker.internal. */
   get webhookUrl(): string {
-    const fromEnv = (process.env.WUZAPI_WEBHOOK_URL || process.env.WEBHOOK_URL || '').trim();
-    if (fromEnv) return fromEnv;
-    // Fallback só para dev: WuzAPI no host → backend publicado em 3200
-    return 'http://host.docker.internal:3200/api/wuzapi/webhook';
+    return resolverWebhookWuzapi(
+      this.baseUrl,
+      process.env.WUZAPI_WEBHOOK_URL || process.env.WEBHOOK_URL || '',
+    );
   }
 
   private unwrap<T>(data: any): T {
@@ -258,9 +258,26 @@ export class WuzapiService {
         webhookurl: url,
         events,
       });
+      let gravado = '';
+      try {
+        gravado = await this.lerWebhook();
+      } catch {
+        gravado = '';
+      }
+      if (gravado && gravado !== url) {
+        console.warn(`[Wuzapi] Webhook gravado (${gravado}) difere do pedido (${url})`);
+      } else {
+        console.log(`[Wuzapi] Webhook confirmado: ${gravado || url}`);
+      }
     } catch (error: unknown) {
       throw this.erroMsg('Falha ao configurar webhook', error);
     }
+  }
+
+  private async lerWebhook(): Promise<string> {
+    const { data } = await this.client.get('/webhook');
+    const raw = this.unwrap<{ webhook?: string; Webhook?: string }>(data) || {};
+    return String(raw.webhook || raw.Webhook || '').trim();
   }
 
   async enviarTexto(destino: string, body: string): Promise<WuzapiSendResult> {
@@ -310,6 +327,8 @@ export class WuzapiService {
         FileSHA256: payload.FileSHA256,
         FileEncSHA256: payload.FileEncSHA256 || '',
         FileLength: payload.FileLength,
+      }, {
+        timeout: parseInt(process.env.WUZAPI_DOWNLOAD_TIMEOUT_MS || '300000', 10),
       });
       const unwrapped = this.unwrap<{ Data?: string; data?: string; Mimetype?: string; mimetype?: string }>(data);
       return {
@@ -379,6 +398,23 @@ export class WuzapiService {
       throw this.erroMsg('Falha ao listar grupos do WhatsApp', error);
     }
   }
+}
+
+const WEBHOOK_INTERNO = 'http://sistemma-backend:3200/api/wuzapi/webhook';
+const WEBHOOK_DEV = 'http://host.docker.internal:3200/api/wuzapi/webhook';
+
+/**
+ * Com a WuzAPI no compose (`http://wuzapi:8080`), o webhook tem de ser o nome
+ * do serviço. Um .env antigo com host.docker.internal faz a mensagem cair
+ * fora do backend: planilha não importa e o relatório não sai.
+ */
+export function resolverWebhookWuzapi(wuzapiUrl: string, webhookUrl: string): string {
+  const base = String(wuzapiUrl || '').trim();
+  const fromEnv = String(webhookUrl || '').trim();
+  const wuzapiNaRedeDocker = /^https?:\/\/wuzapi(?::\d+)?\/?$/i.test(base);
+  if (wuzapiNaRedeDocker) return WEBHOOK_INTERNO;
+  if (fromEnv) return fromEnv;
+  return WEBHOOK_DEV;
 }
 
 export const wuzapiService = new WuzapiService();

@@ -13,6 +13,7 @@ import {
   ehPedidoSaude,
   ehPedidoOperacional,
   ehPedidoEvolucao,
+  textoMereceProcessamento,
 } from './WhatsappComandoRelatorioTexto';
 
 describe('WhatsApp — data no comando do dia', () => {
@@ -75,6 +76,23 @@ describe('WhatsApp — menu relatorio (serviço → diário/ciclo)', () => {
     assert.equal(ehPedidoFormatoCiclo('2'), true);
     assert.equal(ehPedidoFormatoCiclo('ciclo completo'), true);
     assert.equal(ehPedidoFormatoCiclo('diario'), false);
+  });
+});
+
+describe('WhatsApp — o que entra na fila', () => {
+  it('aceita relatório, atalho e número de menu', () => {
+    assert.equal(textoMereceProcessamento('Relatório'), true);
+    assert.equal(textoMereceProcessamento('relatório de saúde'), true);
+    assert.equal(textoMereceProcessamento('ciclo anterior'), true);
+    assert.equal(textoMereceProcessamento('dia 16/09'), true);
+    assert.equal(textoMereceProcessamento('1'), true);
+    assert.equal(textoMereceProcessamento('evolucao'), true);
+  });
+
+  it('descarta conversa que não é comando', () => {
+    assert.equal(textoMereceProcessamento('bom dia pessoal'), false);
+    assert.equal(textoMereceProcessamento('pode mandar a foto do caminhão'), false);
+    assert.equal(textoMereceProcessamento(''), false);
   });
 });
 

@@ -41,9 +41,12 @@ export function webhookHmacDeveRecusar(opts: {
   segredo: string;
   corpo: Buffer | null;
   assinatura: string;
+  hmacCalculado?: string;
 }): boolean {
   if (!opts.exigir) return false;
-  if (!opts.segredo || !opts.corpo || !opts.assinatura) return true;
+  if (!opts.segredo || !opts.assinatura) return true;
+  if (opts.hmacCalculado) return !segredoWebhookConfere(opts.hmacCalculado, opts.assinatura);
+  if (!opts.corpo) return true;
   return !assinaturaHmacConfere(opts.segredo, opts.corpo, opts.assinatura);
 }
 

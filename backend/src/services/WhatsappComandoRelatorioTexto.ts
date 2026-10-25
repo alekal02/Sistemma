@@ -4,6 +4,8 @@ import { TipoServico } from '../enums/TipoServico';
 export type QualCiclo = 'atual' | 'anterior';
 
 const ALIASES_TIPO_SERVICO: Array<{ tipo: string; palavras: string[] }> = [
+  { tipo: TipoServico.COLETA_SELETIVA, palavras: ['coleta seletiva'] },
+  { tipo: TipoServico.ATERRO, palavras: ['aterro'] },
   { tipo: TipoServico.COLETA_CAMINHAO, palavras: ['coleta', 'caminhao'] },
   { tipo: TipoServico.ROCADEIRA, palavras: ['rocada', 'rocadeira'] },
   { tipo: TipoServico.VARRICAO, palavras: ['varricao', 'varredura'] },
@@ -158,6 +160,28 @@ export function textoPedeCicloAnterior(norm: string): boolean {
     || t.includes('ultimo ciclo')
     || t.includes('ciclo fechado')
   );
+}
+
+/**
+ * Conversa solta no grupo não entra na fila pesada (Chrome/PDF).
+ * Comando, número de menu, data ou planilha continuam.
+ */
+export function textoMereceProcessamento(bruto: string): boolean {
+  const t = String(bruto || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+  if (!t || t.length > 180) return false;
+  if (/^\d{1,2}\b/.test(t)) return true;
+  if (/^(cancelar|sair|voltar|menu|ajuda|help|comandos)\b/.test(t)) return true;
+  if (extrairDataIsoComando(t)) return true;
+  if (ehPedidoSaude(t) || ehPedidoOperacional(t) || ehPedidoEvolucao(t)) return true;
+  if (ehPedidoMenuRelatorio(t) || ehPedidoRelatorioDia(t) || ehPedidoFormatoCiclo(t)) return true;
+  if (/^(ciclo|comparativo|comparar|peso|evolucao|saude|hodometro|diario|dia|relatorio|relatorios|pdf|report)\b/.test(t)) {
+    return true;
+  }
+  return false;
 }
 
 /** Menu atual/anterior — o "2" aqui é ciclo anterior (não análise de peso). */

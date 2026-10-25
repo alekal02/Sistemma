@@ -8,7 +8,6 @@ import ToastContainer from './components/Toast'
 import ProtectedRoute from './components/ProtectedRoute'
 import AdminRoute from './components/AdminRoute'
 import Layout from './components/Layout'
-import Acesso from './pages/Acesso'
 import VisaoGeral from './pages/VisaoGeral'
 import Contratos from './pages/Contratos'
 import ContratoDetalhe from './pages/ContratoDetalhe'
@@ -18,7 +17,6 @@ import ConfiguracaoServico from './pages/ConfiguracaoServico'
 import BibliotecaKpisUniversais from './pages/BibliotecaKpisUniversais'
 import DashboardExecutivo from './pages/DashboardExecutivo'
 import BibliotecaGraficosPadrao from './pages/BibliotecaGraficosPadrao'
-import WhatsappGrupos from './pages/WhatsappGrupos'
 
 import './App.css'
 
@@ -40,12 +38,28 @@ function GestorOnlyRoute({ children }: { children: ReactNode }) {
   return <>{children}</>
 }
 
-/** Sem sessão a raiz é a própria escolha de área; com sessão vai para a home. */
+/** Abre direto na área do gestor. A tela de senha não aparece mais. */
 function RaizOuAcesso() {
-  const { user, loading } = useAuth()
-  if (loading) return null
-  if (user) return <Navigate to={homePath(user)} replace />
-  return <Acesso />
+  const { user, loading, erroAcesso, entrarDireto } = useAuth()
+  if (loading) {
+    return (
+      <div className="loading-screen">
+        <div className="loading-spinner" />
+        <p>Abrindo o gestor…</p>
+      </div>
+    )
+  }
+  if (!user) {
+    return (
+      <div className="loading-screen">
+        <p>{erroAcesso || 'Não foi possível abrir o gestor.'}</p>
+        <button type="button" className="btn btn-primary" onClick={() => { void entrarDireto() }}>
+          Tentar de novo
+        </button>
+      </div>
+    )
+  }
+  return <Navigate to="/visao-geral?aba=contratos" replace />
 }
 
 function App() {
@@ -163,18 +177,7 @@ function App() {
               </ProtectedRoute>
             }
           />
-          <Route
-            path="/whatsapp-grupos"
-            element={
-              <ProtectedRoute>
-                <AdminRoute>
-                  <Layout>
-                    <WhatsappGrupos />
-                  </Layout>
-                </AdminRoute>
-              </ProtectedRoute>
-            }
-          />
+          <Route path="/whatsapp-grupos" element={<Navigate to="/visao-geral?aba=whatsapp" replace />} />
 
           <Route path="/dashboard" element={<Navigate to="/visao-geral" replace />} />
           <Route path="/dashboard/*" element={<Navigate to="/visao-geral" replace />} />

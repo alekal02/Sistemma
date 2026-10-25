@@ -23,6 +23,8 @@ export type TipoServicoConsolidado =
   | TipoServico.VARRICAO
   | TipoServico.PODA
   | TipoServico.REMOCAO
+  | TipoServico.COLETA_SELETIVA
+  | TipoServico.ATERRO
   | TipoServico.GERAL;
 
 export interface LinhaConsolidadoProducao {
@@ -134,6 +136,8 @@ function parseDataFlex(v: unknown): Date | null {
 export function mapearTipoServicoConsolidado(raw: unknown): TipoServicoConsolidado | null {
   const k = normKey(raw);
   if (!k) return null;
+  if (k.includes('COLETA') && k.includes('SELETIVA')) return TipoServico.COLETA_SELETIVA;
+  if (k.includes('ATERRO')) return TipoServico.ATERRO;
   if (k.includes('FEIRA')) return TipoServico.GERAL;
   if (k.includes('ROCAD') || k.includes('ROCADEIR')) return TipoServico.ROCADEIRA;
   if (k.includes('CAPINA') || k.includes('RASPAG')) return TipoServico.CAPINA;
@@ -146,7 +150,12 @@ export function mapearTipoServicoConsolidado(raw: unknown): TipoServicoConsolida
 }
 
 function ehPontoSemQuantidade(tipo: TipoServicoConsolidado, und: string | null): boolean {
-  if (tipo === TipoServico.PODA || tipo === TipoServico.REMOCAO || tipo === TipoServico.GERAL) return true;
+  if (
+    tipo === TipoServico.PODA
+    || tipo === TipoServico.REMOCAO
+    || tipo === TipoServico.ATERRO
+    || tipo === TipoServico.GERAL
+  ) return true;
   const u = undNormalizada(und);
   return u === 'equipe' || u === 'un';
 }
@@ -255,6 +264,12 @@ export function catalogoAbaProducao(nome: string): CatalogoAbaProducao | null {
   }
   if (k.includes('ROCAD') && (k.includes('MEC') || k.includes('MECANIZ'))) {
     return { chaveServico: 'rocada_mecanizada', nomeServico: 'Roçada Mecanizada', tipoSistema: TipoServico.ROCADEIRA, tipoExecucao: 'mecanizada' };
+  }
+  if (k.includes('COLETA') && k.includes('SELETIVA')) {
+    return { chaveServico: 'coleta_seletiva', nomeServico: 'Coleta Seletiva', tipoSistema: TipoServico.COLETA_SELETIVA, tipoExecucao: 'desconhecido' };
+  }
+  if (k.includes('ATERRO')) {
+    return { chaveServico: 'aterro', nomeServico: 'Aterro', tipoSistema: TipoServico.ATERRO, tipoExecucao: 'desconhecido' };
   }
   if (k.includes('ENTULHO') || (k.includes('REMOC') && !k.includes('MAPA'))) {
     return { chaveServico: 'remocao', nomeServico: 'Remoção de Entulho', tipoSistema: TipoServico.REMOCAO, tipoExecucao: 'desconhecido' };
@@ -376,6 +391,14 @@ function montarDados(linha: {
     base['Quantidade de Arvore'] = q;
     base.QTD_ARVORE = q;
     base.ARVORES_PODADAS = q;
+  } else if (linha.tipoSistema === TipoServico.COLETA_SELETIVA) {
+    base.Toneladas = q;
+    base.TONELADAS = q;
+    base.Peso = q;
+  } else if (linha.tipoSistema === TipoServico.ATERRO) {
+    base['Descrição do serviço'] = linha.observacao;
+    base.Peso = q;
+    base.Viagens = q;
   }
 
   return base;
@@ -659,7 +682,7 @@ function avisoQuantidadeRepetida(linhas: LinhaConsolidadoProducao[]): string | n
 /** True se alguma aba tem o layout SERVIÇO|DATA|UNIDADE|QUANTIDADE|LOCAL. */
 export function detectarPlanilhaConsolidadoProducao(buffer: Buffer): boolean {
   try {
-    const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true });
+    const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true, sheetRows: 20 });
     for (const name of wb.SheetNames) {
       const ws = wb.Sheets[name];
       if (!ws) continue;
@@ -821,11 +844,15 @@ export const TIPOS_ACEITA_CONSOLIDADO = new Set<string>([
   TipoServico.VARRICAO,
   TipoServico.PODA,
   TipoServico.REMOCAO,
+  TipoServico.COLETA_SELETIVA,
+  TipoServico.ATERRO,
   TipoServico.GERAL,
   'rocadeira',
   'capina',
   'varricao',
   'poda',
   'remocao',
+  'coleta_seletiva',
+  'aterro',
   'geral',
 ]);

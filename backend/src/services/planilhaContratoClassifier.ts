@@ -29,7 +29,7 @@ function headersTem(headers: string[], ...candidatos: string[]): boolean {
 /** Heurística de planilha de coleta (PLACA + peso/motorista/tipo caminhão). */
 export function detectarPlanilhaColeta(buffer: Buffer): boolean {
   try {
-    const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true });
+    const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true, sheetRows: 20 });
     for (const name of wb.SheetNames.slice(0, 8)) {
       const ws = wb.Sheets[name];
       if (!ws) continue;
